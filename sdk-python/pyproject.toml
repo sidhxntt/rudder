@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rudder-sdk"
+version = "0.1.0"
+description = "Python client for the Rudder control plane, generated from its OpenAPI schema"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.23.1,<0.29.0",
+    "attrs>=22.2.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["rudder_sdk*"]
+
+[tool.setuptools.package-data]
+rudder_sdk = ["py.typed"]
+
+# The generator's own formatting. rudder_sdk/ is a build artifact — it is
+# checked in because the CLI imports it, not because it is edited by hand.
+[tool.ruff]
+line-length = 120
+exclude = ["rudder_sdk"]

@@ -52,8 +52,12 @@ def engine_fixture() -> Iterator[Engine]:
 
 
 @pytest.fixture(name="client")
-def client_fixture(engine: Engine) -> Iterator[TestClient]:
+def client_fixture(engine: Engine, tmp_path) -> Iterator[TestClient]:
     app = FastAPI()
+    app.state.settings = get_settings().model_copy(
+        update={"traefik_dynamic_dir": str(tmp_path / "dynamic")}
+    )
+    app.state.agent = object()
     install_error_handlers(app)
     app.include_router(projects_router.router)
     app.include_router(environments_router.router)

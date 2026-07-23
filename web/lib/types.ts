@@ -1,15 +1,20 @@
 /**
  * Wire types for the Rudder control plane.
  *
- * These mirror `docs/PRD.md` → "Data Model" plus the Phase 1 "Schema deltas"
- * (`Service.container_port`, `Deployment.error_message`, `Instance.stopped_at`,
- * the `Domain` table). They are the *API projection* of those tables, which is
- * why `Variable` has no value field: the PRD states the table carries
- * `value_encrypted` and "the API must never return it". Phase 1 step 4 repeats
- * it — "Variable responses never include the decrypted value. Write-only field."
+ * These are transcribed from the live OpenAPI document (`GET /openapi.json`),
+ * schema by schema — not from the PRD data model, which is the *table* shape.
+ * Where the two differ the API wins, because that is what arrives over the
+ * wire. The differences that matter:
  *
- * When the OpenAPI-generated client lands, this file is replaced wholesale by
- * generated definitions and `lib/api.ts` re-exports from there.
+ *   - `Deployment` has no `build_log_url`. The build log is a sub-resource at
+ *     `GET /deployments/{id}/build-log` and it is an SSE stream, not a document.
+ *   - `Deployment.image_tag` and `.commit_sha` are nullable: a deploy that dies
+ *     before the clone resolves never gets either.
+ *   - `Instance` carries no `wg_ip` in Phase 1 (there is no mesh yet).
+ *   - `Service.build_config`, `.source_branch` and `.health_check_path` are
+ *     non-null; `.source_repo` and `.start_command` are nullable.
+ *   - `Variable` has no value field, by design. The control plane stores
+ *     `value_encrypted` and no endpoint ever returns it.
  */
 
 export type ServiceKind = "app" | "database" | "static";
@@ -31,6 +36,22 @@ export type InstanceStatus =
 
 export type DomainTargetType = "service" | "deployment";
 
+/** `GET /auth/me` → UserRead. */
+export interface User {
+  id: string;
+  email: string;
+  created_at: string;
+}
+
+/** `POST /auth/token` → TokenResponse. The token itself is deliberately unused
+ *  in the browser: the same response sets an httpOnly `rudder_token` cookie and
+ *  that is the only credential this app ever holds. */
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -43,7 +64,9 @@ export interface Environment {
   project_id: string;
   name: string;
   is_production: boolean;
-  wg_subnet: string | null;
+  /** Optional in the schema, not merely nullable — it can be absent entirely. */
+  wg_subnet?: string | null;
+  created_at: string;
 }
 
 export interface Service {
@@ -52,21 +75,28 @@ export interface Service {
   name: string;
   kind: ServiceKind;
   source_repo: string | null;
-  source_branch: string | null;
+  source_branch: string;
   dockerfile_path: string | null;
-  build_config: Record<string, unknown> | null;
+  build_config: Record<string, unknown>;
   start_command: string | null;
-  health_check_path: string | null;
-  health_check_port: number | null;
   container_port: number;
+  health_check_path: string;
+  health_check_port: number | null;
   cpu_limit: number;
   memory_limit_mb: number;
   replica_count: number;
   canvas_x: number;
   canvas_y: number;
+  created_at: string;
 }
 
-/** Body of `PATCH /services/{id}`. Canvas drag persists layout only (D6). */
+/**
+ * Body of `PATCH /services/{id}`.
+ *
+ * The API's own ServiceUpdate accepts every mutable column; this narrows it to
+ * the two the canvas is allowed to touch. D6: layout is UI metadata, so the
+ * only thing a drag may ever send is a position.
+ */
 export interface ServiceUpdate {
   canvas_x?: number;
   canvas_y?: number;
@@ -78,15 +108,15 @@ export interface Variable {
   service_id: string;
   key: string;
   is_reference: boolean;
+  created_at: string;
 }
 
 export interface Deployment {
   id: string;
   service_id: string;
-  image_tag: string;
-  commit_sha: string;
   status: DeploymentStatus;
-  build_log_url: string | null;
+  image_tag: string | null;
+  commit_sha: string | null;
   error_message: string | null;
   created_at: string;
   became_live_at: string | null;
@@ -96,9 +126,8 @@ export interface Instance {
   id: string;
   deployment_id: string;
   node_id: string;
-  container_id: string | null;
   status: InstanceStatus;
-  wg_ip: string | null;
+  container_id: string | null;
   started_at: string | null;
   stopped_at: string | null;
 }
@@ -112,18 +141,11 @@ export interface Domain {
   deployment_id: string | null;
   is_system: boolean;
   tls_enabled: boolean;
+  created_at: string;
 }
 
-/**
- * Phase 1 streams build logs over SSE (`docs/phases/PHASE-1-single-host.md`
- * step 5). Until the endpoint exists the UI polls a snapshot; `complete` is
- * what lets it stop polling.
- */
-export interface BuildLog {
-  deployment_id: string;
-  lines: string[];
-  complete: boolean;
-}
+/** Payload of the terminal `event: end` frame on the build-log stream. */
+export type BuildOutcome = "succeeded" | "failed";
 
 /** Derived, not stored. `Service` has no status column in the PRD data model. */
 export type ServiceStatus = "live" | "building" | "failed" | "draining" | "unknown";

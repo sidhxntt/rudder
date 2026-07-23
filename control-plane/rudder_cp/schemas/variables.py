@@ -17,6 +17,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from rudder_cp.models.service import Variable
+from rudder_cp.schemas.common import ErrorEnvelope
 
 # Env var keys: POSIX-ish. Leading digit rejected because most shells cannot
 # export it.
@@ -71,9 +72,8 @@ class VariableRead(BaseModel):
         )
 
 
-class ErrorBody(BaseModel):
-    """Uniform error shape per the PRD's API rules: {code, message, details}."""
-
-    code: str
-    message: str
-    details: dict[str, str] = Field(default_factory=dict)
+# The error shape lives in schemas/common.py as ErrorEnvelope. A second model
+# named ErrorBody here collided with the one in schemas/auth.py: FastAPI emits
+# both under the same schema title, and the SDK generator silently dropped the
+# 404/422 responses from every variables operation rather than fail loudly.
+ErrorBody = ErrorEnvelope

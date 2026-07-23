@@ -1,11 +1,21 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { useBuildLog } from "@/lib/queries";
+import { isNotFound, streamBuildLog } from "@/lib/api";
 import type { Deployment } from "@/lib/types";
 
-const TERMINAL: ReadonlySet<Deployment["status"]> = new Set<Deployment["status"]>([
+type Stream =
+  | { phase: "idle" }
+  | { phase: "waiting" }
+  | { phase: "streaming" }
+  | { phase: "ended"; outcome: string }
+  | { phase: "missing" }
+  | { phase: "error"; message: string };
+
+const LOG_RETRY_MS = 1_000;
+const MAX_LOG_RETRIES = 60;
+const TERMINAL: ReadonlySet<Deployment["status"]> = new Set([
   "live",
   "failed",
   "superseded",
@@ -14,17 +24,78 @@ const TERMINAL: ReadonlySet<Deployment["status"]> = new Set<Deployment["status"]
 /**
  * BUILD logs. Not runtime logs — those are Phase 5 (D4) and no view for them
  * exists anywhere in this tree.
+ *
+ * One SSE subscription per selected deployment, opened on mount and aborted on
+ * unmount or when the selection changes. A just-queued deployment has no log
+ * file until its worker starts, so a 404 retries briefly rather than becoming a
+ * permanent "no log" result. The stream ends by itself on the terminal `event:
+ * end` frame and the connection is dropped right there, so a finished build
+ * leaves no socket open.
+ *
+ * Disconnecting is safe by construction: the control plane tails a log *file*,
+ * the deploy worker writes it, and the two share nothing else. Closing this
+ * panel mid-build cannot stop the build.
  */
 export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
-  const complete = deployment ? TERMINAL.has(deployment.status) : true;
-  const log = useBuildLog(deployment?.id, complete);
+  const [lines, setLines] = useState<string[]>([]);
+  const [stream, setStream] = useState<Stream>({ phase: "idle" });
+  const [logAttempt, setLogAttempt] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
+  const statusRef = useRef<Deployment["status"] | null>(null);
 
-  const lines = log.data?.lines ?? [];
+  const deploymentId = deployment?.id ?? null;
+  statusRef.current = deployment?.status ?? null;
 
   useEffect(() => {
-    if (!complete) endRef.current?.scrollIntoView({ block: "end" });
-  }, [lines.length, complete]);
+    setLines([]);
+    setLogAttempt(0);
+
+    if (!deploymentId) setStream({ phase: "idle" });
+  }, [deploymentId]);
+
+  useEffect(() => {
+    if (!deploymentId) {
+      return;
+    }
+
+    setStream({ phase: "streaming" });
+    const controller = new AbortController();
+    let retryTimer: number | undefined;
+
+    void streamBuildLog(
+      deploymentId,
+      {
+        onLines: (batch) => setLines((current) => [...current, ...batch]),
+        onEnd: (outcome) => setStream({ phase: "ended", outcome }),
+      },
+      controller.signal,
+    ).catch((cause: unknown) => {
+      if (controller.signal.aborted) return; // unmount, not a failure
+      if (isNotFound(cause)) {
+        if (!TERMINAL.has(statusRef.current ?? "failed") && logAttempt < MAX_LOG_RETRIES) {
+          setStream({ phase: "waiting" });
+          retryTimer = window.setTimeout(() => setLogAttempt((attempt) => attempt + 1), LOG_RETRY_MS);
+          return;
+        }
+        setStream({ phase: "missing" });
+        return;
+      }
+      setStream({
+        phase: "error",
+        message: cause instanceof Error ? cause.message : "the log stream failed",
+      });
+    });
+
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [deploymentId, logAttempt]);
+
+  // Follow the tail only while output is still arriving.
+  useEffect(() => {
+    if (stream.phase === "streaming") endRef.current?.scrollIntoView({ block: "end" });
+  }, [lines.length, stream.phase]);
 
   if (!deployment) {
     return (
@@ -37,15 +108,29 @@ export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between border-b border-hairline-faint px-lg py-sm">
-        <span className="font-mono text-micro text-ink-mute">{deployment.commit_sha}</span>
-        <span className="text-micro text-ink-faint">
-          {complete ? "build complete" : "streaming…"}
+        <span className="font-mono text-micro text-ink-mute">
+          {deployment.commit_sha ? deployment.commit_sha.slice(0, 7) : "no commit"}
         </span>
+        <span className="text-micro text-ink-faint">{statusLine(stream)}</span>
       </div>
 
       <div className="rd-scroll min-h-0 flex-1 overflow-auto bg-surface-inset px-lg py-md">
-        {log.isPending ? (
+        {stream.phase === "waiting" ? (
+          <p className="font-mono text-micro text-ink-faint">waiting for the build to start…</p>
+        ) : null}
+
+        {stream.phase === "streaming" && lines.length === 0 ? (
           <p className="font-mono text-micro text-ink-faint">opening log…</p>
+        ) : null}
+
+        {stream.phase === "missing" ? (
+          <p className="font-mono text-micro text-ink-faint">
+            no build log — this deployment never reached the builder
+          </p>
+        ) : null}
+
+        {stream.phase === "error" ? (
+          <p className="font-mono text-micro text-status-failed">{stream.message}</p>
         ) : null}
 
         {lines.map((line, index) => (
@@ -57,7 +142,7 @@ export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
           </p>
         ))}
 
-        {!log.isPending && lines.length === 0 ? (
+        {stream.phase === "ended" && lines.length === 0 ? (
           <p className="font-mono text-micro text-ink-faint">no build output</p>
         ) : null}
 
@@ -71,4 +156,21 @@ export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
       </div>
     </div>
   );
+}
+
+function statusLine(stream: Stream): string {
+  switch (stream.phase) {
+    case "idle":
+      return "";
+    case "waiting":
+      return "waiting for build…";
+    case "streaming":
+      return "streaming…";
+    case "ended":
+      return `build ${stream.outcome}`;
+    case "missing":
+      return "no log";
+    case "error":
+      return "stream failed";
+  }
 }

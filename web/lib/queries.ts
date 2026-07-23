@@ -19,7 +19,6 @@ export const keys = {
   deployments: (serviceId: string) => ["deployments", serviceId] as const,
   instances: (serviceId: string) => ["instances", serviceId] as const,
   variables: (serviceId: string) => ["variables", serviceId] as const,
-  buildLog: (deploymentId: string) => ["build-log", deploymentId] as const,
 };
 
 /** Slow enough not to hammer the control plane, fast enough to watch a deploy. */
@@ -79,19 +78,11 @@ export function useVariables(serviceId: string | undefined) {
   });
 }
 
-/**
- * Build logs only. Runtime logs are Phase 5 (D4) and there is no view for them.
- * Polls until the log reports itself complete; the SSE endpoint from Phase 1
- * step 5 replaces the polling, not this call site.
- */
-export function useBuildLog(deploymentId: string | undefined, complete: boolean) {
-  return useQuery({
-    queryKey: keys.buildLog(deploymentId ?? ""),
-    queryFn: () => api.getBuildLog(deploymentId ?? ""),
-    enabled: Boolean(deploymentId),
-    refetchInterval: complete ? false : 700,
-  });
-}
+// Build logs are deliberately absent from this file. `GET
+// /deployments/{id}/build-log` is an SSE stream, not a document with a URL you
+// can refetch, so there is nothing for a query cache to hold. `build-logs.tsx`
+// subscribes to `api.streamBuildLog` directly. Build logs only — runtime logs
+// are Phase 5 (D4) and no view for them exists anywhere in this tree.
 
 /** Canvas drag → PATCH /services/{id}. UI metadata only (D6). */
 export function useUpdateServicePosition(environmentId: string | undefined) {

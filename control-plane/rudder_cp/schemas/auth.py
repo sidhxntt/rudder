@@ -8,22 +8,17 @@ can serialise it.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rudder_cp.schemas.common import ErrorEnvelope
 
-class ErrorBody(BaseModel):
-    """The uniform error shape from the PRD's API design rules.
-
-    Declared here because auth is the first workstream to need it. When a shared
-    ``rudder_cp/errors.py`` appears, this moves there unchanged.
-    """
-
-    code: str
-    message: str
-    details: dict[str, Any] = Field(default_factory=dict)
+# Now that schemas/common.py exists, that shared envelope IS the one error
+# shape. Two models named ErrorBody (here and in schemas/variables.py) collided
+# in the OpenAPI schema and broke SDK generation.
+ErrorBody = ErrorEnvelope
 
 
 class LoginRequest(BaseModel):

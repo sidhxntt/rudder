@@ -274,11 +274,13 @@ class DockerOps:
         timeout = aiohttp.ClientTimeout(total=req.timeout_seconds)
         started = time.monotonic()
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, allow_redirects=False) as resp:
-                    await resp.read()
-                    elapsed = (time.monotonic() - started) * 1000
-                    return HealthProbeResult(
+            async with (
+                aiohttp.ClientSession(timeout=timeout) as session,
+                session.get(url, allow_redirects=False) as resp,
+            ):
+                await resp.read()
+                elapsed = (time.monotonic() - started) * 1000
+                return HealthProbeResult(
                         ok=200 <= resp.status < 300,
                         status_code=resp.status,
                         reason=None if 200 <= resp.status < 300 else f"HTTP {resp.status}",

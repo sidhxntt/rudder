@@ -3,7 +3,7 @@
 import type { NodeProps } from "@xyflow/react";
 
 import { useDeployments, useInstances } from "@/lib/queries";
-import { deriveServiceStatus } from "@/lib/status";
+import { deriveServiceStatus, latestDeployment } from "@/lib/status";
 import type { ServiceKind } from "@/lib/types";
 
 import { StatusDot } from "./status-dot";
@@ -32,6 +32,8 @@ export function ServiceNode(props: NodeProps) {
   const instances = useInstances(data.serviceId);
 
   const status = deriveServiceStatus(deployments.data ?? [], instances.data ?? []);
+  const latest = latestDeployment(deployments.data ?? []);
+  const failedWhileServing = status === "live" && latest?.status === "failed";
 
   return (
     <div
@@ -47,8 +49,13 @@ export function ServiceNode(props: NodeProps) {
         </span>
       </div>
 
-      <div className="flex items-center justify-between gap-sm px-md py-sm">
-        <StatusDot status={status} />
+      <div className="flex items-start justify-between gap-sm px-md py-sm">
+        <div className="min-w-0">
+          <StatusDot status={status} />
+          {failedWhileServing ? (
+            <p className="pt-xxs text-micro text-status-failed">latest deploy failed</p>
+          ) : null}
+        </div>
         {deployments.isPending ? <span className="text-micro text-ink-faint">…</span> : null}
       </div>
 

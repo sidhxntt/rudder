@@ -14,11 +14,13 @@ from typing import Final
 
 from sqlmodel import Session, select
 
-from rudder_cp.models import Project, User
+from rudder_cp.config import Settings
+from rudder_cp.models import Project, Service, User
 from rudder_cp.schemas.common import ConflictError, NotFoundError
 from rudder_cp.schemas.environment import EnvironmentCreate
 from rudder_cp.schemas.project import ProjectCreate, ProjectReplace, ProjectUpdate
-from rudder_cp.services import environments
+from rudder_cp.services import environments, services, traefik
+from rudder_cp.services.agent_client import AgentClient
 
 #: The environment every project starts with.
 DEFAULT_ENVIRONMENT_NAME: Final[str] = "production"
@@ -85,7 +87,9 @@ async def replace_project(
     return project
 
 
-async def delete_project(session: Session, project_id: uuid.UUID) -> None:
+async def delete_project(
+    session: Session, project_id: uuid.UUID, *, agent: AgentClient, settings: Settings
+) -> None:
     """Delete a project, its environments, and everything inside them.
 
     Cascade rather than refuse-if-not-empty: every project has at least one
@@ -95,10 +99,19 @@ async def delete_project(session: Session, project_id: uuid.UUID) -> None:
     outcome that must never happen.
     """
     project = _require_project(session, project_id)
-    for environment in await environments.list_environments(session, project.id):
+    environment_rows = await environments.list_environments(session, project.id)
+    environment_ids = [environment.id for environment in environment_rows]
+    service_ids = list(
+        session.exec(select(Service.id).where(Service.environment_id.in_(environment_ids))).all()  # type: ignore[attr-defined]
+    )
+    await services.remove_runtime_containers(
+        session, service_ids=service_ids, agent=agent, settings=settings
+    )
+    for environment in environment_rows:
         await environments.purge_environment(session, environment)
     session.delete(project)
     session.commit()
+    await traefik.render_all(session, settings)
 
 
 async def default_owner_id(session: Session) -> uuid.UUID:

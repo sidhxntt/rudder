@@ -8,7 +8,7 @@ Created and listed under their project, addressed by id at the top level.
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlmodel import Session
 
 from rudder_cp.db import get_session
@@ -116,11 +116,17 @@ async def replace_environment(
     "/environments/{environment_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    responses=error_responses(404, 422),
+    responses=error_responses(404, 422, 503),
     operation_id="delete_environment",
     summary="Delete an environment and everything in it",
     description="Cascades to services, domains, variables, volumes and deployments.",
 )
-async def delete_environment(environment_id: UUID, session: SessionDep) -> None:
+async def delete_environment(environment_id: UUID, request: Request, session: SessionDep) -> None:
     with translate_errors():
-        await environment_ops.delete_environment(session, environment_id)
+        settings = request.app.state.settings
+        await environment_ops.delete_environment(
+            session,
+            environment_id,
+            agent=request.app.state.agent,
+            settings=settings,
+        )

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { useDeploy, useDeployments, useInstances } from "@/lib/queries";
-import { deriveServiceStatus } from "@/lib/status";
+import { deriveServiceStatus, latestDeployment } from "@/lib/status";
 import type { Service } from "@/lib/types";
 
 import { BuildLogs } from "./build-logs";
@@ -46,6 +46,11 @@ export function DetailPanel({
     list.find((deployment) => deployment.id === selectedDeploymentId) ?? list[0] ?? null;
 
   const status = deriveServiceStatus(list, instances.data ?? []);
+  const latest = latestDeployment(list);
+  // A failed release must not obscure the healthy process that is still
+  // serving traffic. Show both facts instead of reducing them to one status.
+  const failedWhileServing =
+    status === "live" && latest?.status === "failed" ? latest : null;
 
   return (
     <aside className="flex w-[26rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
@@ -115,6 +120,25 @@ export function DetailPanel({
           {status === "building" || deploy.isPending ? "Deploying…" : "Deploy"}
         </button>
       </div>
+
+      {failedWhileServing ? (
+        <section
+          aria-live="polite"
+          className="border-b border-hairline bg-surface-inset px-lg py-sm"
+        >
+          <div className="flex flex-wrap items-baseline gap-x-sm gap-y-xxs">
+            <p className="text-micro font-medium text-status-failed">latest deploy failed</p>
+            <p className="text-micro text-ink-secondary">
+              previous live deployment is still serving
+            </p>
+          </div>
+          {failedWhileServing.error_message ? (
+            <p className="break-words pt-xxs font-mono text-micro text-ink-mute">
+              {failedWhileServing.error_message}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       <div className="flex shrink-0 items-center gap-lg border-b border-hairline px-lg">
         {TABS.map((entry) => (

@@ -3,10 +3,15 @@
 import { useParams } from "next/navigation";
 
 import { useEnvironments, useProjects, useServices } from "@/lib/queries";
+import { useSession } from "@/lib/session";
 
-/** Says where you are. Nothing else — actions live on the thing they act on. */
+/**
+ * Says where you are, and who you are. No other actions — those live on the
+ * thing they act on.
+ */
 export function TopBar() {
   const params = useParams();
+  const session = useSession();
   const projectId = typeof params?.projectId === "string" ? params.projectId : undefined;
   const environmentId =
     typeof params?.environmentId === "string" ? params.environmentId : undefined;
@@ -42,6 +47,18 @@ export function TopBar() {
         <span>
           {services.data ? `${services.data.length} services` : environment ? "…" : ""}
         </span>
+        {session.state.status === "authenticated" ? (
+          <span className="flex items-center gap-sm">
+            <span className="truncate text-ink-faint">{session.state.user.email}</span>
+            <button
+              type="button"
+              onClick={() => void session.signOut()}
+              className="rounded-sm px-xs py-xxs text-micro text-ink-mute hover:text-ink"
+            >
+              sign out
+            </button>
+          </span>
+        ) : null}
       </div>
     </header>
   );

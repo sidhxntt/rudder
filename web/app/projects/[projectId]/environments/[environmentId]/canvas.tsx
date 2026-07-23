@@ -12,16 +12,43 @@ import {
   type Node,
   type NodeChange,
   type NodeTypes,
+  type OnNodeDrag,
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 
 import { useDomains, useServices, useUpdateServicePosition } from "@/lib/queries";
 import { serviceUrl } from "@/lib/status";
+import type { Service } from "@/lib/types";
 
 import { DetailPanel } from "./detail-panel";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
 
 const nodeTypes: NodeTypes = { service: ServiceNode };
+
+/** Node box is 14rem wide; these leave a lane between columns. */
+const FALLBACK_COLUMN = 288;
+const FALLBACK_ROW = 176;
+const FALLBACK_PER_COLUMN = 3;
+
+/**
+ * Where to draw a service that has never been dragged.
+ *
+ * `canvas_x`/`canvas_y` default to 0 server-side, so a freshly created
+ * environment hands back every service stacked on the same point and the canvas
+ * looks like it has one node. A stored (0, 0) therefore means "unplaced" and
+ * gets a deterministic grid slot instead. Nothing is written back for it — the
+ * position is persisted the first time the operator drags, which is the only
+ * moment they have expressed an opinion about layout (D6).
+ */
+function initialPosition(service: Service, index: number): { x: number; y: number } {
+  if (service.canvas_x !== 0 || service.canvas_y !== 0) {
+    return { x: service.canvas_x, y: service.canvas_y };
+  }
+  return {
+    x: Math.floor(index / FALLBACK_PER_COLUMN) * FALLBACK_COLUMN,
+    y: (index % FALLBACK_PER_COLUMN) * FALLBACK_ROW,
+  };
+}
 
 /**
  * No edges. Service-to-service links would have to come from reference
@@ -48,7 +75,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
   useEffect(() => {
     setNodes((current) => {
       const byId = new Map(current.map((node) => [node.id, node]));
-      return serviceList.map((service) => {
+      return serviceList.map((service, index) => {
         const existing = byId.get(service.id);
         const data: ServiceNodeData = {
           serviceId: service.id,
@@ -59,7 +86,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
         return {
           id: service.id,
           type: "service",
-          position: existing ? existing.position : { x: service.canvas_x, y: service.canvas_y },
+          position: existing ? existing.position : initialPosition(service, index),
           selected: existing ? existing.selected : false,
           data,
         } satisfies Node;
@@ -71,8 +98,13 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
     setNodes((current) => applyNodeChanges(changes, current));
   }, []);
 
-  const onNodeDragStop = useCallback(
-    (_event: MouseEvent, node: Node) => {
+  /**
+   * D6: this PATCH carries `canvas_x`/`canvas_y` and nothing else. It is a
+   * layout write against a CRUD endpoint — no deploy, no reconciliation, no
+   * container touched.
+   */
+  const onNodeDragStop = useCallback<OnNodeDrag>(
+    (_event, node) => {
       updatePosition.mutate({
         serviceId: node.id,
         patch: { canvas_x: Math.round(node.position.x), canvas_y: Math.round(node.position.y) },

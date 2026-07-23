@@ -39,7 +39,11 @@ export function DeployHistory({
               ].join(" ")}
             >
               <td className="px-lg py-sm">
-                <span className="font-mono text-micro text-ink">{deployment.commit_sha}</span>
+                {/* Nullable: a deploy that dies before the clone resolves
+                    never gets a SHA. That is exactly the row worth reading. */}
+                <span className="font-mono text-micro text-ink">
+                  {deployment.commit_sha ? deployment.commit_sha.slice(0, 7) : "—"}
+                </span>
               </td>
               <td className="py-sm">
                 <span className={`text-micro ${STATUS_COLOR[deployment.status]}`}>

@@ -5,13 +5,24 @@ import type { Deployment, Domain, Instance, Service, ServiceStatus } from "./typ
  * Deployment (intent) and Instance (running container) as the record of truth.
  * The canvas needs one word per node, so it is derived here, in one place.
  *
+ * The vocabularies this reads are the API's own, verified against the live
+ * OpenAPI document: DeploymentStatus ∈ {queued, building, deploying, live,
+ * failed, superseded}, InstanceStatus ∈ {starting, healthy, unhealthy,
+ * draining, stopped}.
+ *
  * Precedence, most urgent first:
  *   building  — something is in flight right now
  *   live      — a live Deployment with at least one healthy Instance
  *   draining  — instances are winding down and nothing healthy is left
- *   failed    — the newest Deployment failed, or the live one has no healthy
- *               instance (the "docker kill" case in Phase 1 → Verify step 4)
+ *   failed    — the newest Deployment failed, or the live Deployment has no
+ *               healthy Instance
  *   unknown   — never deployed
+ *
+ * The fourth case is the one that matters and the one a `Service.status` column
+ * could never express. `Deployment.status = live` is *intent*: the control
+ * plane shifted traffic and stopped writing. If the container has since died,
+ * its Instance is `stopped` or `unhealthy` while the Deployment still says
+ * `live` — and the public URL 503s. That is `failed` here, never `live`.
  */
 export function deriveServiceStatus(
   deployments: readonly Deployment[],
@@ -30,13 +41,28 @@ export function deriveServiceStatus(
     if (own.some((i) => i.status === "healthy")) return "live";
     if (own.some((i) => i.status === "starting")) return "building";
     if (own.some((i) => i.status === "draining")) return "draining";
+    // No instance at all, or every one of them stopped/unhealthy. Nothing is
+    // serving this deployment.
     return "failed";
   }
 
-  const newest = deployments[0];
+  // The API returns deployments newest-first, but ordering is not something to
+  // depend on for a status the whole canvas reads — pick the newest by clock.
+  const newest = latestDeployment(deployments);
   if (newest && newest.status === "failed") return "failed";
   if (instances.some((i) => i.status === "draining")) return "draining";
   return "unknown";
+}
+
+/** The most recently created deployment, independent of API response ordering. */
+export function latestDeployment(deployments: readonly Deployment[]): Deployment | null {
+  let newest: Deployment | null = null;
+  for (const deployment of deployments) {
+    if (!newest || Date.parse(deployment.created_at) > Date.parse(newest.created_at)) {
+      newest = deployment;
+    }
+  }
+  return newest;
 }
 
 export const STATUS_LABEL: Record<ServiceStatus, string> = {

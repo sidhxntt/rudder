@@ -13,23 +13,40 @@ Takes ``Session`` as an argument. Never imports FastAPI.
 """
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from rudder_cp.config import Settings
 from rudder_cp.models import (
     Deployment,
     Environment,
     Instance,
+    InstanceStatus,
     Service,
     Variable,
     Volume,
 )
 from rudder_cp.schemas.common import ConflictError, NotFoundError, RudderError
 from rudder_cp.schemas.service import ServiceCreate, ServiceReplace, ServiceUpdate
-from rudder_cp.services import domains
+from rudder_cp.services import domains, traefik
+from rudder_cp.services.agent_client import AgentClient, AgentError
 
 SERVICE_NAME_TAKEN = "service_name_taken"
+
+
+class RuntimeCleanupError(RudderError):
+    """The runtime must be reachable before deleting its service records."""
+
+    status_code = 503
+
+    def __init__(self, *, container_id: str, reason: str) -> None:
+        super().__init__(
+            f"Could not remove runtime container {container_id}. {reason}",
+            code="runtime_cleanup_failed",
+            details={"container_id": container_id},
+        )
 
 
 async def list_services(session: Session, environment_id: uuid.UUID) -> list[Service]:
@@ -84,7 +101,9 @@ async def replace_service(
     return await _apply_service_write(session, service=service, data=payload.model_dump())
 
 
-async def delete_service(session: Session, service_id: uuid.UUID) -> None:
+async def delete_service(
+    session: Session, service_id: uuid.UUID, *, agent: AgentClient, settings: Settings
+) -> None:
     """Delete a service and everything that hangs off it.
 
     Cascade, not refuse: the FKs in the schema have no ON DELETE rule, so a
@@ -92,8 +111,52 @@ async def delete_service(session: Session, service_id: uuid.UUID) -> None:
     hand-deleting its variables, volumes, deployments and domains first.
     """
     service = _require_service(session, service_id)
+    await remove_runtime_containers(
+        session, service_ids=[service.id], agent=agent, settings=settings
+    )
     await purge_service(session, service)
     session.commit()
+    await traefik.render_all(session, settings)
+
+
+async def remove_runtime_containers(
+    session: Session,
+    *,
+    service_ids: list[uuid.UUID],
+    agent: AgentClient,
+    settings: Settings,
+) -> None:
+    """Remove every runtime container owned by the supplied services.
+
+    The agent's delete operation is idempotent, so this includes rows marked
+    stopped as well as active ones: a stale runtime can never survive a
+    successful service/environment deletion.  It runs before database cleanup;
+    an agent failure leaves the service and its routes intact for a retry.
+    """
+    if not service_ids:
+        return
+    instances = session.exec(
+        select(Instance)
+        .join(Deployment, Deployment.id == Instance.deployment_id)  # type: ignore[arg-type]
+        .where(Deployment.service_id.in_(service_ids))  # type: ignore[attr-defined]
+    ).all()
+    for instance in instances:
+        if instance.container_id:
+            try:
+                await agent.remove(instance.container_id, drain_seconds=0)
+            except AgentError as exc:
+                # Previous removals in this loop are already real. Persist
+                # their stopped state and remove them from Traefik before
+                # returning the error, so no route keeps targeting a dead
+                # container while the user retries deletion.
+                session.commit()
+                await traefik.render_all(session, settings)
+                raise RuntimeCleanupError(
+                    container_id=instance.container_id, reason=str(exc)
+                ) from exc
+            instance.status = InstanceStatus.STOPPED
+            instance.stopped_at = datetime.now(UTC)
+            session.add(instance)
 
 
 async def purge_service(session: Session, service: Service) -> None:
@@ -103,8 +166,9 @@ async def purge_service(session: Session, service: Service) -> None:
     deployments), then instances, then deployments, then the service's own
     children.
 
-    TODO(deploy): a live service also has containers. Tearing those down is the
-    reconciler's job and lands with the deploy path; this only removes rows.
+    Runtime teardown belongs to ``delete_service`` / ``delete_environment``;
+    this helper remains database-only so it can participate in larger
+    transactions such as project deletion.
     """
     deployment_ids = list(
         session.exec(select(Deployment.id).where(Deployment.service_id == service.id)).all()

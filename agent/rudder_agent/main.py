@@ -59,7 +59,7 @@ async def error_middleware(request: web.Request, handler: Any) -> web.StreamResp
         # Backstop: anything the ops layer failed to classify.
         log.exception("unclassified docker failure")
         return _error_response(errors.docker_error(str(exc)))
-    except Exception as exc:  # noqa: BLE001 - deliberate uniform-shape backstop
+    except Exception as exc:
         log.exception("unhandled agent failure")
         return _error_response(
             errors.AgentError(500, "internal_error", f"{type(exc).__name__}: {exc}")

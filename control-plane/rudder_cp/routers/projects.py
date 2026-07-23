@@ -14,7 +14,7 @@ in ``services/``.
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlmodel import Session
 
 from rudder_cp.db import get_session
@@ -115,7 +115,7 @@ async def replace_project(
     "/projects/{project_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    responses=error_responses(404, 422),
+    responses=error_responses(404, 422, 503),
     operation_id="delete_project",
     summary="Delete a project and everything in it",
     description=(
@@ -124,6 +124,11 @@ async def replace_project(
         "nothing left to cache."
     ),
 )
-async def delete_project(project_id: UUID, session: SessionDep) -> None:
+async def delete_project(project_id: UUID, request: Request, session: SessionDep) -> None:
     with translate_errors():
-        await project_ops.delete_project(session, project_id)
+        await project_ops.delete_project(
+            session,
+            project_id,
+            agent=request.app.state.agent,
+            settings=request.app.state.settings,
+        )

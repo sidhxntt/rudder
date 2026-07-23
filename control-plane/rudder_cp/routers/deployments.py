@@ -6,6 +6,7 @@ request — a build takes minutes and an HTTP client will not wait.
 """
 
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -27,8 +28,8 @@ class DeploymentRead(BaseModel):
     image_tag: str | None
     commit_sha: str | None
     error_message: str | None
-    created_at: object
-    became_live_at: object
+    created_at: datetime
+    became_live_at: datetime | None
 
     model_config = {"from_attributes": True}
 
@@ -45,8 +46,8 @@ class InstanceRead(BaseModel):
     node_id: uuid.UUID
     status: InstanceStatus
     container_id: str | None
-    started_at: object
-    stopped_at: object
+    started_at: datetime | None
+    stopped_at: datetime | None
 
     model_config = {"from_attributes": True}
 

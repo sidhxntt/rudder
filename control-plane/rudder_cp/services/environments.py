@@ -16,7 +16,8 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from rudder_cp.models import Environment, Project
+from rudder_cp.config import Settings
+from rudder_cp.models import Environment, Project, Service
 from rudder_cp.schemas.common import (
     ConflictError,
     NotFoundError,
@@ -28,7 +29,8 @@ from rudder_cp.schemas.environment import (
     EnvironmentReplace,
     EnvironmentUpdate,
 )
-from rudder_cp.services import domains, services
+from rudder_cp.services import domains, services, traefik
+from rudder_cp.services.agent_client import AgentClient
 
 ENVIRONMENT_NAME_TAKEN = "environment_name_taken"
 SUBNET_POOL_EXHAUSTED = "wg_subnet_pool_exhausted"
@@ -105,11 +107,20 @@ async def replace_environment(
     )
 
 
-async def delete_environment(session: Session, environment_id: uuid.UUID) -> None:
+async def delete_environment(
+    session: Session, environment_id: uuid.UUID, *, agent: AgentClient, settings: Settings
+) -> None:
     """Delete an environment and everything inside it. See ``purge_environment``."""
     environment = _require_environment(session, environment_id)
+    service_ids = list(
+        session.exec(select(Service.id).where(Service.environment_id == environment.id)).all()
+    )
+    await services.remove_runtime_containers(
+        session, service_ids=service_ids, agent=agent, settings=settings
+    )
     await purge_environment(session, environment)
     session.commit()
+    await traefik.render_all(session, settings)
 
 
 async def purge_environment(session: Session, environment: Environment) -> None:
