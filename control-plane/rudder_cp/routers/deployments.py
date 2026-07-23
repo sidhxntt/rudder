@@ -1,0 +1,97 @@
+"""Deployment endpoints.
+
+`POST /services/{id}/deploy` does not deploy. It writes Deployment(queued) and
+returns 202. The background worker does the work. Long work never runs inside a
+request — a build takes minutes and an HTTP client will not wait.
+"""
+
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlmodel import Session, select
+
+from rudder_cp.db import get_session
+from rudder_cp.models import Deployment, DeploymentStatus, Service
+
+router = APIRouter(tags=["deployments"])
+
+SessionDep = Annotated[Session, Depends(get_session)]
+
+
+class DeploymentRead(BaseModel):
+    id: uuid.UUID
+    service_id: uuid.UUID
+    status: DeploymentStatus
+    image_tag: str | None
+    commit_sha: str | None
+    error_message: str | None
+    created_at: object
+    became_live_at: object
+
+    model_config = {"from_attributes": True}
+
+
+class DeployRequest(BaseModel):
+    """An explicit SHA is optional. Without one the build resolves the branch tip."""
+
+    commit_sha: str | None = None
+
+
+@router.post(
+    "/services/{service_id}/deploy",
+    response_model=DeploymentRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_deployment(
+    service_id: uuid.UUID,
+    session: SessionDep,
+    body: DeployRequest | None = None,
+) -> Deployment:
+    service = session.get(Service, service_id)
+    if service is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "No such service", "details": {}},
+        )
+    if not service.source_repo:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "no_source_repo",
+                "message": "This service has no source_repo, so there is nothing to build.",
+                "details": {"service_id": str(service_id)},
+            },
+        )
+    deployment = Deployment(
+        service_id=service_id,
+        commit_sha=(body.commit_sha if body else None),
+        status=DeploymentStatus.QUEUED,
+    )
+    session.add(deployment)
+    session.commit()
+    session.refresh(deployment)
+    return deployment
+
+
+@router.get("/services/{service_id}/deployments", response_model=list[DeploymentRead])
+async def list_deployments(service_id: uuid.UUID, session: SessionDep) -> list[Deployment]:
+    return list(
+        session.exec(
+            select(Deployment)
+            .where(Deployment.service_id == service_id)
+            .order_by(Deployment.created_at.desc())  # type: ignore[attr-defined]
+        ).all()
+    )
+
+
+@router.get("/deployments/{deployment_id}", response_model=DeploymentRead)
+async def get_deployment(deployment_id: uuid.UUID, session: SessionDep) -> Deployment:
+    deployment = session.get(Deployment, deployment_id)
+    if deployment is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "No such deployment", "details": {}},
+        )
+    return deployment

@@ -1,33 +1,98 @@
 """App factory, router mount, lifespan.
 
-The deploy worker (Phase 1 step 5) starts here. Long work never runs inside a
-request: POST /services/{id}/deploy writes Deployment(status=queued) and returns
-202; the worker picks it up.
+Long work never runs in a request. POST /services/{id}/deploy writes
+Deployment(status=queued) and returns 202; the worker started here picks it up.
 """
 
+import asyncio
+import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlmodel import Session
 
 from rudder_cp.config import get_settings
+from rudder_cp.db import get_engine
+from rudder_cp.logs.store import get_build_log_store
+from rudder_cp.routers import auth as auth_router
+from rudder_cp.routers import (
+    deployments,
+    domains,
+    environments,
+    logs,
+    projects,
+    services,
+    variables,
+    webhooks,
+)
+from rudder_cp.schemas.common import install_error_handlers
+from rudder_cp.services.agent_client import AgentClient
+from rudder_cp.services.auth import seed_admin_user
+from rudder_cp.services.variables import verify_secret_keys
+from rudder_cp.services.worker import run_worker
+
+log = logging.getLogger("rudder_cp")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Phase 1 step 3 seeds the single user here.
-    # Phase 1 step 5 starts the background deploy worker here.
-    yield
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+
+    # Fail at boot, not at the first deploy: a bad key list is a configuration
+    # error and it should be visible before anything is encrypted.
+    verify_secret_keys()
+
+    engine = get_engine()
+    with Session(engine) as session:
+        await seed_admin_user(session)
+
+    stop = asyncio.Event()
+    worker = asyncio.create_task(
+        run_worker(
+            engine=engine,
+            settings=settings,
+            store=get_build_log_store(),
+            agent=AgentClient(settings.agent_url),
+            stop=stop,
+        ),
+        name="deploy-worker",
+    )
+    log.info("deploy worker started")
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.cancel()
+        # Shutdown must not hang on a build in flight.
+        await asyncio.gather(worker, return_exceptions=True)
+        log.info("deploy worker stopped")
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(
-        title="Rudder Control Plane",
-        version="0.1.0",
-        lifespan=lifespan,
-    )
+    app = FastAPI(title="Rudder Control Plane", version="0.1.0", lifespan=lifespan)
 
-    @app.get("/healthz")
+    # Both are needed: install_error_handlers flattens FastAPI's `detail`
+    # nesting (including Pydantic 422s) into the PRD's {code, message, details},
+    # and the auth handler covers the ApiError raised by the auth router.
+    install_error_handlers(app)
+    app.add_exception_handler(auth_router.ApiError, auth_router.api_error_handler)
+
+    for module in (
+        auth_router,
+        projects,
+        environments,
+        services,
+        domains,
+        variables,
+        deployments,
+        logs,
+        webhooks,
+    ):
+        app.include_router(module.router)
+
+    @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:
         return {"status": "ok", "tls_mode": settings.tls_mode}
 

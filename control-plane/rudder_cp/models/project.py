@@ -26,7 +26,9 @@ class Environment(SQLModel, table=True):
     """
 
     __tablename__ = "environment"
-    __table_args__ = (sa.UniqueConstraint("project_id", "name", name="uq_environment_project_name"),)
+    __table_args__ = (
+        sa.UniqueConstraint("project_id", "name", name="uq_environment_project_name"),
+    )
 
     id: uuid.UUID = uuid_pk()
     project_id: uuid.UUID = Field(foreign_key="project.id", sa_type=sa.Uuid, nullable=False)

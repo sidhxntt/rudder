@@ -19,5 +19,22 @@ log:
 
 accessLog: {}
 
-# TLS is off in dev (D8). With RUDDER_TLS_MODE=acme the control plane also
-# writes a certResolver block and routers gain a `tls` section.
+# TLS is off in dev (D8). ACME HTTP-01 cannot work against *.localhost.
+#
+# With RUDDER_TLS_MODE=acme the control plane emits routers on the `websecure`
+# entrypoint referencing certResolver `rudder`. A certResolver cannot be declared
+# in dynamic config, so switching to real TLS means uncommenting the block below
+# (filling in a real email), adding "443:443" to the traefik ports in
+# docker-compose.dev.yml, and pointing a wildcard A record at this host.
+#
+# entryPoints:
+#   websecure:
+#     address: ":443"
+#
+# certificatesResolvers:
+#   rudder:
+#     acme:
+#       email: you@example.com      # must match RUDDER_ACME_EMAIL
+#       storage: /etc/traefik/acme/acme.json
+#       httpChallenge:
+#         entryPoint: web

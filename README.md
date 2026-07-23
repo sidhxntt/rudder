@@ -59,10 +59,30 @@ open http://localhost:8080      # Traefik dashboard (dev only)
 
 ## Status
 
-Phase 1, step 1 (repo scaffold) complete. Steps 2–10 in
+Phase 1, steps 1–8 are written. Steps 9 (SDK + CLI) and 10 (canvas UI, written
+but unverified) remain. See
 [`docs/phases/PHASE-1-single-host.md`](docs/phases/PHASE-1-single-host.md).
 
-Each phase gets a demo section here as it lands.
+| Piece | State |
+|---|---|
+| Data model + migration | 271 tests green; migration verified against SQLite, `alembic check` reports no drift |
+| Auth, CRUD, variables, domains | done, tested |
+| Build pipeline, deploy path, Traefik rendering | done, tested against fakes |
+| Node agent | done, tested against a fake Docker client |
+| Canvas UI | written, **never compiled** — `npm` is blocked in this environment |
+| Python SDK + CLI | not started |
+
+**Nothing has run against a live Docker daemon, Postgres, or Traefik yet.** The
+test suites use SQLite and injected fakes. The first real `docker compose up` is
+the next verification gate, and the Phase 1 `## Verify` section is the script for
+it.
+
+Run the suites:
+
+```bash
+cd control-plane && pytest -q     # 221
+cd agent && pytest -q             #  50
+```
 
 ## Notes on the dev stack
 

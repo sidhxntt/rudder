@@ -1,0 +1,66 @@
+"use client";
+
+import { shortAgo } from "@/lib/status";
+import type { Deployment, DeploymentStatus } from "@/lib/types";
+
+const STATUS_COLOR: Record<DeploymentStatus, string> = {
+  queued: "text-status-building",
+  building: "text-status-building",
+  deploying: "text-status-building",
+  live: "text-status-live",
+  failed: "text-status-failed",
+  superseded: "text-status-draining",
+};
+
+export function DeployHistory({
+  deployments,
+  selectedId,
+  onSelect,
+}: {
+  deployments: readonly Deployment[];
+  selectedId: string | null;
+  onSelect: (deploymentId: string) => void;
+}) {
+  if (deployments.length === 0) {
+    return <p className="px-lg py-md text-micro text-ink-faint">no deployments yet</p>;
+  }
+
+  return (
+    <div className="rd-scroll min-h-0 flex-1 overflow-auto">
+      <table className="w-full border-collapse">
+        <tbody>
+          {deployments.map((deployment) => (
+            <tr
+              key={deployment.id}
+              onClick={() => onSelect(deployment.id)}
+              className={[
+                "cursor-pointer border-b border-hairline-faint",
+                deployment.id === selectedId ? "bg-surface-raised" : "hover:bg-surface-raised",
+              ].join(" ")}
+            >
+              <td className="px-lg py-sm">
+                <span className="font-mono text-micro text-ink">{deployment.commit_sha}</span>
+              </td>
+              <td className="py-sm">
+                <span className={`text-micro ${STATUS_COLOR[deployment.status]}`}>
+                  {deployment.status}
+                </span>
+              </td>
+              <td className="py-sm">
+                <span className="text-micro text-ink-mute">{shortAgo(deployment.created_at)}</span>
+              </td>
+              <td className="px-lg py-sm text-right">
+                <span className="text-micro text-ink-faint">
+                  {deployment.became_live_at ? `live ${shortAgo(deployment.became_live_at)}` : "—"}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="px-lg py-md text-micro text-ink-faint">
+        Every deployment is an immutable artifact — image tags are never reused.
+      </p>
+    </div>
+  );
+}

@@ -582,12 +582,16 @@ Called on: deploy success, domain create/delete, instance state change.
 
 ## Current Task
 
-**Phase 1, step 1 (repo scaffold) is done.** Decisions D1–D6 and D15 are accepted
-as defaults ([ADR 0001](decisions/0001-phase-1-decisions.md)); the project is
-named Rudder, not Helm ([ADR 0002](decisions/0002-project-name-rudder.md)).
+**Phase 1, steps 1–8 are written.** Decisions D1–D6 and D15 are accepted as
+defaults ([ADR 0001](decisions/0001-phase-1-decisions.md)); the project is named
+Rudder, not Helm ([ADR 0002](decisions/0002-project-name-rudder.md)).
 
-Next: [Phase 1](phases/PHASE-1-single-host.md) step 2 — data model and Alembic
-migrations. Propose the schema before writing it, per the Working Agreement.
+Remaining in Phase 1: step 9 (Python SDK + CLI, not started) and step 10 (canvas
+UI — written, but never compiled, because `npm` is blocked in this environment).
+
+Nothing has been verified against a live Docker daemon, Postgres, or Traefik.
+271 tests pass against SQLite and injected fakes, which is not the same claim.
+The Phase 1 `## Verify` section is the gate that has not been run.
 
 Still needed from you before step 5 — see [`NEED-FROM-YOU.md`](NEED-FROM-YOU.md):
 `GITHUB_TOKEN` in `.env` (or confirmation that all repos are public), the

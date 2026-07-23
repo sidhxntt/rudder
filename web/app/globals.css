@@ -1,0 +1,88 @@
+/* `styles/tokens.css` is imported ahead of this file in app/layout.tsx, so the
+   custom properties below are already declared by the time Tailwind's output
+   references them. */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--rd-surface);
+    color: var(--rd-text);
+    font-family: var(--rd-font-sans);
+    /* Console density: 13px base, not the 16px marketing body. */
+    font-size: var(--rd-text-caption);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Weight never above 500 for display (D5). */
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: var(--rd-weight-display);
+  }
+
+  ::selection {
+    background-color: var(--rd-accent);
+    color: var(--rd-on-accent);
+  }
+
+  *:focus-visible {
+    outline: 1px solid var(--rd-accent);
+    outline-offset: 1px;
+  }
+}
+
+@layer components {
+  /* Scrollbars, dark shell. */
+  .rd-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--rd-hairline-strong) transparent;
+  }
+  .rd-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .rd-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--rd-hairline-strong);
+    border-radius: var(--rd-radius-full);
+  }
+  .rd-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* React Flow chrome, retuned for the dark shell. The library ships light
+   defaults; these are the only overrides needed. */
+.react-flow__attribution {
+  background: transparent;
+  color: var(--rd-text-faint);
+  font-size: 10px;
+}
+
+.react-flow__controls-button {
+  background-color: var(--rd-surface-raised);
+  border-bottom: 1px solid var(--rd-hairline);
+  fill: var(--rd-text-secondary);
+}
+
+.react-flow__controls-button:hover {
+  background-color: var(--rd-surface-soft);
+}
+
+.react-flow__node {
+  cursor: grab;
+}
+
+.react-flow__node.dragging {
+  cursor: grabbing;
+}

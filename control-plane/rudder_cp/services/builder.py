@@ -78,14 +78,13 @@ async def build_image(
             )
         else:
             dockerfile_dir = workdir / "generated"
-            dockerfile_dir.mkdir()
             dockerfile_name = "Dockerfile"
             rendered = render_dockerfile(
                 detection,
                 container_port=request.container_port,
                 start_command=request.start_command,
             )
-            (dockerfile_dir / dockerfile_name).write_text(rendered, encoding="utf-8")
+            await asyncio.to_thread(_write_dockerfile, dockerfile_dir, dockerfile_name, rendered)
             await _log(store, request, f"detected {detection.language}; generated Dockerfile")
             await _log(store, request, rendered)
 
@@ -114,6 +113,11 @@ async def build_image(
     finally:
         # Clones accumulate. Clean up on success, failure, and exception alike.
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _write_dockerfile(directory: Path, name: str, contents: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_text(contents, encoding="utf-8")
 
 
 # ------------------------------------------------------------------ git
@@ -171,7 +175,7 @@ async def _clone_at_sha(
     `git clone` cannot check out an arbitrary SHA, and a full clone of a large
     repo on every push is wasted bandwidth, so this is init + fetch --depth 1.
     """
-    repo_dir.mkdir(parents=True)
+    await asyncio.to_thread(repo_dir.mkdir, parents=True)
     remote = _authed_remote(request.source_repo, settings)
     steps = [
         ["git", "init", "--quiet", str(repo_dir)],
@@ -248,7 +252,15 @@ async def _buildctl(
 # ------------------------------------------------------------------ subprocess
 
 
-async def _run(command: list[str], *, timeout: int, settings: Settings) -> tuple[int, str]:
+# ASYNC109: the timeout is a subprocess kill deadline, not a cancellation scope
+# the caller should own — a half-killed git or buildctl process is worse than a
+# late one. asyncio.wait_for is used internally to enforce it.
+async def _run(
+    command: list[str],
+    *,
+    timeout: int,  # noqa: ASYNC109
+    settings: Settings,
+) -> tuple[int, str]:
     """Run to completion, capturing merged output. For short commands only."""
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -270,7 +282,7 @@ async def _stream(
     store: BuildLogStore,
     settings: Settings,
     *,
-    timeout: int,
+    timeout: int,  # noqa: ASYNC109 — see _run
 ) -> int:
     """Run, streaming output into the build log line by line as it arrives.
 
