@@ -49,9 +49,8 @@ The following were exercised against the local running stack on 2026-07-24:
   `webhook-e2e`. Only the intended `api` and `pyapi` production services
   remain. The temporary GitHub webhook was also removed.
 
-The temporary GitHub repository is pending deletion only because the local
-GitHub CLI token needs the `delete_repo` scope. It is not a product
-requirement and has no remaining active webhook.
+The temporary GitHub repository and webhook were deleted after validation. They
+are not product requirements.
 
 ## Automated validation
 
@@ -93,3 +92,71 @@ Test deployments and the one-time Cloudflare quick tunnel were intentionally
 removed after acceptance testing. To repeat GitHub webhook testing, create a
 new disposable repository, use a temporary public tunnel, configure the
 existing webhook secret, and delete both artifacts afterwards.
+
+## Phase 2 handoff — multi-host scheduling
+
+Phase 1 is deliberately single-host. Phase 2 must replace the control-plane's
+local-agent assumption with a registered-node model while preserving Phase 1's
+safe rollout, deployment history, and routing behaviour.
+
+### Prerequisites
+
+- At least two Linux hosts with root or Docker-admin access, reachable from the
+  control plane. macOS is not a supported node-agent host.
+- SSH access, stable hostnames/IPs, and a shared network plan for control
+  plane-to-agent calls and service routing.
+- An explicit split-brain policy approved in an ADR: whether a node deemed
+  unreachable may be rescheduled before it is conclusively dead. Stateless
+  workloads may accept duplicate execution; stateful workloads must not.
+
+### Build in this order
+
+1. **Node registration and heartbeat** — add a `Node` model and API; agents
+   register at boot and heartbeat every 5 seconds with capacity and observed
+   containers. Mark a node `unreachable` after 30 seconds without a heartbeat.
+2. **Idempotent agent API** — expose authenticated create, remove, and list
+   container operations. Repeating a request with the same intent/container ID
+   must not create a duplicate container.
+3. **Transactional scheduler** — filter healthy nodes with enough resources,
+   then place onto the lowest allocated-memory ratio. Lock the selected `Node`
+   row during the capacity update and `Instance` insert to prevent
+   double-booking under concurrent deploys.
+4. **Reconciler** — every 10 seconds compare desired instances from live
+   deployments with agent-reported actual state. It should create missing
+   instances, remove orphans, and do nothing on a second identical pass.
+5. **Failure and return handling** — reschedule instances from unreachable
+   nodes; when a node returns, stop containers that no longer correspond to a
+   desired intent rather than treating them as live state.
+6. **UI and CLI** — show node health/capacity and instance-to-node placement;
+   add CLI inspection commands for nodes and instances.
+
+### Non-negotiable invariants
+
+- Agents execute placement instructions; they never decide placement.
+- Capacity accounting and instance creation occur in one database transaction.
+- Reconciler actions are tied to an intent/generation so delayed heartbeats do
+  not cause repeated create/stop oscillation.
+- The reconciler never issues commands to unreachable nodes.
+- Node loss does not delete historical records. A returning node can be
+  reconciled safely.
+- Multi-host routing must not expose a replacement until the instance is
+  healthy, retaining Phase 1's old-live-on-failure guarantee.
+
+### Required tests and acceptance evidence
+
+- Concurrent placement against capacity for exactly one instance: exactly one
+  request succeeds, with no over-allocation.
+- Stale heartbeat/report scenarios: the reconciler converges without thrash.
+- Two identical reconciliation passes: the second issues zero agent commands.
+- Two nodes register and report capacity; a second workload chooses the less
+  loaded node.
+- Stop one node agent and verify its instances reschedule within 60 seconds.
+- Restore that node and verify obsolete/orphaned containers are removed with no
+  duplicate live instances.
+- Let the reconciler run for 10 minutes without changes and verify zero
+  container create/remove calls.
+- Record the split-brain policy, live-test results, and automated-test results
+  in a Phase 2 checkpoint before declaring the phase complete.
+
+See [Phase 2 — Multi-host](../PHASE-2-multi-host.md) for the full target plan
+and failure-mode notes.
