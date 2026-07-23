@@ -1,0 +1,89 @@
+/* Rudder design tokens — D5.
+ *
+ * Source: docs/DESIGN-supabase.md. Adopted: the radius scale, spacing scale,
+ * type scale, and the single-emerald-accent rule. Rejected: the white-canvas
+ * mandate. Rudder is a dark, dense operator console with a React Flow canvas,
+ * so app-shell surfaces invert to canvas-night and the grey ladder runs the
+ * other way.
+ *
+ * Added beyond the source doc: status colors. An operator console has to say
+ * building / live / failed / draining at a glance. The source doc's "no extra
+ * system colors" rule is about decoration; these are semantic and used only on
+ * status indicators. See docs/decisions/0001-phase-1-decisions.md.
+ */
+
+:root {
+  /* --- Accent. The only chromatic event outside status. --- */
+  --rd-accent: #3ecf8e;
+  --rd-accent-deep: #24b47e; /* pressed */
+  --rd-accent-soft: #4ade80; /* charts, sparklines */
+  --rd-on-accent: #171717; /* near-black on green, never white */
+
+  /* --- Surfaces, inverted from the source doc. --- */
+  --rd-surface: #1c1c1c; /* app shell, canvas background */
+  --rd-surface-soft: #202020; /* panels, nested chrome */
+  --rd-surface-raised: #242424; /* nodes, cards, popovers */
+  --rd-surface-inset: #171717; /* code blocks, log streams */
+
+  /* --- Hairlines, dark ladder. --- */
+  --rd-hairline: #2e2e2e;
+  --rd-hairline-strong: #3a3a3a;
+  --rd-hairline-faint: #262626;
+
+  /* --- Text. --- */
+  --rd-text: #ededed;
+  --rd-text-secondary: #b2b2b2;
+  --rd-text-mute: #9a9a9a;
+  --rd-text-faint: #707070; /* disabled, placeholder */
+
+  /* --- Status. Semantic only. --- */
+  --rd-status-live: #3ecf8e;
+  --rd-status-building: #ffdb13;
+  --rd-status-failed: #ff2201;
+  --rd-status-draining: #9a9a9a;
+  --rd-status-unknown: #707070;
+
+  /* --- Radius. Unchanged from source. --- */
+  --rd-radius-xs: 4px;
+  --rd-radius-sm: 6px; /* buttons — square-ish, never pill */
+  --rd-radius-md: 8px;
+  --rd-radius-lg: 12px;
+  --rd-radius-xl: 16px;
+  --rd-radius-full: 9999px;
+
+  /* --- Spacing. Unchanged from source. 8px base. --- */
+  --rd-space-xxs: 2px;
+  --rd-space-xs: 4px;
+  --rd-space-sm: 8px;
+  --rd-space-md: 12px;
+  --rd-space-lg: 16px;
+  --rd-space-xl: 24px;
+  --rd-space-xxl: 32px;
+  --rd-space-huge: 64px;
+
+  /* --- Type. Circular is proprietary; Inter is the substitute the doc names. --- */
+  --rd-font-sans: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --rd-font-mono: ui-monospace, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --rd-text-display-lg: 36px; /* -0.72px tracking */
+  --rd-text-display-md: 28px; /* -0.42px tracking */
+  --rd-text-heading-lg: 22px;
+  --rd-text-heading-md: 18px;
+  --rd-text-body: 16px;
+  --rd-text-button: 14px;
+  --rd-text-code: 14px;
+  --rd-text-caption: 13px;
+  --rd-text-micro: 12px;
+
+  --rd-weight-display: 500; /* never above 500 */
+  --rd-weight-body: 400;
+
+  /* Console density: the 64-96px marketing section padding does not transfer. */
+  --rd-panel-padding: var(--rd-space-lg);
+  --rd-card-padding: var(--rd-space-lg);
+
+  /* --- Elevation, retuned for a dark shell. --- */
+  --rd-elev-1: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --rd-elev-2: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --rd-elev-3: 0 16px 48px rgba(0, 0, 0, 0.6);
+}

@@ -1,0 +1,118 @@
+name: rudder
+
+# Dev stack. `docker compose -f docker-compose.dev.yml up -d` + `alembic upgrade head`
+# is the entire setup, per the Definition of Done.
+#
+# One-time host prerequisite (D7): the host Docker daemon must trust the local
+# registry. Docker Desktop -> Settings -> Docker Engine:
+#     {"insecure-registries": ["localhost:5000"]}
+# Without it every pull fails with "server gave HTTP response to HTTPS client".
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rudder}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rudder}
+      POSTGRES_DB: ${POSTGRES_DB:-rudder}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rudder}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [rudder]
+
+  registry:
+    image: registry:2
+    # Published on the host so the host Docker daemon can pull `localhost:5000/...`.
+    ports:
+      - "5000:5000"
+      - "1234:1234" # buildkitd shares this network namespace, see below
+    volumes:
+      - registrydata:/var/lib/registry
+    networks: [rudder]
+
+  buildkitd:
+    image: moby/buildkit:rootless
+    # network_mode: service:registry is deliberate. BuildKit pushes the image and
+    # the host Docker daemon pulls it, and both must agree on the *same* tag
+    # string. Sharing the registry's network namespace makes `localhost:5000`
+    # mean the registry inside buildkitd too, so one tag works on both sides.
+    # Consequence: the control plane reaches buildkitd at tcp://registry:1234.
+    network_mode: "service:registry"
+    depends_on: [registry]
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    command:
+      - --addr
+      - tcp://0.0.0.0:1234
+      - --oci-worker-no-process-sandbox
+    volumes:
+      - buildkitdata:/home/user/.local/share/buildkit
+
+  traefik:
+    image: traefik:v3.1
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    ports:
+      - "80:80"
+      - "8080:8080" # dashboard, dev only
+    volumes:
+      - ./infra/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./infra/traefik/dynamic:/etc/traefik/dynamic
+    networks: [rudder]
+
+  control-plane:
+    build:
+      context: ./control-plane
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: [.env]
+    environment:
+      RUDDER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rudder}:${POSTGRES_PASSWORD:-rudder}@postgres:5432/${POSTGRES_DB:-rudder}
+      RUDDER_BUILDKIT_ADDR: tcp://registry:1234
+      RUDDER_AGENT_URL: http://agent:9000
+      RUDDER_TRAEFIK_DYNAMIC_DIR: /traefik/dynamic
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./control-plane:/app
+      - ./infra/traefik/dynamic:/traefik/dynamic
+      - buildlogs:/var/log/rudder/builds
+    command: uvicorn rudder_cp.main:app --host 0.0.0.0 --port 8000 --reload
+    networks: [rudder]
+
+  agent:
+    # D3(b): the node agent is real from Phase 1, running against the local
+    # Docker daemon. Phase 2 changes where it runs, not what it is.
+    build:
+      context: ./agent
+    env_file: [.env]
+    environment:
+      RUDDER_AGENT_BIND: 0.0.0.0
+      RUDDER_AGENT_PORT: "9000"
+      RUDDER_DOCKER_NETWORK: rudder
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./agent:/app
+    ports:
+      - "9000:9000"
+    networks: [rudder]
+
+networks:
+  rudder:
+    # Explicit name so deployed containers can be attached by a stable network
+    # name. Traefik must sit on this network or it cannot reach them.
+    name: rudder
+
+volumes:
+  pgdata:
+  registrydata:
+  buildkitdata:
+  buildlogs:
