@@ -70,6 +70,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    # uvicorn configures only its own loggers, so without this every worker,
+    # deploy, and reconciliation line is silently discarded.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
+    )
+
     settings = get_settings()
     app = FastAPI(title="Rudder Control Plane", version="0.1.0", lifespan=lifespan)
 

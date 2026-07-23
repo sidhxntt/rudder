@@ -8,8 +8,12 @@ RUN apt-get update \
 # TARGETARCH is set by BuildKit; default covers a plain `docker build`.
 ARG TARGETARCH=arm64
 ARG BUILDKIT_VERSION=0.16.0
+# No --strip-components: the tarball already contains bin/buildctl, so stripping
+# the leading component lands the binary in /usr/local/ instead of /usr/local/bin/,
+# where it is not on PATH.
 RUN curl -fsSL "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-${TARGETARCH}.tar.gz" \
-    | tar -xz -C /usr/local --strip-components=1 bin/buildctl
+    | tar -xz -C /usr/local bin/buildctl \
+    && buildctl --version
 
 WORKDIR /app
 COPY . .

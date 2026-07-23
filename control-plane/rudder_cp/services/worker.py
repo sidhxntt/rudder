@@ -17,6 +17,7 @@ from rudder_cp.logs.store import BuildLogStore
 from rudder_cp.models import Deployment, DeploymentStatus
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.deploy import run_deployment
+from rudder_cp.services.monitor import reconcile_instances
 
 log = logging.getLogger("rudder_cp.worker")
 
@@ -72,4 +73,10 @@ async def tick(
                 settings=settings,
             )
             log.info("deployment %s -> %s (%s)", deployment_id, outcome.status, outcome.detail)
+
+    # Runs every tick, deploys or not. A container that dies on its own is the
+    # only way the database and the node disagree without anyone asking.
+    with Session(engine) as session:
+        await reconcile_instances(session, agent, settings)
+
     return len(ids)

@@ -586,12 +586,20 @@ Called on: deploy success, domain create/delete, instance state change.
 defaults ([ADR 0001](decisions/0001-phase-1-decisions.md)); the project is named
 Rudder, not Helm ([ADR 0002](decisions/0002-project-name-rudder.md)).
 
+The Phase 1 `## Verify` script has been run against live Postgres, BuildKit, a
+local registry, Docker, and Traefik. A Node repo and a Python repo both deploy
+from a git SHA to a serving URL. Failed builds, concurrent deploys, rolling
+drain, and `docker kill` reconciliation all behave as specified — see the table
+in `README.md` → Status.
+
 Remaining in Phase 1: step 9 (Python SDK + CLI, not started) and step 10 (canvas
 UI — written, but never compiled, because `npm` is blocked in this environment).
 
-Nothing has been verified against a live Docker daemon, Postgres, or Traefik.
-271 tests pass against SQLite and injected fakes, which is not the same claim.
-The Phase 1 `## Verify` section is the gate that has not been run.
+One addition to the phase as written: `services/monitor.py`. Phase 1's own
+"done when" requires that killing a container be reflected, and nothing else in
+Phase 1 observes actual state — the reconciler is Phase 2. The monitor observes
+and records only; it never schedules, never restarts, and holds off on instances
+the deploy path currently owns.
 
 Still needed from you before step 5 — see [`NEED-FROM-YOU.md`](NEED-FROM-YOU.md):
 `GITHUB_TOKEN` in `.env` (or confirmation that all repos are public), the

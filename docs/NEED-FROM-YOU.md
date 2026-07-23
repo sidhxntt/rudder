@@ -87,7 +87,16 @@ GitHub cannot reach `localhost`. Pick one:
 You install and authenticate it; I cannot. Tell me which and I will wire the
 webhook registration around it.
 
-### 7. One-time Docker daemon change
+### 7. One-time Docker daemon change — NOT NEEDED on Docker 29
+
+Verified 2026-07-23 on Docker 29.6.1: `127.0.0.0/8` is already in the daemon's
+insecure-registry CIDRs by default, so `localhost:5000` works with no change.
+A full build/push/pull cycle succeeded without touching Docker Engine settings.
+
+Still required on older daemons, or if you move the registry off localhost.
+Original instructions below.
+
+
 
 The local registry runs insecure (no TLS). Your Docker daemon must be told to
 trust it:

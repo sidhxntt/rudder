@@ -26,18 +26,6 @@ docs/                      PRD, phase plans, ADRs, design tokens
 
 ## Setup
 
-One-time host prerequisite — the local registry runs without TLS, so the Docker
-daemon must be told to trust it. Docker Desktop → Settings → Docker Engine:
-
-```json
-{ "insecure-registries": ["localhost:5000"] }
-```
-
-Apply & Restart. Skipping this makes every image pull fail with
-`server gave HTTP response to HTTPS client`, which looks unrelated to the real cause.
-
-Then:
-
 ```bash
 cp .env.example .env
 # fill in RUDDER_SECRET_KEYS, RUDDER_JWT_SECRET, RUDDER_ADMIN_*
@@ -45,8 +33,17 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 openssl rand -hex 32
 
 docker compose -f docker-compose.dev.yml up -d
-docker compose -f docker-compose.dev.yml exec control-plane alembic upgrade head
+# Migrate with `run`, not `exec`: the control plane cannot start against an
+# empty database, so on a cold start there is no container to exec into.
+docker compose -f docker-compose.dev.yml run --rm control-plane alembic upgrade head
+docker compose -f docker-compose.dev.yml restart control-plane
 ```
+
+On Docker 29 the local registry needs no daemon change — `127.0.0.0/8` is
+already trusted as insecure by default. On older daemons, add
+`{"insecure-registries": ["localhost:5000"]}` under Docker Desktop → Settings →
+Docker Engine, or every pull fails with `server gave HTTP response to HTTPS
+client`, which looks unrelated to the real cause.
 
 Check it:
 
@@ -59,30 +56,34 @@ open http://localhost:8080      # Traefik dashboard (dev only)
 
 ## Status
 
-Phase 1, steps 1–8 are written. Steps 9 (SDK + CLI) and 10 (canvas UI, written
-but unverified) remain. See
-[`docs/phases/PHASE-1-single-host.md`](docs/phases/PHASE-1-single-host.md).
+**Phase 1 works end to end on real infrastructure.** A push-to-URL deploy was
+run against live Postgres, BuildKit, a local registry, Docker, and Traefik on
+2026-07-23. Steps 9 (SDK + CLI) and 10 (canvas UI, written but never compiled)
+remain. See [`docs/phases/PHASE-1-single-host.md`](docs/phases/PHASE-1-single-host.md).
 
-| Piece | State |
+Verified on the live stack, not with fakes:
+
+| Check | Result |
 |---|---|
-| Data model + migration | 271 tests green; migration verified against SQLite, `alembic check` reports no drift |
-| Auth, CRUD, variables, domains | done, tested |
-| Build pipeline, deploy path, Traefik rendering | done, tested against fakes |
-| Node agent | done, tested against a fake Docker client |
-| Canvas UI | written, **never compiled** — `npm` is blocked in this environment |
-| Python SDK + CLI | not started |
+| Node repo deploys and serves | `api.production.localhost` → HTTP 200 |
+| Python repo deploys and serves | `pyapi.production.localhost` → HTTP 200 |
+| Migration against real Postgres | applies; `alembic check` reports no drift |
+| Enum storage | `queued,building,deploying,live,failed,superseded` — values, not names |
+| Failed build | old container keeps serving, HTTP 200 throughout, readable `error_message` |
+| Two deploys 1s apart | exactly one `live` deployment, newest wins, loser superseded |
+| Rolling deploy | old container drained and removed after traffic shifted |
+| `docker kill` a container | reconciled to `stopped` within a tick; route drops to an empty backend → 503 |
+| Containers publish no host ports | `3000/tcp`, unmapped; Traefik reaches them over the shared network |
 
-**Nothing has run against a live Docker daemon, Postgres, or Traefik yet.** The
-test suites use SQLite and injected fakes. The first real `docker compose up` is
-the next verification gate, and the Phase 1 `## Verify` section is the script for
-it.
-
-Run the suites:
+Test suites (SQLite + injected fakes):
 
 ```bash
-cd control-plane && pytest -q     # 221
+cd control-plane && pytest -q     # 227
 cd agent && pytest -q             #  50
 ```
+
+Not verified: the `web/` tree has never been compiled — `npm` is blocked in this
+environment, so its dependencies were never installed.
 
 ## Notes on the dev stack
 
