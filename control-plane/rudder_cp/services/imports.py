@@ -21,6 +21,7 @@ from rudder_cp.models import (
     Domain,
     Environment,
     GitHubImport,
+    GitHubImportService,
     Service,
     ServiceKind,
     Variable,
@@ -209,6 +210,23 @@ async def provision_import(
         redis_service_id=redis.id if redis else None,
     )
     session.add(record)
+    session.flush()
+    for service_id, compose_service, role, is_public in (
+        (app.id, public_service.name, public_service.role, True),
+        (postgres.id if postgres else None, "postgres", "database", False),
+        (redis.id if redis else None, "redis", "cache", False),
+    ):
+        if service_id is None:
+            continue
+        session.add(
+            GitHubImportService(
+                github_import_id=record.id,
+                service_id=service_id,
+                compose_service=compose_service,
+                role=role,
+                is_public=is_public,
+            )
+        )
     session.commit()
     session.refresh(record)
 

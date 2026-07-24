@@ -11,6 +11,7 @@ from rudder_cp.models import (
     Deployment,
     Domain,
     GitHubImport,
+    GitHubImportService,
     Service,
     User,
     Variable,
@@ -85,6 +86,18 @@ async def test_confirmed_import_provisions_private_addons_before_the_app(session
         "Postgres",
         "Redis",
         "Application",
+    ]
+    graph = list(
+        session.exec(
+            select(GitHubImportService)
+            .where(GitHubImportService.github_import_id == result.import_id)
+            .order_by(GitHubImportService.compose_service)
+        ).all()
+    )
+    assert [(row.compose_service, row.role, row.is_public) for row in graph] == [
+        ("app", "web", True),
+        ("postgres", "database", False),
+        ("redis", "cache", False),
     ]
 
 

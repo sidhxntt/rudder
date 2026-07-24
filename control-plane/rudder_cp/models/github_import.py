@@ -39,3 +39,25 @@ class GitHubImport(SQLModel, table=True):
         default=None, foreign_key="service.id", sa_type=sa.Uuid
     )
     created_at: datetime = created_at_column()
+
+
+class GitHubImportService(SQLModel, table=True):
+    """Maps one Rudder service to a service in its immutable Compose release."""
+
+    __tablename__ = "github_import_service"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "github_import_id", "compose_service", name="uq_import_compose_service"
+        ),
+        sa.UniqueConstraint("service_id", name="uq_import_service"),
+    )
+
+    id: uuid.UUID = uuid_pk()
+    github_import_id: uuid.UUID = Field(
+        foreign_key="github_import.id", sa_type=sa.Uuid, nullable=False, index=True
+    )
+    service_id: uuid.UUID = Field(foreign_key="service.id", sa_type=sa.Uuid, nullable=False)
+    compose_service: str = Field(sa_column=sa.Column(sa.String(63), nullable=False))
+    role: str = Field(sa_column=sa.Column(sa.String(32), nullable=False))
+    is_public: bool = Field(default=False, nullable=False)
+    created_at: datetime = created_at_column()
