@@ -28,6 +28,13 @@ class FakeGitHub:
         assert (installation_id, repository, branch) == (42, "acme/store-api", "main")
         return {"dependencies": {"express": "1", "pg": "1", "redis": "1"}}
 
+    async def file_at_ref(
+        self, installation_id: int, repository: str, branch: str, path: str
+    ) -> str | None:
+        assert (installation_id, repository, branch) == (42, "acme/store-api", "main")
+        assert path in {"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
+        return None
+
 
 def test_github_import_status_reports_setup_required_when_app_is_unconfigured(
     monkeypatch,

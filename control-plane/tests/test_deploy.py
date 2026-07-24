@@ -23,6 +23,7 @@ from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
     Environment,
+    GitHubImport,
     Instance,
     InstanceStatus,
     Project,
@@ -31,7 +32,13 @@ from rudder_cp.models import (
     Volume,
 )
 from rudder_cp.services import locks
-from rudder_cp.services.agent_client import AgentError, ContainerState, ProbeResult
+from rudder_cp.services.agent_client import (
+    AgentError,
+    ComposeResult,
+    ComposeServiceState,
+    ContainerState,
+    ProbeResult,
+)
 from rudder_cp.services.builder import BuildFailed, BuildResult
 from rudder_cp.services.deploy import run_deployment
 
@@ -93,12 +100,21 @@ def service(engine) -> Service:
 class FakeAgent:
     """Stands in for the node agent. Records what the deploy path asked for."""
 
-    def __init__(self, *, healthy: bool = True, alive_after_health: bool = True):
+    def __init__(
+        self,
+        *,
+        healthy: bool = True,
+        alive_after_health: bool = True,
+        compose_fails: bool = False,
+    ):
         self.healthy = healthy
         self.alive_after_health = alive_after_health
         self.created: list[str] = []
         self.removed: list[str] = []
         self._probe_count = 0
+        self.compose_fails = compose_fails
+        self.compose_projects: list[str] = []
+        self.compose_down_projects: list[str] = []
 
     async def create_container(self, *, image, name, env, container_port, **_kw) -> ContainerState:
         self.created.append(name)
@@ -124,6 +140,28 @@ class FakeAgent:
 
     async def remove(self, container_id: str, *, drain_seconds: float) -> None:
         self.removed.append(container_id)
+
+    async def compose_up(self, *, project_name: str, manifest: str) -> ComposeResult:
+        if self.compose_fails:
+            raise AgentError("compose_error: application exited")
+        self.compose_projects.append(project_name)
+        self.last_compose_manifest = manifest
+        return ComposeResult(project_name=project_name, log="Container app Started\n")
+
+    async def compose_ps(self, *, project_name: str) -> list[ComposeServiceState]:
+        return [
+            ComposeServiceState(
+                service="app",
+                container_id=f"compose-{project_name}",
+                status="running",
+                health="healthy",
+                exit_code=None,
+            )
+        ]
+
+    async def compose_down(self, *, project_name: str) -> ComposeResult:
+        self.compose_down_projects.append(project_name)
+        return ComposeResult(project_name=project_name, log="Container app Removed\n")
 
 
 @dataclass
@@ -234,6 +272,48 @@ async def test_failed_deploy_leaves_previous_version_serving(engine, service, se
         ).all()
         assert len(healthy) == 1
         assert healthy[0].deployment_id == first.deployment_id
+
+
+async def test_imported_compose_failure_keeps_the_previous_release_live(
+    engine, service, settings
+):
+    """Candidate Compose projects are isolated until their app is healthy."""
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        session.add(app)
+        session.add(
+            GitHubImport(
+                installation_id=7,
+                repository="acme/shop-api",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services:\n  app:\n    build: .\n    expose: ['8080']\n",
+                compose_project_name="rudder-compose-test",
+                project_id=environment.project_id,
+                app_service_id=app.id,
+            )
+        )
+        session.commit()
+
+    first_agent = FakeAgent()
+    first = await _run(engine, _queue(engine, service.id), first_agent, settings, _ok_builder)
+    failed = await _run(
+        engine, _queue(engine, service.id), FakeAgent(compose_fails=True), settings, _ok_builder
+    )
+
+    assert first.status is DeploymentStatus.LIVE
+    assert failed.status is DeploymentStatus.FAILED
+    assert first_agent.compose_projects
+    with Session(engine) as session:
+        assert session.get(Deployment, first.deployment_id).status is DeploymentStatus.LIVE
+        healthy = session.exec(
+            select(Instance).where(Instance.deployment_id == first.deployment_id)
+        ).one()
+        assert healthy.status is InstanceStatus.HEALTHY
 
 
 async def test_unhealthy_container_is_removed_and_deploy_fails(engine, service, settings):

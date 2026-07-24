@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 
 from rudder_cp.db import get_session
 from rudder_cp.models import Environment, GitHubImport
+from rudder_cp.services.compose import ComposeValidationError, resolve_compose_plan
 from rudder_cp.services.github_app import GitHubAppError
 from rudder_cp.services.imports import (
     detect_node_addons,
@@ -166,6 +167,13 @@ async def confirm_github_import(
             payload.installation_id, payload.repository, payload.branch
         )
         proposal = detect_node_addons(package_json, existing_variable_keys=set())
+        compose_plan = await resolve_compose_plan(
+            request.app.state.github,
+            installation_id=payload.installation_id,
+            repository=payload.repository,
+            branch=payload.branch,
+            selected_addons=set(payload.addons),
+        )
         created = await provision_import(
             session,
             installation_id=payload.installation_id,
@@ -173,10 +181,11 @@ async def confirm_github_import(
             branch=payload.branch,
             selected_addons=set(payload.addons),
             proposal=proposal,
+            compose_plan=compose_plan,
         )
     except GitHubAppError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (ComposeValidationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return GitHubImportConfirm(
         import_id=created.import_id,

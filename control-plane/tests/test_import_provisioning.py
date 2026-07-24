@@ -9,7 +9,6 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from rudder_cp.config import get_settings
 from rudder_cp.models import (
     Deployment,
-    DeploymentStatus,
     Domain,
     GitHubImport,
     Service,
@@ -74,9 +73,7 @@ async def test_confirmed_import_provisions_private_addons_before_the_app(session
     }
 
     deployments = list(session.exec(select(Deployment).order_by(Deployment.created_at)).all())
-    assert [deployment.service_id for deployment in deployments] == [
-        service.id for service in services
-    ]
+    assert [deployment.service_id for deployment in deployments] == [result.app_service_id]
 
     record = session.get(GitHubImport, result.import_id)
     assert record is not None
@@ -145,23 +142,4 @@ async def test_imported_app_waits_for_addons_and_stops_after_an_addon_failure(
             externally_managed=(),
         ),
     )
-    deployments = list(session.exec(select(Deployment).order_by(Deployment.created_at)).all())
-    postgres, redis, _app = deployments
-
-    postgres.status = DeploymentStatus.FAILED
-    session.add(postgres)
-    session.commit()
-    assert app_dependency_state(session, result.app_service_id) == (
-        "failed",
-        "Postgres did not become live; application deployment was not started.",
-    )
-
-    postgres.status = DeploymentStatus.LIVE
-    session.add(postgres)
-    session.commit()
-    assert app_dependency_state(session, result.app_service_id) == ("waiting", None)
-
-    redis.status = DeploymentStatus.LIVE
-    session.add(redis)
-    session.commit()
     assert app_dependency_state(session, result.app_service_id) == ("ready", None)

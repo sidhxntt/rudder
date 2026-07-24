@@ -29,7 +29,7 @@ from rudder_cp.models import (
 from rudder_cp.schemas.project import ProjectCreate
 from rudder_cp.schemas.service import ServiceCreate
 from rudder_cp.services import projects, services, variables
-from rudder_cp.services.compose import generated_compose_plan
+from rudder_cp.services.compose import ComposePlan, generated_compose_plan
 from rudder_cp.services.naming import system_hostname
 from rudder_cp.services.variables import encrypt_value, is_reference
 
@@ -131,6 +131,7 @@ async def provision_import(
     branch: str,
     selected_addons: set[str],
     proposal: AddonProposal,
+    compose_plan: ComposePlan | None = None,
 ) -> ConfirmedImport:
     """Create an app graph, wire private dependencies, then queue it in order.
 
@@ -142,8 +143,16 @@ async def provision_import(
     unproposed = selected_addons - set(proposal.addons)
     if unsupported or unproposed:
         raise ValueError("Selected add-ons must be a subset of the detected add-ons.")
-    if not proposal.is_node_app:
+    plan = compose_plan or generated_compose_plan(selected_addons)
+    if not proposal.is_node_app and plan.source != "repository":
         raise ValueError("Only Node.js repositories can be imported in Phase 1.")
+    if plan.source == "repository" and selected_addons:
+        raise ValueError("Repository Compose files define their own dependencies.")
+
+    public_services = [service for service in plan.services.values() if service.public_port]
+    if len(public_services) != 1:
+        raise ValueError("A Compose import must declare exactly one public application service.")
+    public_service = public_services[0]
 
     project = await projects.create_project(
         session, ProjectCreate(name=_project_name(repository))
@@ -168,8 +177,9 @@ async def provision_import(
             name=_available_app_name(session, repository),
             source_repo=repository,
             source_branch=branch,
-            container_port=3000,
-            health_check_port=3000,
+            build_config={"compose_service": public_service.name},
+            container_port=public_service.public_port or 3000,
+            health_check_port=public_service.public_port or 3000,
             canvas_x=360,
         ),
     )
@@ -185,8 +195,8 @@ async def provision_import(
         installation_id=installation_id,
         repository=repository,
         branch=branch,
-        compose_source="generated",
-        compose_manifest=generated_compose_plan(selected_addons).yaml,
+        compose_source=plan.source,
+        compose_manifest=plan.yaml,
         compose_project_name=compose_project_name(project.id),
         project_id=project.id,
         app_service_id=app.id,
@@ -197,13 +207,10 @@ async def provision_import(
     session.commit()
     session.refresh(record)
 
-    # The single worker processes queued rows oldest-first. Persisting them in
-    # this order lets Postgres and Redis become healthy before the app starts.
-    for service in (postgres, redis, app):
-        if service is None:
-            continue
-        session.add(Deployment(service_id=service.id, status=DeploymentStatus.QUEUED))
-        session.commit()
+    # One imported application deployment starts the whole Compose project.
+    # Add-ons are private Compose services, not separately deployed containers.
+    session.add(Deployment(service_id=app.id, status=DeploymentStatus.QUEUED))
+    session.commit()
 
     return ConfirmedImport(
         import_id=record.id,
@@ -254,28 +261,10 @@ def app_dependency_state(session: Session, app_service_id: uuid.UUID) -> tuple[s
     ).first()
     if record is None:
         return "ready", None
-
-    dependencies = (
-        ("Postgres", record.postgres_service_id),
-        ("Redis", record.redis_service_id),
-    )
-    for label, service_id in dependencies:
-        if service_id is None:
-            continue
-        deployment = session.exec(
-            select(Deployment)
-            .where(Deployment.service_id == service_id)
-            .order_by(Deployment.created_at.desc())  # type: ignore[attr-defined]
-        ).first()
-        if deployment is None or deployment.status in {
-            DeploymentStatus.QUEUED,
-            DeploymentStatus.BUILDING,
-            DeploymentStatus.DEPLOYING,
-        }:
-            return "waiting", None
-        if deployment.status is not DeploymentStatus.LIVE:
-            return "failed", f"{label} did not become live; application deployment was not started."
+    # GitHub imports deploy their add-ons as one Compose release. The app must
+    # therefore not wait for legacy per-container deployment rows.
     return "ready", None
+
 
 
 def _managed_postgres(session: Session, environment_id: uuid.UUID) -> Service:
