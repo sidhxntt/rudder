@@ -36,7 +36,13 @@ function Step({ step }: { step: GitHubImportStep }) {
   );
 }
 
-export function GitHubImportDialog() {
+export function GitHubImportDialog({
+  triggerClassName = "rounded-md border border-ink-faint/40 bg-surface-raised px-3 py-2 text-caption text-ink hover:border-accent hover:text-accent",
+  triggerLabel = "Import from GitHub",
+}: {
+  triggerClassName?: string;
+  triggerLabel?: string;
+}) {
   const router = useRouter();
   const search = useSearchParams();
   const [open, setOpen] = useState(false);
@@ -140,10 +146,10 @@ export function GitHubImportDialog() {
   return (
     <>
       <button
-        className="rounded-md border border-ink-faint/40 bg-surface-raised px-3 py-2 text-caption text-ink hover:border-accent hover:text-accent"
+        className={triggerClassName}
         onClick={() => setOpen(true)}
       >
-        Import from GitHub
+        {triggerLabel}
       </button>
       {open ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-surface/80 p-4 backdrop-blur-sm sm:p-6">
