@@ -313,13 +313,20 @@ this document wins.
 |---|---|---|---|
 | 1 | [Single-host deploy](phases/PHASE-1-single-host.md) | 3-4 wk | Push to GitHub, container comes up, public URL serves it |
 | 2 | [Multi-host](phases/PHASE-2-multi-host.md) | 3-4 wk | Two nodes, service lands on the less loaded one, node dies, service reschedules |
+| 2.5 | [Kubernetes runtime](phases/PHASE-2.5-kubernetes-runtime.md) | 3-5 wk | Imported Compose app deploys in an isolated namespace; failed revisions roll back |
 | 3 | [WireGuard mesh](phases/PHASE-3-mesh.md) | 2-3 wk | App reaches Postgres by hostname, DB has no public port |
 | 4 | [Environments](phases/PHASE-4-environments.md) | 2 wk | Clone production to staging, everything rewires |
 | 5 | [Operations](phases/PHASE-5-operations.md) | 2-3 wk | Volumes, DB templates, logs, metrics, instant rollback |
 | 5.5 | [Frontends](phases/PHASE-5.5-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
 | 6 | [Deploy advisor](phases/PHASE-6-advisor.md) | 1-2 wk | Point at a repo, get a proposed service graph as ghost nodes |
 
-Total: 14-19 weeks.
+Total: 17-24 weeks on the Kubernetes production track.
+
+**Production runtime track.** Phase 2.5 follows the verified Phase 2
+control-plane semantics and introduces Kubernetes as a runtime adapter. For
+that track, Kubernetes Services, namespaces, and NetworkPolicies replace the
+Docker-host networking portion of Phase 3. Phase 3 remains the path for a
+multi-Docker-host runtime.
 
 **Do not start a phase until the previous one is verified working end to end.**
 Each phase is demoable. "It compiles" and "the happy path worked once" are not

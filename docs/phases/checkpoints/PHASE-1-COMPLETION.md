@@ -160,3 +160,11 @@ safe rollout, deployment history, and routing behaviour.
 
 See [Phase 2 — Multi-host](../PHASE-2-multi-host.md) for the full target plan
 and failure-mode notes.
+
+## Production runtime path
+
+After Phase 2 is verified, the production deployment track continues with
+[Phase 2.5 — Kubernetes runtime](../PHASE-2.5-kubernetes-runtime.md). It maps
+the existing Rudder service graph and rollout guarantees to isolated Kubernetes
+namespaces. On that track, Kubernetes networking replaces the WireGuard mesh
+work in Phase 3; Phase 3 remains applicable to the multi-Docker-host runtime.
