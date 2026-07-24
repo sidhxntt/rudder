@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # D2 — one token for the whole install, no per-repo model in Phase 1.
     github_token: str = ""
     github_webhook_secret: str = ""
+    github_app_id: str = ""
+    github_app_slug: str = ""
+    github_app_private_key: str = ""
+
+    @property
+    def github_app_configured(self) -> bool:
+        return bool(self.github_app_id and self.github_app_slug and self.github_app_private_key)
 
     # D8 — ACME cannot do HTTP-01 against localhost.
     tls_mode: Literal["off", "acme"] = "off"

@@ -21,6 +21,7 @@ from rudder_cp.routers import (
     domains,
     environments,
     logs,
+    imports,
     projects,
     services,
     variables,
@@ -92,7 +93,7 @@ def create_app() -> FastAPI:
     # dependency repeated on each route — one missed decorator would otherwise
     # leave an endpoint open, and `POST /services/{id}/deploy` runs arbitrary
     # code from a git repo.
-    protected = (projects, environments, services, domains, variables, deployments, logs)
+    protected = (projects, environments, services, domains, variables, deployments, logs, imports)
     for module in protected:
         app.include_router(module.router, dependencies=[Depends(auth_router.get_current_user)])
 
