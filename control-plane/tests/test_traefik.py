@@ -26,6 +26,8 @@ from rudder_cp.models import (
     Domain,
     DomainTargetType,
     Environment,
+    GitHubImport,
+    GitHubImportService,
     Instance,
     InstanceStatus,
     Node,
@@ -208,6 +210,55 @@ async def test_service_domain_routes_to_live_deployment_healthy_instances(
         f"http://{'b' * 12}:{CONTAINER_PORT}/",
     ]
     assert router_of(document)["rule"] == "Host(`api.prod.localhost`)"
+
+
+async def test_public_compose_child_routes_to_its_own_container(
+    session: Session, tmp_path: Path
+) -> None:
+    """A reviewed Grafana URL must not accidentally point at the web app."""
+    app = make_service(session, "api")
+    grafana = Service(
+        environment_id=app.environment_id,
+        name="grafana",
+        container_port=3000,
+        build_config={"managed_by_service_id": str(app.id), "compose_service": "grafana"},
+    )
+    session.add(grafana)
+    session.commit()
+    imported = GitHubImport(
+        installation_id=42,
+        repository="acme/api",
+        branch="main",
+        compose_source="repository",
+        compose_manifest="services: {}",
+        compose_project_name="rudder-api",
+        project_id=session.get(Environment, app.environment_id).project_id,
+        app_service_id=app.id,
+    )
+    session.add(imported)
+    session.commit()
+    session.add(
+        GitHubImportService(
+            github_import_id=imported.id,
+            service_id=grafana.id,
+            compose_service="grafana",
+            role="observability",
+            is_public=True,
+            container_id="g" * 64,
+        )
+    )
+    session.commit()
+    node = make_node(session)
+    live = make_deployment(session, app)
+    make_instance(session, live, node, "a" * 64)
+    make_instance(session, live, node, "g" * 64)
+    domain = make_domain(
+        session, grafana.environment_id, "grafana.prod.localhost", service=grafana
+    )
+
+    await traefik.render_all(session, settings_for(tmp_path))
+
+    assert server_urls(load(tmp_path, domain)) == [f"http://{'g' * 12}:3000/"]
 
 
 async def test_service_domain_follows_a_newer_live_deployment(

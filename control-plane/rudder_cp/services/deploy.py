@@ -304,8 +304,12 @@ async def _deploy_imported_compose(
         return _fail(session, deployment, f"Could not start the Compose project. {exc}")
 
     compose_service = service.build_config.get("compose_service", "app")
-    state = next((row for row in states if row.service == compose_service), None)
-    if state is None or not state.container_id:
+    if not isinstance(compose_service, str):
+        await _compose_down_safely(agent, project_name)
+        return _fail(session, deployment, "The imported application has no Compose service name.")
+    state_by_service = {state.service: state for state in states if state.container_id}
+    app_state = state_by_service.get(compose_service)
+    if app_state is None:
         await _compose_down_safely(agent, project_name)
         return _fail(
             session,
@@ -314,42 +318,77 @@ async def _deploy_imported_compose(
         )
 
     node = _phase1_node(session, settings)
-    instance = Instance(
-        deployment_id=deployment.id,
-        node_id=node.id,
-        container_id=state.container_id,
-        status=InstanceStatus.STARTING,
-        started_at=datetime.now(UTC),
+    graph = session.exec(
+        select(GitHubImportService).where(GitHubImportService.github_import_id == imported.id)
     )
-    session.add(instance)
+    mappings = graph.all()
+    missing = sorted(
+        mapping.compose_service
+        for mapping in mappings
+        if mapping.compose_service not in state_by_service
+    )
+    if missing:
+        await _compose_down_safely(agent, project_name)
+        return _fail(
+            session,
+            deployment,
+            "Compose did not report running containers for " + ", ".join(missing) + ".",
+        )
+    managed_compose_services = (
+        {mapping.compose_service for mapping in mappings} if mappings else {compose_service}
+    )
+    instances_by_service = {
+        compose_name: Instance(
+            deployment_id=deployment.id,
+            node_id=node.id,
+            container_id=state_by_service[compose_name].container_id,
+            status=InstanceStatus.STARTING,
+            started_at=datetime.now(UTC),
+        )
+        for compose_name in managed_compose_services
+    }
+    for instance in instances_by_service.values():
+        session.add(instance)
     session.commit()
 
     outcome = await wait_until_healthy(
         agent,
-        state.container_id,
+        app_state.container_id,
         path=service.health_check_path,
         port=service.health_check_port or service.container_port,
         settings=settings,
     )
     if not outcome.healthy:
-        await _discard(agent, session, instance, drain_seconds=0)
+        for instance in instances_by_service.values():
+            await _discard(agent, session, instance, drain_seconds=0)
         await _compose_down_safely(agent, project_name)
         return _fail(
             session, deployment, outcome.reason or "Compose application health check failed."
         )
-    if not await is_still_alive(agent, state.container_id):
-        await _discard(agent, session, instance, drain_seconds=0)
+    stopped = [
+        compose_name
+        for compose_name, state in state_by_service.items()
+        if compose_name in instances_by_service
+        and not await is_still_alive(agent, state.container_id)
+    ]
+    if stopped:
+        for instance in instances_by_service.values():
+            await _discard(agent, session, instance, drain_seconds=0)
         await _compose_down_safely(agent, project_name)
         return _fail(
             session,
             deployment,
-            "The Compose application stopped before traffic could be shifted to it.",
+            "Compose services stopped before traffic could be shifted: " + ", ".join(stopped) + ".",
         )
 
-    instance.status = InstanceStatus.HEALTHY
+    for mapping in mappings:
+        mapping.container_id = state_by_service[mapping.compose_service].container_id
+        session.add(mapping)
+    for instance in instances_by_service.values():
+        instance.status = InstanceStatus.HEALTHY
+        session.add(instance)
     deployment.status = DeploymentStatus.LIVE
     deployment.became_live_at = datetime.now(UTC)
-    session.add(instance)
     session.add(deployment)
     _supersede_previously_live(session, deployment)
     session.commit()

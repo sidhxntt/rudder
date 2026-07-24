@@ -313,7 +313,10 @@ def generated_compose_plan(
         services[addon] = service
         plan_services[addon] = ComposeService(
             name=addon,
-            public_port=None,
+            # Grafana is the one reviewed dashboard that can be deliberately
+            # exposed through Rudder's domain layer.  It still has no host
+            # port: this only makes it eligible for an opt-in public URL.
+            public_port=definition["port"] if addon == "grafana" else None,
             role=definition["role"],
             container_port=definition["port"],
         )

@@ -21,6 +21,7 @@ import { serviceUrl } from "@/lib/status";
 import type { Service } from "@/lib/types";
 
 import { DetailPanel } from "./detail-panel";
+import { composeManagedByServiceId, composeReleaseOwnerId } from "./compose-lifecycle";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
 import { GitHubImportDialog } from "./github-import-dialog";
 
@@ -69,13 +70,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
 
   const serviceList = useMemo(() => services.data ?? [], [services.data]);
   const domainList = useMemo(() => domains.data ?? [], [domains.data]);
-  const composeAppServiceId = useMemo(
-    () =>
-      serviceList.find(
-        (service) => typeof service.build_config.compose_service === "string",
-      )?.id,
-    [serviceList],
-  );
+  const composeAppServiceId = useMemo(() => composeReleaseOwnerId(serviceList), [serviceList]);
 
   // Rebuild nodes when the service set changes. Positions already on screen are
   // kept: a drag in flight must not be yanked back by a poll. Layout is UI
@@ -94,13 +89,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
               ? service.build_config.compose_role
               : undefined,
           url: serviceUrl(service, domainList),
-          managedByServiceId:
-            typeof service.build_config.managed_by_service_id === "string"
-              ? service.build_config.managed_by_service_id
-              : service.id !== composeAppServiceId &&
-                  typeof service.build_config.managed_image === "string"
-                ? composeAppServiceId
-                : undefined,
+          managedByServiceId: composeManagedByServiceId(service, composeAppServiceId),
         };
         return {
           id: service.id,
@@ -188,14 +177,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
         <DetailPanel
           service={selectedService}
           url={serviceUrl(selectedService, domainList)}
-          managedByServiceId={
-            typeof selectedService.build_config.managed_by_service_id === "string"
-              ? selectedService.build_config.managed_by_service_id
-              : selectedService.id !== composeAppServiceId &&
-                  typeof selectedService.build_config.managed_image === "string"
-                ? composeAppServiceId
-                : undefined
-          }
+          managedByServiceId={composeManagedByServiceId(selectedService, composeAppServiceId)}
           onClose={() => setSelectedServiceId(null)}
         />
       ) : null}

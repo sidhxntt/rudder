@@ -16,24 +16,91 @@ import {
 import type { GitHubImportStep } from "@/lib/types";
 
 type Addon = string;
+type Stage = "source" | "repository" | "services" | "release";
 
-function stepLabel(step: GitHubImportStep): string {
-  if (step.status === "live") return "live";
-  if (step.status === "failed") return "failed";
-  if (step.status === "superseded") return "superseded";
-  return step.status;
-}
+const STAGES: ReadonlyArray<{ id: Stage; label: string }> = [
+  { id: "source", label: "Source" },
+  { id: "repository", label: "Repository" },
+  { id: "services", label: "Services" },
+  { id: "release", label: "Release" },
+];
 
 function Step({ step }: { step: GitHubImportStep }) {
-  const tone = step.status === "failed" ? "text-status-failed" : step.status === "live" ? "text-accent" : "text-ink-mute";
+  const tone =
+    step.status === "failed"
+      ? "text-status-failed"
+      : step.status === "live"
+        ? "text-accent"
+        : "text-ink-mute";
   return (
     <li className="border-b border-hairline py-3 last:border-0">
       <div className="flex items-center justify-between gap-3 text-caption">
-        <span className="text-ink">{step.label}{step.service_name ? ` · ${step.service_name}` : ""}</span>
-        <span className={tone}>{stepLabel(step)}</span>
+        <span className="text-ink">
+          {step.label}
+          {step.service_name ? ` · ${step.service_name}` : ""}
+        </span>
+        <span className={tone}>{step.status}</span>
       </div>
-      {step.error_message ? <p className="mt-1 text-caption text-status-failed">{step.error_message}</p> : null}
+      {step.error_message ? (
+        <p className="mt-1 text-caption text-status-failed">{step.error_message}</p>
+      ) : null}
     </li>
+  );
+}
+
+function StageMeter({ stage }: { stage: Stage }) {
+  const activeIndex = STAGES.findIndex((entry) => entry.id === stage);
+  return (
+    <ol className="mt-6 grid grid-cols-4 border-y border-hairline" aria-label="Import progress">
+      {STAGES.map((entry, index) => {
+        const active = index === activeIndex;
+        const complete = index < activeIndex;
+        return (
+          <li key={entry.id} className="min-w-0 py-3 text-center">
+            <span
+              className={[
+                "mx-auto flex h-5 w-5 items-center justify-center rounded-full border text-[10px] font-medium",
+                active || complete
+                  ? "border-accent bg-accent text-on-accent"
+                  : "border-hairline text-ink-faint",
+              ].join(" ")}
+              aria-hidden
+            >
+              {complete ? "✓" : index + 1}
+            </span>
+            <span className={[
+              "mt-1 block truncate text-[10px]",
+              active ? "text-ink" : "text-ink-faint",
+            ].join(" ")}>{entry.label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function FormSelect({
+  children,
+  label,
+  value,
+  onChange,
+}: {
+  children: React.ReactNode;
+  label: string;
+  value: string | number;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-caption text-ink-mute">
+      {label}
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-1 w-full rounded-sm border border-hairline bg-surface-raised px-3 py-2.5 text-caption text-ink outline-none transition-colors focus:border-accent"
+      >
+        {children}
+      </select>
+    </label>
   );
 }
 
@@ -55,17 +122,22 @@ export function GitHubImportDialog({
   const [selectedPublicServices, setSelectedPublicServices] = useState<string[]>([]);
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [importId, setImportId] = useState<string | null>(null);
-  const [stage, setStage] = useState<"source" | "review">("source");
+  const [stage, setStage] = useState<Stage>("source");
 
   const status = useGitHubImportStatus();
   const templates = useGitHubImportTemplates();
   const installations = useGitHubInstallations(open && Boolean(status.data?.configured));
-  const repositories = useGitHubRepositories(open && status.data?.configured ? installationId : null);
-  const branches = useGitHubBranches(open && status.data?.configured ? installationId : null, repository);
+  const repositories = useGitHubRepositories(
+    open && status.data?.configured ? installationId : null,
+  );
+  const branches = useGitHubBranches(
+    open && status.data?.configured ? installationId : null,
+    repository,
+  );
   const preview = useGitHubImportPreview(
     open && status.data?.configured ? installationId : null,
     repository,
-    stage === "review" ? branch : null,
+    stage === "services" || stage === "release" ? branch : null,
     templateId,
   );
   const confirm = useConfirmGitHubImport();
@@ -74,7 +146,11 @@ export function GitHubImportDialog({
   useEffect(() => {
     const requestedId = Number(queryInstallation);
     const rows = installations.data ?? [];
-    if (Number.isSafeInteger(requestedId) && requestedId > 0 && rows.some((row) => row.id === requestedId)) {
+    if (
+      Number.isSafeInteger(requestedId) &&
+      requestedId > 0 &&
+      rows.some((row) => row.id === requestedId)
+    ) {
       setInstallationId(requestedId);
       return;
     }
@@ -89,7 +165,9 @@ export function GitHubImportDialog({
       installations.isLoading ||
       installations.data?.length !== 0 ||
       !status.data.install_url
-    ) return;
+    ) {
+      return;
+    }
     window.sessionStorage.setItem(
       "rudder:github-import-return",
       `${window.location.pathname}${window.location.search}`,
@@ -110,7 +188,9 @@ export function GitHubImportDialog({
   useEffect(() => {
     const rows = branches.data ?? [];
     if (branch && rows.includes(branch)) return;
-    const defaultBranch = repositories.data?.find((row) => row.full_name === repository)?.default_branch;
+    const defaultBranch = repositories.data?.find(
+      (row) => row.full_name === repository,
+    )?.default_branch;
     setBranch(rows.includes(defaultBranch ?? "") ? defaultBranch ?? null : rows[0] ?? null);
   }, [branch, branches.data, repositories.data, repository]);
 
@@ -127,17 +207,20 @@ export function GitHubImportDialog({
   useEffect(() => {
     setSelectedPublicServices(
       (preview.data?.services ?? [])
-        .filter((service) => service.is_public)
+        .filter((service) => service.is_public && service.role === "web")
         .map((service) => service.name),
     );
   }, [preview.data]);
 
+  const canContinueRepository = Boolean(installationId && repository && branch);
   const canConfirm = Boolean(
     installationId &&
       repository &&
       branch &&
       preview.data &&
-      selectedPublicServices.length > 0 &&
+      preview.data.services.some(
+        (service) => service.role === "web" && selectedPublicServices.includes(service.name),
+      ) &&
       !confirm.isPending,
   );
 
@@ -152,7 +235,7 @@ export function GitHubImportDialog({
     confirm.reset();
   }
 
-  function toggle(addon: Addon) {
+  function toggleAddon(addon: Addon) {
     setSelectedAddons((current) =>
       current.includes(addon) ? current.filter((item) => item !== addon) : [...current, addon],
     );
@@ -177,140 +260,263 @@ export function GitHubImportDialog({
     setImportId(created.import_id);
   }
 
+  const sourceTitle = templateId
+    ? templates.data?.find((template) => template.id === templateId)?.name ?? "Starter template"
+    : "Repository Compose";
+
   return (
     <>
-      <button
-        className={triggerClassName}
-        onClick={() => setOpen(true)}
-      >
+      <button className={triggerClassName} onClick={() => setOpen(true)}>
         {triggerLabel}
       </button>
       {open ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-surface/80 p-4 backdrop-blur-sm sm:p-6">
-          <section className="w-full min-w-0 max-w-lg rounded-lg border border-hairline bg-surface-raised p-5 shadow-2xl sm:p-6">
-            <div className="flex items-start justify-between gap-4">
+          <section
+            aria-modal="true"
+            aria-label="Import from GitHub"
+            role="dialog"
+            className="w-full min-w-0 max-w-2xl rounded-lg border border-hairline bg-surface-raised shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4 px-5 pb-0 pt-5 sm:px-7 sm:pt-7">
               <div>
                 <p className="text-heading">Import from GitHub</p>
-                <p className="mt-1 text-caption text-ink-mute">Choose source, review the resolved Compose release, then deploy it.</p>
+                <p className="mt-1 max-w-xl text-caption text-ink-mute">
+                  Review the exact Compose release before Rudder creates any infrastructure.
+                </p>
               </div>
-              <button className="text-ink-faint hover:text-ink" onClick={() => { reset(); setOpen(false); }} aria-label="Close">×</button>
+              <button
+                className="rounded-xs px-xs py-xxs text-ink-faint transition-colors hover:text-ink"
+                onClick={() => {
+                  reset();
+                  setOpen(false);
+                }}
+                aria-label="Close"
+              >
+                ×
+              </button>
             </div>
 
             {importId ? (
-              <div className="mt-6 rounded-md border border-hairline bg-surface p-4">
-                <p className="text-caption text-ink">Provisioning {imported.data?.repository ?? repository}.</p>
-                <ul className="mt-3">
-                  {imported.data?.steps.map((step) => <Step key={step.service_id} step={step} />)}
-                </ul>
-                {imported.isError ? <p className="mt-3 text-caption text-status-failed">Could not load import progress.</p> : null}
-                {imported.data ? (
-                  <button
-                    className="mt-4 rounded-md bg-accent px-3 py-2 text-caption font-medium text-surface"
-                    onClick={() => router.push(`/projects/${imported.data.project_id}/environments/${imported.data.environment_id}`)}
-                  >
-                    Open imported project
-                  </button>
-                ) : null}
+              <div className="px-5 pb-5 pt-6 sm:px-7 sm:pb-7">
+                <div className="border border-hairline bg-surface px-4 py-4">
+                  <p className="text-caption text-ink">
+                    Provisioning {imported.data?.repository ?? repository}.
+                  </p>
+                  <p className="mt-1 text-micro text-ink-mute">
+                    Every service below shares one Compose release and its build log.
+                  </p>
+                  <ul className="mt-3">
+                    {imported.data?.steps.map((step) => <Step key={step.service_id} step={step} />)}
+                  </ul>
+                  {imported.isError ? (
+                    <p className="mt-3 text-caption text-status-failed">
+                      Could not load import progress. Reopen the project to check the release.
+                    </p>
+                  ) : null}
+                  {imported.data ? (
+                    <button
+                      className="mt-4 rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep"
+                      onClick={() =>
+                        router.push(
+                          `/projects/${imported.data.project_id}/environments/${imported.data.environment_id}`,
+                        )
+                      }
+                    >
+                      Open imported project
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ) : (
-              <div className="mt-6 space-y-4 rounded-md border border-hairline bg-surface p-4">
-                {status.isLoading ? <p className="text-caption text-ink-mute">Checking GitHub App setup…</p> : null}
-                {status.isError ? <p className="text-caption text-status-failed">Could not check GitHub App setup.</p> : null}
-                {status.data && !status.data.configured ? (
-                  <div className="space-y-2 text-caption text-ink-mute">
-                    <p>GitHub import is not enabled for this Rudder instance yet.</p>
-                    <p>Ask the workspace operator to connect the Rudder GitHub App, then reopen this dialog.</p>
-                  </div>
-                ) : null}
-                {status.data?.configured ? (
-                  <>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {(templates.data ?? []).map((template) => (
+              <>
+                <StageMeter stage={stage} />
+                <div className="min-h-[22rem] px-5 py-6 sm:px-7">
+                  {status.isLoading ? (
+                    <p className="text-caption text-ink-mute">Checking GitHub App setup…</p>
+                  ) : null}
+                  {status.isError ? (
+                    <p className="text-caption text-status-failed">
+                      Could not check GitHub App setup. Refresh and try again.
+                    </p>
+                  ) : null}
+                  {status.data && !status.data.configured ? (
+                    <div className="max-w-lg border border-status-failed/30 bg-status-failed/5 px-4 py-4 text-caption text-ink-mute">
+                      <p className="font-medium text-ink">GitHub import is not enabled here.</p>
+                      <p className="mt-1">
+                        A workspace operator must configure the Rudder GitHub App before repositories can be imported.
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {status.data?.configured && stage === "source" ? (
+                    <div>
+                      <p className="text-micro text-ink-faint">Step 1 of 4</p>
+                      <h2 className="mt-2 text-heading-md text-ink">Choose a source</h2>
+                      <p className="mt-1 max-w-lg text-caption text-ink-mute">
+                        Rudder always prefers a repository Compose file. Choose a reviewed starter only when the repository has no Compose definition.
+                      </p>
+                      <div className="mt-6 grid gap-px overflow-hidden border border-hairline bg-hairline sm:grid-cols-2">
                         <button
-                          key={template.id}
                           type="button"
-                          onClick={() => setTemplateId(template.id)}
+                          onClick={() => setTemplateId(null)}
                           className={[
-                            "rounded border p-3 text-left transition-colors",
-                            templateId === template.id
-                              ? "border-accent bg-accent/10"
-                              : "border-hairline hover:border-hairline-strong",
+                            "bg-surface px-4 py-4 text-left transition-colors hover:bg-surface-soft",
+                            templateId === null ? "bg-accent/10" : "",
                           ].join(" ")}
                         >
-                          <span className="block text-caption font-medium text-ink">{template.name}</span>
-                          <span className="mt-1 block text-micro text-ink-mute">{template.description}</span>
+                          <span className="text-caption font-medium text-ink">Repository Compose</span>
+                          <span className="mt-1 block text-micro text-ink-mute">
+                            Use compose.yaml from the selected branch whenever it exists.
+                          </span>
                         </button>
-                      ))}
-                    </div>
-                    {installations.isLoading ? <p className="text-caption text-ink-mute">Finding your GitHub App connection…</p> : null}
-                    {installations.isError ? <p className="text-caption text-status-failed">Could not load GitHub App installations.</p> : null}
-                    {installations.data?.length === 0 ? <p className="text-caption text-ink-mute">Redirecting to GitHub to connect your repositories…</p> : null}
-                    {(installations.data?.length ?? 0) > 0 ? <label className="block text-caption text-ink-mute">GitHub connection
-                      <select value={installationId ?? ""} onChange={(event) => { reset(); setInstallationId(Number(event.target.value) || null); }} className="mt-1 w-full rounded border border-hairline bg-surface-raised px-2 py-2 text-ink">
-                        {(installations.data ?? []).map((row) => <option key={row.id} value={row.id}>{row.account_login} · {row.repository_selection === "all" ? "all repositories" : "selected repositories"}</option>)}
-                      </select>
-                    </label> : null}
-                    {installationId ? (
-                      <label className="block text-caption text-ink-mute">Repository
-                        <select value={repository ?? ""} onChange={(event) => { setRepository(event.target.value || null); setBranch(null); setStage("source"); }} className="mt-1 w-full rounded border border-hairline bg-surface-raised px-2 py-2 text-ink">
-                          <option value="">Choose a repository</option>
-                          {(repositories.data ?? []).map((row) => <option key={row.full_name} value={row.full_name}>{row.full_name}{row.private ? " · private" : ""}</option>)}
-                        </select>
-                      </label>
-                    ) : null}
-                    {repositories.isLoading ? <p className="text-caption text-ink-mute">Loading repositories…</p> : null}
-                    {repositories.isError ? <p className="text-caption text-status-failed">Could not load repositories for this installation.</p> : null}
-                    {repository ? <label className="block text-caption text-ink-mute">Branch
-                      <select value={branch ?? ""} onChange={(event) => { setBranch(event.target.value || null); setStage("source"); }} className="mt-1 w-full rounded border border-hairline bg-surface-raised px-2 py-2 text-ink">
-                        {(branches.data ?? []).map((value) => <option key={value} value={value}>{value}</option>)}
-                      </select>
-                    </label> : null}
-                    {stage === "source" && installationId && repository && branch ? <button onClick={() => setStage("review")} className="rounded-md bg-accent px-3 py-2 text-caption font-medium text-surface">Continue</button> : null}
-                    {stage === "review" && preview.data ? (
-                      <div className="space-y-4 rounded border border-hairline p-3 text-caption">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-ink">{preview.data.compose_source === "repository" ? "Repository Compose detected" : "Rudder-generated Compose"}</p>
-                            <p className="mt-1 text-ink-mute">{preview.data.compose_source === "repository" ? "Your compose file defines the release topology." : "A Node app was detected and Rudder prepared its private dependencies."}</p>
-                          </div>
-                          <span className="shrink-0 rounded border border-hairline px-2 py-1 text-[11px] text-ink-mute">{preview.data.services.length} services</span>
-                        </div>
-                        <ul className="divide-y divide-hairline border-y border-hairline">
-                          {preview.data.services.map((service) => (
-                            <li key={service.name} className="flex items-center justify-between gap-3 py-2">
-                              <span className="font-medium text-ink">{service.name}</span>
-                              {service.is_public ? (
-                                <label className="flex items-center gap-2 text-accent">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedPublicServices.includes(service.name)}
-                                    onChange={() => togglePublicService(service.name)}
-                                  />
-                                  {service.role} · public · :{service.public_port}
-                                </label>
-                              ) : (
-                                <span className="text-ink-mute">{service.role} · private</span>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                        {preview.data.compose_source === "generated" ? <div className="space-y-2">
-                          {preview.data.addons.map((addon) => <label key={addon} className="flex items-center gap-2 text-ink"><input type="checkbox" checked={selectedAddons.includes(addon)} onChange={() => toggle(addon)} /> Provision private {addon}</label>)}
-                          {preview.data.externally_managed.map((addon) => <p key={addon} className="text-ink-mute">{addon} is already externally configured and will not be provisioned.</p>)}
-                        </div> : <p className="text-ink-mute">Repository-defined services stay isolated unless they declare a public port.</p>}
-                        <details className="group rounded bg-surface-raised px-3 py-2">
-                          <summary className="cursor-pointer text-ink-mute marker:text-ink-faint">View resolved Compose manifest</summary>
-                          <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-words border-t border-hairline pt-3 font-mono text-[11px] leading-5 text-ink-mute">{preview.data.compose_manifest}</pre>
-                        </details>
+                        {(templates.data ?? []).map((template) => (
+                          <button
+                            key={template.id}
+                            type="button"
+                            onClick={() => setTemplateId(template.id)}
+                            className={[
+                              "bg-surface px-4 py-4 text-left transition-colors hover:bg-surface-soft",
+                              templateId === template.id ? "bg-accent/10" : "",
+                            ].join(" ")}
+                          >
+                            <span className="text-caption font-medium text-ink">{template.name}</span>
+                            <span className="mt-1 block text-micro text-ink-mute">{template.description}</span>
+                          </button>
+                        ))}
                       </div>
-                    ) : null}
-                    {stage === "review" && preview.isLoading ? <p className="text-caption text-ink-mute">Inspecting package.json…</p> : null}
-                    {stage === "review" && preview.isError ? <p className="text-caption text-status-failed">Could not inspect this repository.</p> : null}
-                    {stage === "review" ? <div className="flex items-center gap-3"><button onClick={() => setStage("source")} className="rounded-md border border-hairline px-3 py-2 text-caption text-ink">Back</button><button disabled={!canConfirm} onClick={() => void startImport()} className="rounded-md bg-accent px-3 py-2 text-caption font-medium text-surface disabled:cursor-not-allowed disabled:opacity-40">{confirm.isPending ? "Creating deployment…" : "Confirm and deploy"}</button></div> : null}
-                    {stage === "review" && confirm.isError ? <p className="text-caption text-status-failed">{confirm.error.message}</p> : null}
-                  </>
-                ) : null}
-              </div>
+                      <div className="mt-6 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setStage("repository")}
+                          className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep"
+                        >
+                          Next: repository
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {status.data?.configured && stage === "repository" ? (
+                    <div>
+                      <p className="text-micro text-ink-faint">Step 2 of 4</p>
+                      <h2 className="mt-2 text-heading-md text-ink">Select repository</h2>
+                      <p className="mt-1 max-w-lg text-caption text-ink-mute">
+                        Choose the installation, repository, and branch whose manifest Rudder should inspect.
+                      </p>
+                      <div className="mt-6 space-y-4">
+                        {installations.isLoading ? <p className="text-caption text-ink-mute">Finding your GitHub connection…</p> : null}
+                        {installations.isError ? <p className="text-caption text-status-failed">Could not load GitHub connections.</p> : null}
+                        {installations.data?.length === 0 ? <p className="text-caption text-ink-mute">Redirecting to GitHub to connect your repositories…</p> : null}
+                        {(installations.data?.length ?? 0) > 0 ? (
+                          <FormSelect
+                            label="GitHub connection"
+                            value={installationId ?? ""}
+                            onChange={(value) => {
+                              setInstallationId(Number(value) || null);
+                              setRepository(null);
+                              setBranch(null);
+                            }}
+                          >
+                            {(installations.data ?? []).map((row) => (
+                              <option key={row.id} value={row.id}>
+                                {row.account_login} · {row.repository_selection === "all" ? "all repositories" : "selected repositories"}
+                              </option>
+                            ))}
+                          </FormSelect>
+                        ) : null}
+                        {installationId ? (
+                          <FormSelect
+                            label="Repository"
+                            value={repository ?? ""}
+                            onChange={(value) => {
+                              setRepository(value || null);
+                              setBranch(null);
+                            }}
+                          >
+                            <option value="">Choose a repository</option>
+                            {(repositories.data ?? []).map((row) => (
+                              <option key={row.full_name} value={row.full_name}>
+                                {row.full_name}{row.private ? " · private" : ""}
+                              </option>
+                            ))}
+                          </FormSelect>
+                        ) : null}
+                        {repositories.isLoading ? <p className="text-caption text-ink-mute">Loading repositories…</p> : null}
+                        {repositories.isError ? <p className="text-caption text-status-failed">Could not load repositories for this connection.</p> : null}
+                        {repository ? (
+                          <FormSelect label="Branch" value={branch ?? ""} onChange={(value) => setBranch(value || null)}>
+                            {(branches.data ?? []).map((value) => <option key={value} value={value}>{value}</option>)}
+                          </FormSelect>
+                        ) : null}
+                      </div>
+                      <div className="mt-6 flex items-center justify-between gap-3">
+                        <button type="button" onClick={() => setStage("source")} className="rounded-sm border border-hairline px-lg py-sm text-button text-ink hover:border-hairline-strong">Back</button>
+                        <button type="button" disabled={!canContinueRepository} onClick={() => setStage("services")} className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-40">Next: review services</button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {status.data?.configured && stage === "services" ? (
+                    <div>
+                      <p className="text-micro text-ink-faint">Step 3 of 4</p>
+                      <h2 className="mt-2 text-heading-md text-ink">Review detected services</h2>
+                      <p className="mt-1 max-w-lg text-caption text-ink-mute">Detection is evidence, not infrastructure. Confirm the roles and private dependencies before a release is created.</p>
+                      {preview.isLoading ? <p className="mt-6 text-caption text-ink-mute">Inspecting the selected branch…</p> : null}
+                      {preview.isError ? <p className="mt-6 text-caption text-status-failed">Could not inspect this repository. Check the branch and try again.</p> : null}
+                      {preview.data ? (
+                        <div className="mt-6 space-y-5">
+                          <div className="border border-hairline bg-surface px-4 py-4">
+                            <p className="text-caption font-medium text-ink">{preview.data.compose_source === "repository" ? "Repository Compose detected" : "Generated Compose proposal"}</p>
+                            <p className="mt-1 text-micro text-ink-mute">{preview.data.compose_source === "repository" ? "The repository manifest remains authoritative." : `${sourceTitle} supplies a reviewable starting point for this Node application.`}</p>
+                          </div>
+                          {preview.data.processes.length ? (
+                            <div>
+                              <p className="text-caption font-medium text-ink">Detected processes</p>
+                              <ul className="mt-2 divide-y divide-hairline border-y border-hairline">
+                                {preview.data.processes.map((process) => <li key={`${process.role}-${process.command}`} className="flex items-center justify-between gap-3 py-2 text-caption"><span className="text-ink">{process.role}</span><code className="truncate text-micro text-ink-mute">{process.command}</code></li>)}
+                              </ul>
+                            </div>
+                          ) : null}
+                          {preview.data.compose_source === "generated" ? (
+                            <div>
+                              <p className="text-caption font-medium text-ink">Private add-ons</p>
+                              <div className="mt-2 space-y-2">
+                                {preview.data.addons.map((addon) => <label key={addon} className="flex items-center gap-2 text-caption text-ink"><input type="checkbox" checked={selectedAddons.includes(addon)} onChange={() => toggleAddon(addon)} />Provision private {addon}</label>)}
+                                {preview.data.externally_managed.map((addon) => <p key={addon} className="text-micro text-ink-mute">{addon} already has an external connection and will not be provisioned.</p>)}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <div className="mt-6 flex items-center justify-between gap-3"><button type="button" onClick={() => setStage("repository")} className="rounded-sm border border-hairline px-lg py-sm text-button text-ink hover:border-hairline-strong">Back</button><button type="button" disabled={!preview.data} onClick={() => setStage("release")} className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-40">Next: release summary</button></div>
+                    </div>
+                  ) : null}
+
+                  {status.data?.configured && stage === "release" ? (
+                    <div>
+                      <p className="text-micro text-ink-faint">Step 4 of 4</p>
+                      <h2 className="mt-2 text-heading-md text-ink">Confirm the release</h2>
+                      <p className="mt-1 max-w-lg text-caption text-ink-mute">Only checked services receive a public URL. All others stay on Rudder&apos;s private network.</p>
+                      {preview.data ? (
+                        <div className="mt-6 space-y-5">
+                          <div>
+                            <p className="text-caption font-medium text-ink">Public URLs</p>
+                            <ul className="mt-2 divide-y divide-hairline border-y border-hairline">
+                              {preview.data.services.map((service) => <li key={service.name} className="flex items-center justify-between gap-3 py-2 text-caption"><div><p className="font-medium text-ink">{service.name}</p><p className="text-micro text-ink-mute">{service.role}{service.container_port ? ` · :${service.container_port}` : ""}</p></div>{service.is_public ? <label className="flex shrink-0 items-center gap-2 text-accent"><input type="checkbox" checked={selectedPublicServices.includes(service.name)} onChange={() => togglePublicService(service.name)} />Public</label> : <span className="text-micro text-ink-faint">Private</span>}</li>)}
+                            </ul>
+                          </div>
+                          <details className="border border-hairline bg-surface px-3 py-2">
+                            <summary className="cursor-pointer text-caption text-ink">View resolved Compose manifest</summary>
+                            <pre className="mt-3 max-h-44 overflow-auto whitespace-pre-wrap break-words border-t border-hairline pt-3 font-mono text-[11px] leading-5 text-ink-mute">{preview.data.compose_manifest}</pre>
+                          </details>
+                        </div>
+                      ) : <p className="mt-6 text-caption text-status-failed">The release preview is unavailable. Return to services and try again.</p>}
+                      <div className="mt-6 flex items-center justify-between gap-3"><button type="button" onClick={() => setStage("services")} className="rounded-sm border border-hairline px-lg py-sm text-button text-ink hover:border-hairline-strong">Back</button><button type="button" disabled={!canConfirm} onClick={() => void startImport()} className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-40">{confirm.isPending ? "Creating release…" : "Confirm and deploy"}</button></div>
+                      {confirm.isError ? <p className="mt-3 text-caption text-status-failed">{confirm.error.message}</p> : null}
+                    </div>
+                  ) : null}
+                </div>
+              </>
             )}
           </section>
         </div>

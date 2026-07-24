@@ -45,6 +45,8 @@ from rudder_cp.models import (
     DeploymentStatus,
     Domain,
     DomainTargetType,
+    GitHubImport,
+    GitHubImportService,
     Instance,
     InstanceStatus,
     Service,
@@ -146,6 +148,33 @@ def _healthy_instances(session: Session, deployment_id: uuid.UUID) -> tuple[Inst
     return tuple(sorted(rows, key=lambda i: str(i.id)))
 
 
+def _compose_child_target(session: Session, service: Service) -> Target | None:
+    """Resolve a public Compose child through its owner's live release.
+
+    Imported Compose releases are one atomic deployment, but a public child
+    (for example Grafana) must still route to *its* container rather than the
+    app container that owns the release.  The mapping is only updated after a
+    candidate is healthy, preserving the previous child route on failure.
+    """
+    mapping = session.exec(
+        select(GitHubImportService).where(GitHubImportService.service_id == service.id)
+    ).first()
+    if mapping is None:
+        return None
+    imported = session.get(GitHubImport, mapping.github_import_id)
+    if imported is None or imported.app_service_id == service.id:
+        return None
+    deployment = _live_deployment(session, imported.app_service_id)
+    if deployment is None or not mapping.container_id:
+        return Target(service=service, deployment=deployment, instances=())
+    instances = tuple(
+        instance
+        for instance in _healthy_instances(session, deployment.id)
+        if instance.container_id == mapping.container_id
+    )
+    return Target(service=service, deployment=deployment, instances=instances)
+
+
 def resolve_target(session: Session, domain: Domain) -> Target:
     """Resolve one Domain to the set of containers that should serve it.
 
@@ -176,6 +205,9 @@ def resolve_target(session: Session, domain: Domain) -> Target:
     service = session.get(Service, domain.service_id)
     if service is None:
         return Target(service=None, deployment=None, instances=())
+    compose_child = _compose_child_target(session, service)
+    if compose_child is not None:
+        return compose_child
     deployment = _live_deployment(session, service.id)
     if deployment is None:
         # The service exists and the domain is real; there is just nothing live

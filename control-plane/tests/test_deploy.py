@@ -24,6 +24,7 @@ from rudder_cp.models import (
     DeploymentStatus,
     Environment,
     GitHubImport,
+    GitHubImportService,
     Instance,
     InstanceStatus,
     Project,
@@ -106,6 +107,7 @@ class FakeAgent:
         healthy: bool = True,
         alive_after_health: bool = True,
         compose_fails: bool = False,
+        compose_services: tuple[str, ...] = ("app",),
     ):
         self.healthy = healthy
         self.alive_after_health = alive_after_health
@@ -115,6 +117,7 @@ class FakeAgent:
         self.compose_fails = compose_fails
         self.compose_projects: list[str] = []
         self.compose_down_projects: list[str] = []
+        self.compose_services = compose_services
 
     async def create_container(self, *, image, name, env, container_port, **_kw) -> ContainerState:
         self.created.append(name)
@@ -151,12 +154,13 @@ class FakeAgent:
     async def compose_ps(self, *, project_name: str) -> list[ComposeServiceState]:
         return [
             ComposeServiceState(
-                service="app",
-                container_id=f"compose-{project_name}",
+                service=service,
+                container_id=f"compose-{project_name}-{service}",
                 status="running",
                 health="healthy",
                 exit_code=None,
             )
+            for service in self.compose_services
         ]
 
     async def compose_down(self, *, project_name: str) -> ComposeResult:
@@ -314,6 +318,84 @@ async def test_imported_compose_failure_keeps_the_previous_release_live(
             select(Instance).where(Instance.deployment_id == first.deployment_id)
         ).one()
         assert healthy.status is InstanceStatus.HEALTHY
+
+
+async def test_imported_compose_records_every_graph_container_after_release_is_live(
+    engine, service, settings
+):
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        grafana = Service(
+            environment_id=environment.id,
+            name="grafana",
+            container_port=3000,
+            build_config={"compose_service": "grafana", "managed_by_service_id": str(app.id)},
+        )
+        session.add(grafana)
+        session.add(app)
+        session.commit()
+        imported = GitHubImport(
+            installation_id=7,
+            repository="acme/observed-api",
+            branch="main",
+            compose_source="generated",
+            compose_manifest=(
+                "services:\n  app:\n    build: .\n    expose: ['8080']\n"
+                "  grafana:\n    image: grafana/grafana\n    expose: ['3000']\n"
+            ),
+            compose_project_name="rudder-observed-test",
+            project_id=environment.project_id,
+            app_service_id=app.id,
+        )
+        session.add(imported)
+        session.commit()
+        session.add_all(
+            [
+                GitHubImportService(
+                    github_import_id=imported.id,
+                    service_id=app.id,
+                    compose_service="app",
+                    role="web",
+                    is_public=True,
+                ),
+                GitHubImportService(
+                    github_import_id=imported.id,
+                    service_id=grafana.id,
+                    compose_service="grafana",
+                    role="observability",
+                    is_public=True,
+                ),
+            ]
+        )
+        session.commit()
+
+    outcome = await _run(
+        engine,
+        _queue(engine, service.id),
+        FakeAgent(compose_services=("app", "grafana")),
+        settings,
+        _ok_builder,
+    )
+
+    assert outcome.status is DeploymentStatus.LIVE
+    with Session(engine) as session:
+        graph = list(session.exec(select(GitHubImportService)).all())
+        assert all(entry.container_id for entry in graph)
+        assert {
+            entry.compose_service: (entry.container_id or "").rsplit("-", 1)[-1]
+            for entry in graph
+        } == {"app": "app", "grafana": "grafana"}
+        instances = list(
+            session.exec(
+                select(Instance).where(Instance.deployment_id == outcome.deployment_id)
+            ).all()
+        )
+        assert len(instances) == 2
+        assert {instance.status for instance in instances} == {InstanceStatus.HEALTHY}
 
 
 async def test_unhealthy_container_is_removed_and_deploy_fails(engine, service, settings):

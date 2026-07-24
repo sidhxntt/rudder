@@ -181,9 +181,20 @@ async def provision_import(
     if not public_candidates:
         raise ValueError("A Compose import must declare at least one public service.")
     if selected_public_services is None:
-        if len(public_candidates) != 1:
+        # The web service is the default public entrypoint.  Other reviewed
+        # candidates (currently Grafana) remain private until explicitly
+        # selected in the import review.
+        default_web = next(
+            (
+                service.name
+                for service in plan.services.values()
+                if service.name in public_candidates and service.role == "web"
+            ),
+            None,
+        )
+        if default_web is None:
             raise ValueError("Choose which declared Compose services should receive public URLs.")
-        selected_public_services = set(public_candidates)
+        selected_public_services = {default_web}
     if not selected_public_services or not selected_public_services <= public_candidates:
         raise ValueError("Public services must be selected from declared Compose ports.")
     public_service = next(
@@ -192,12 +203,10 @@ async def provision_import(
             for service in plan.services.values()
             if service.name in selected_public_services and service.role == "web"
         ),
-        next(
-            service
-            for service in plan.services.values()
-            if service.name in selected_public_services
-        ),
+        None,
     )
+    if public_service is None:
+        raise ValueError("Choose a declared web service for the application public URL.")
 
     project = await projects.create_project(
         session, ProjectCreate(name=_project_name(repository))
@@ -239,12 +248,16 @@ async def provision_import(
     # release.  Persist the owner once it exists so every service endpoint
     # (not only the canvas) resolves deployment history, instance state, and
     # build logs through the route-owning application.
-    for managed_addon in managed_addons.values():
+    for addon, managed_addon in managed_addons.items():
         managed_addon.build_config = {
             **managed_addon.build_config,
             "managed_by_service_id": str(app.id),
         }
         session.add(managed_addon)
+        if addon in selected_public_services:
+            await domains.create_system_domain(
+                session, environment=environment, service=managed_addon
+            )
 
     # A repository Compose file describes the full topology, not just the
     # route-owning web process. Create private Rudder service records for every
@@ -321,7 +334,12 @@ async def provision_import(
             public_service.name in selected_public_services,
         ),
         *[
-            (managed.id, addon, plan.services[addon].role, False)
+            (
+                managed.id,
+                addon,
+                plan.services[addon].role,
+                addon in selected_public_services,
+            )
             for addon, managed in managed_addons.items()
         ],
     ]

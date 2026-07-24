@@ -155,6 +155,32 @@ async def test_catalog_addons_create_private_services_and_app_references(session
     }
 
 
+async def test_generated_grafana_gets_a_domain_only_when_explicitly_selected(
+    session: Session,
+) -> None:
+    result = await provision_import(
+        session,
+        installation_id=42,
+        repository="acme/observed-api",
+        branch="main",
+        selected_addons={"grafana"},
+        selected_public_services={"app", "grafana"},
+        proposal=AddonProposal(is_node_app=True, addons=("grafana",), externally_managed=()),
+    )
+
+    grafana = session.exec(select(Service).where(Service.name == "grafana")).one()
+    graph = session.exec(
+        select(GitHubImportService).where(GitHubImportService.service_id == grafana.id)
+    ).one()
+    domains_for_grafana = list(
+        session.exec(select(Domain).where(Domain.service_id == grafana.id)).all()
+    )
+
+    assert result.app_service_id != grafana.id
+    assert graph.is_public is True
+    assert len(domains_for_grafana) == 1
+
+
 async def test_generated_worker_is_private_and_receives_app_addon_references(
     session: Session,
 ) -> None:

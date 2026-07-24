@@ -60,4 +60,8 @@ class GitHubImportService(SQLModel, table=True):
     compose_service: str = Field(sa_column=sa.Column(sa.String(63), nullable=False))
     role: str = Field(sa_column=sa.Column(sa.String(32), nullable=False))
     is_public: bool = Field(default=False, nullable=False)
+    # The candidate Compose container that currently serves this graph member.
+    # This is populated only after the owner release is healthy, so a failed
+    # candidate cannot move a child service's public route.
+    container_id: str | None = Field(default=None, sa_column=sa.Column(sa.String(64)))
     created_at: datetime = created_at_column()

@@ -121,7 +121,6 @@ def test_generated_compose_creates_private_worker_from_reviewed_process() -> Non
         ("minio", "minio/minio", "minio-data"),
         ("qdrant", "qdrant/qdrant", "qdrant-data"),
         ("prometheus", "prom/prometheus", "prometheus-data"),
-        ("grafana", "grafana/grafana", "grafana-data"),
     ],
 )
 def test_generated_catalog_addons_are_private_and_stateful(
@@ -134,6 +133,15 @@ def test_generated_catalog_addons_are_private_and_stateful(
     assert image in plan.yaml
     assert volume in plan.yaml
     assert "privileged:" not in plan.yaml
+    assert "ports:" not in plan.yaml
+
+
+def test_grafana_is_public_url_eligible_without_a_host_port() -> None:
+    plan = generated_compose_plan({"grafana", "prometheus"})
+
+    assert plan.services["grafana"].public_port == 3000
+    assert plan.services["grafana"].is_public is True
+    assert plan.services["prometheus"].is_public is False
     assert "ports:" not in plan.yaml
 
 
