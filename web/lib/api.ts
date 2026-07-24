@@ -21,6 +21,10 @@ import type {
   Deployment,
   Domain,
   GitHubImportStatus,
+  GitHubImport,
+  GitHubImportConfirmation,
+  GitHubImportPreview,
+  GitHubRepository,
   Environment,
   Instance,
   Project,
@@ -171,6 +175,54 @@ export function listProjects(): Promise<Project[]> {
 /** GET /github/import/status — whether the operator configured the GitHub App. */
 export function getGitHubImportStatus(): Promise<GitHubImportStatus> {
   return requestJson<GitHubImportStatus>("/github/import/status");
+}
+
+/** GET /github/import/repositories?installation_id=... */
+export function listGitHubRepositories(installationId: number): Promise<GitHubRepository[]> {
+  return requestJson<GitHubRepository[]>(`/github/import/repositories?installation_id=${installationId}`);
+}
+
+/** GET /github/import/branches?installation_id=...&repository=... */
+export function listGitHubBranches(installationId: number, repository: string): Promise<string[]> {
+  return requestJson<string[]>(
+    `/github/import/branches?installation_id=${installationId}&repository=${id(repository)}`,
+  );
+}
+
+export function previewGitHubImport(args: {
+  installationId: number;
+  repository: string;
+  branch: string;
+}): Promise<GitHubImportPreview> {
+  return requestJson<GitHubImportPreview>("/github/import/preview", {
+    method: "POST",
+    body: {
+      installation_id: args.installationId,
+      repository: args.repository,
+      branch: args.branch,
+    },
+  });
+}
+
+export function confirmGitHubImport(args: {
+  installationId: number;
+  repository: string;
+  branch: string;
+  addons: Array<"postgres" | "redis">;
+}): Promise<GitHubImportConfirmation> {
+  return requestJson<GitHubImportConfirmation>("/github/imports", {
+    method: "POST",
+    body: {
+      installation_id: args.installationId,
+      repository: args.repository,
+      branch: args.branch,
+      addons: args.addons,
+    },
+  });
+}
+
+export function getGitHubImport(importId: string): Promise<GitHubImport> {
+  return requestJson<GitHubImport>(`/github/imports/${id(importId)}`);
 }
 
 /** GET /projects/{project_id}/environments */

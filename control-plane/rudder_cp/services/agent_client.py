@@ -57,6 +57,9 @@ class AgentClient:
         memory_limit_mb: int,
         network: str,
         labels: dict[str, str] | None = None,
+        network_aliases: list[str] | None = None,
+        volumes: dict[str, dict[str, str]] | None = None,
+        command: list[str] | None = None,
     ) -> ContainerState:
         payload = {
             "image": image,
@@ -67,6 +70,9 @@ class AgentClient:
             "memory_limit_mb": memory_limit_mb,
             "network": network,
             "labels": labels or {},
+            "network_aliases": network_aliases or [],
+            "volumes": volumes or {},
+            "command": command,
         }
         return ContainerState.from_payload(await self._request("POST", "/containers", json=payload))
 
@@ -76,12 +82,23 @@ class AgentClient:
         )
 
     async def probe(
-        self, container_id: str, *, path: str, port: int, timeout_seconds: float = 5.0
+        self,
+        container_id: str,
+        *,
+        path: str,
+        port: int,
+        protocol: str = "http",
+        timeout_seconds: float = 5.0,
     ) -> ProbeResult:
         payload = await self._request(
             "POST",
             f"/containers/{container_id}/health",
-            json={"path": path, "port": port, "timeout_seconds": timeout_seconds},
+            json={
+                "path": path,
+                "port": port,
+                "protocol": protocol,
+                "timeout_seconds": timeout_seconds,
+            },
         )
         return ProbeResult(
             ok=bool(payload["ok"]),

@@ -134,6 +134,9 @@ class DockerOps:
             "environment": dict(spec.env),
             "labels": dict(spec.labels),
             "network": spec.network,
+            "network_aliases": list(spec.network_aliases),
+            "volumes": dict(spec.volumes),
+            "command": spec.command,
             "detach": True,
             "nano_cpus": int(spec.cpu_limit * _NANO_CPUS_PER_CORE),
             "mem_limit": f"{spec.memory_limit_mb}m",
@@ -269,6 +272,8 @@ class DockerOps:
                 latency_ms=0.0,
             )
 
+        if req.protocol == "tcp":
+            return await _tcp_probe(ip, req.port, req.timeout_seconds)
         path = req.path if req.path.startswith("/") else f"/{req.path}"
         url = f"http://{ip}:{req.port}{path}"
         timeout = aiohttp.ClientTimeout(total=req.timeout_seconds)
@@ -303,6 +308,30 @@ class DockerOps:
                 latency_ms=round(elapsed, 3),
                 probed_url=url,
             )
+
+
+async def _tcp_probe(ip: str, port: int, timeout_seconds: float) -> HealthProbeResult:
+    started = time.monotonic()
+    url = f"tcp://{ip}:{port}"
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port), timeout_seconds
+        )
+        del reader
+        writer.close()
+        await writer.wait_closed()
+        return HealthProbeResult(
+            ok=True,
+            latency_ms=round((time.monotonic() - started) * 1000, 3),
+            probed_url=url,
+        )
+    except (OSError, TimeoutError) as exc:
+        return HealthProbeResult(
+            ok=False,
+            reason=f"{type(exc).__name__}: {exc}",
+            latency_ms=round((time.monotonic() - started) * 1000, 3),
+            probed_url=url,
+        )
 
 
 def _status_code(exc: docker.errors.APIError) -> int | None:

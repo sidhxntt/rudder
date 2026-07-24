@@ -26,14 +26,17 @@ from rudder_cp.logs.store import BuildLogStore
 from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
+    GitHubImport,
     Instance,
     InstanceStatus,
     Node,
     Service,
+    Volume,
 )
 from rudder_cp.services import traefik, variables
 from rudder_cp.services.agent_client import AgentClient, AgentError
 from rudder_cp.services.builder import BuildFailed, BuildRequest, build_image
+from rudder_cp.services.github_app import GitHubAppClient, GitHubAppError
 from rudder_cp.services.health import is_still_alive, wait_until_healthy
 from rudder_cp.services.locks import service_deploy_lock
 
@@ -103,6 +106,24 @@ async def _deploy_locked(
     session.add(deployment)
     session.commit()
 
+    managed_image = service.build_config.get("managed_image")
+    git_token: str | None = None
+    if not isinstance(managed_image, str):
+        imported = session.exec(
+            select(GitHubImport).where(GitHubImport.app_service_id == service.id)
+        ).first()
+        if imported is not None:
+            try:
+                git_token = await GitHubAppClient(settings).installation_token(
+                    imported.installation_id
+                )
+            except GitHubAppError as exc:
+                return _fail(
+                    session,
+                    deployment,
+                    f"Could not authorize the GitHub App installation. {exc}",
+                )
+
     request = BuildRequest(
         deployment_id=deployment.id,
         service_id=service.id,
@@ -112,11 +133,15 @@ async def _deploy_locked(
         dockerfile_path=service.dockerfile_path,
         container_port=service.container_port,
         start_command=service.start_command,
+        git_token=git_token,
     )
-    try:
-        result = await builder(request, store, settings)
-    except BuildFailed as exc:
-        return _fail(session, deployment, str(exc))
+    if isinstance(managed_image, str):
+        result = type("ManagedImage", (), {"image_tag": managed_image, "commit_sha": None})()
+    else:
+        try:
+            result = await builder(request, store, settings)
+        except BuildFailed as exc:
+            return _fail(session, deployment, str(exc))
 
     deployment.image_tag = getattr(result, "image_tag", None)
     deployment.commit_sha = getattr(result, "commit_sha", deployment.commit_sha)
@@ -139,6 +164,10 @@ async def _deploy_locked(
     container_name = f"rudder-{service.name}-{str(deployment.id)[:8]}"
 
     try:
+        volumes = {
+            f"rudder-volume-{volume.id}": {"bind": volume.mount_path, "mode": "rw"}
+            for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all()
+        }
         state = await agent.create_container(
             image=deployment.image_tag or "",
             name=container_name,
@@ -151,6 +180,9 @@ async def _deploy_locked(
                 "rudder.service": str(service.id),
                 "rudder.deployment": str(deployment.id),
             },
+            network_aliases=[service.name] if isinstance(managed_image, str) else [],
+            volumes=volumes,
+            command=service.build_config.get("command") if isinstance(managed_image, str) else None,
         )
     except AgentError as exc:
         return _fail(session, deployment, f"Could not start the container. {exc}")
@@ -172,6 +204,7 @@ async def _deploy_locked(
         path=service.health_check_path,
         port=service.health_check_port or service.container_port,
         settings=settings,
+        protocol="tcp" if isinstance(managed_image, str) else "http",
     )
     if not outcome.healthy:
         await _discard(agent, session, instance, drain_seconds=0)

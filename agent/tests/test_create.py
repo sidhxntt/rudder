@@ -63,6 +63,27 @@ async def test_create_publishes_no_host_ports_and_applies_limits(
     assert kwargs["detach"] is True
 
 
+async def test_create_accepts_private_aliases_and_named_volume(
+    client: TestClient, docker_client: FakeDockerClient, spec_body: SpecBuilder
+) -> None:
+    response = await client.post(
+        "/containers",
+        json=spec_body(
+            network_aliases=["postgres"],
+            volumes={"rudder-volume-db": {"bind": "/var/lib/postgresql/data", "mode": "rw"}},
+            command=["redis-server", "--requirepass", "secret"],
+        ),
+    )
+    assert response.status == 201
+    kwargs = docker_client.create_kwargs
+    assert kwargs is not None
+    assert kwargs["network_aliases"] == ["postgres"]
+    assert kwargs["volumes"] == {
+        "rudder-volume-db": {"bind": "/var/lib/postgresql/data", "mode": "rw"}
+    }
+    assert kwargs["command"] == ["redis-server", "--requirepass", "secret"]
+
+
 async def test_image_pull_failure_is_422_not_a_crash(
     client: TestClient, docker_client: FakeDockerClient, spec_body: SpecBuilder
 ) -> None:

@@ -28,6 +28,7 @@ from rudder_cp.models import (
     Project,
     Service,
     User,
+    Volume,
 )
 from rudder_cp.services import locks
 from rudder_cp.services.agent_client import AgentError, ContainerState, ProbeResult
@@ -103,6 +104,8 @@ class FakeAgent:
         self.created.append(name)
         self.last_env = env
         self.last_port = container_port
+        self.last_create_kwargs = _kw
+        self.last_image = image
         return ContainerState(id=f"container-{name}", status="starting", docker_status="running")
 
     async def inspect(self, container_id: str) -> ContainerState:
@@ -110,8 +113,11 @@ class FakeAgent:
             return ContainerState(id=container_id, status="stopped", exit_code=1)
         return ContainerState(id=container_id, status="healthy", docker_status="running")
 
-    async def probe(self, container_id, *, path, port, timeout_seconds=5.0) -> ProbeResult:
+    async def probe(
+        self, container_id, *, path, port, timeout_seconds=5.0, protocol="http"
+    ) -> ProbeResult:
         self._probe_count += 1
+        self.last_protocol = protocol
         if self.healthy:
             return ProbeResult(ok=True, status_code=200, reason=None)
         return ProbeResult(ok=False, status_code=502, reason="connection refused")
@@ -367,3 +373,39 @@ async def test_a_non_queued_deployment_is_not_run_twice(engine, service, setting
 
     assert again.detail == "not queued"
     assert builder.started == 0
+
+
+async def test_managed_addon_uses_an_image_volume_alias_and_tcp_readiness(
+    engine, service, settings
+):
+    """Managed infrastructure bypasses BuildKit but stays private and durable."""
+    with Session(engine) as session:
+        managed = session.get(Service, service.id)
+        assert managed is not None
+        managed.name = "redis"
+        managed.source_repo = None
+        managed.container_port = 6379
+        managed.health_check_port = 6379
+        managed.build_config = {
+            "managed_image": "redis:7-alpine",
+            "command": ["redis-server", "--requirepass", "secret"],
+        }
+        session.add(managed)
+        session.flush()
+        session.add(Volume(service_id=managed.id, mount_path="/data"))
+        session.commit()
+
+    async def should_not_build(*_args, **_kwargs):
+        raise AssertionError("managed images must not go through BuildKit")
+
+    agent = FakeAgent()
+    outcome = await _run(engine, _queue(engine, service.id), agent, settings, should_not_build)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    assert agent.last_image == "redis:7-alpine"
+    assert agent.last_protocol == "tcp"
+    assert agent.last_create_kwargs["network_aliases"] == ["redis"]
+    assert list(agent.last_create_kwargs["volumes"].values()) == [
+        {"bind": "/data", "mode": "rw"}
+    ]
+    assert agent.last_create_kwargs["command"] == ["redis-server", "--requirepass", "secret"]

@@ -1,0 +1,33 @@
+"""Persisted state for a repository import and its managed add-ons."""
+
+import uuid
+from datetime import datetime
+
+import sqlalchemy as sa
+from sqlmodel import Field, SQLModel
+
+from rudder_cp.models.base import created_at_column, uuid_pk
+
+
+class GitHubImport(SQLModel, table=True):
+    """One confirmed GitHub repository import.
+
+    The service ids make the import progress API a projection of the actual
+    deployment rows rather than a second, eventually-consistent state machine.
+    """
+
+    __tablename__ = "github_import"
+
+    id: uuid.UUID = uuid_pk()
+    installation_id: int = Field(nullable=False)
+    repository: str = Field(sa_column=sa.Column(sa.String(255), nullable=False))
+    branch: str = Field(sa_column=sa.Column(sa.String(255), nullable=False))
+    project_id: uuid.UUID = Field(foreign_key="project.id", sa_type=sa.Uuid, nullable=False)
+    app_service_id: uuid.UUID = Field(foreign_key="service.id", sa_type=sa.Uuid, nullable=False)
+    postgres_service_id: uuid.UUID | None = Field(
+        default=None, foreign_key="service.id", sa_type=sa.Uuid
+    )
+    redis_service_id: uuid.UUID | None = Field(
+        default=None, foreign_key="service.id", sa_type=sa.Uuid
+    )
+    created_at: datetime = created_at_column()

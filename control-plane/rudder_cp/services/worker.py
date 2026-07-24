@@ -17,6 +17,7 @@ from rudder_cp.logs.store import BuildLogStore
 from rudder_cp.models import Deployment, DeploymentStatus
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.deploy import run_deployment
+from rudder_cp.services.imports import app_dependency_state
 from rudder_cp.services.monitor import reconcile_instances
 
 log = logging.getLogger("rudder_cp.worker")
@@ -64,6 +65,19 @@ async def tick(
         # A fresh session per deployment: a long build must not hold one open,
         # and one failed deploy must not poison the next one's session state.
         with Session(engine) as session:
+            deployment = session.get(Deployment, deployment_id)
+            if deployment is None:
+                continue
+            dependency_state, reason = app_dependency_state(session, deployment.service_id)
+            if dependency_state == "waiting":
+                continue
+            if dependency_state == "failed":
+                deployment.status = DeploymentStatus.FAILED
+                deployment.error_message = reason
+                session.add(deployment)
+                session.commit()
+                log.info("deployment %s -> failed (%s)", deployment_id, reason)
+                continue
             outcome = await run_deployment(
                 deployment_id,
                 session=session,

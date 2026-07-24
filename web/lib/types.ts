@@ -150,6 +150,40 @@ export interface GitHubImportStatus {
   message: string;
 }
 
+export interface GitHubRepository {
+  full_name: string;
+  default_branch: string;
+  private: boolean;
+}
+
+export interface GitHubImportPreview {
+  is_node_app: boolean;
+  addons: Array<"postgres" | "redis">;
+  externally_managed: Array<"postgres" | "redis">;
+}
+
+export interface GitHubImportConfirmation {
+  import_id: string;
+  project_id: string;
+  environment_id: string;
+  app_service_id: string;
+}
+
+export interface GitHubImportStep {
+  label: string;
+  service_id: string;
+  service_name: string | null;
+  deployment_id: string | null;
+  status: DeploymentStatus;
+  error_message: string | null;
+}
+
+export interface GitHubImport extends GitHubImportConfirmation {
+  repository: string;
+  branch: string;
+  steps: GitHubImportStep[];
+}
+
 /** Payload of the terminal `event: end` frame on the build-log stream. */
 export type BuildOutcome = "succeeded" | "failed";
 

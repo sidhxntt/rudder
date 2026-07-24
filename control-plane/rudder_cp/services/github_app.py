@@ -58,6 +58,10 @@ class GitHubAppClient:
         except (KeyError, ValueError, UnicodeDecodeError) as exc:
             raise GitHubAppError("Repository has no valid package.json on this branch.") from exc
 
+    async def installation_token(self, installation_id: int) -> str:
+        """Mint a short-lived installation token for a source checkout."""
+        return await self._installation_token(installation_id)
+
     async def _get(self, installation_id: int, path: str) -> Any:
         token = await self._installation_token(installation_id)
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
