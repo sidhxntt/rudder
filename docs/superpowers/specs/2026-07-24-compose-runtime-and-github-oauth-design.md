@@ -13,9 +13,13 @@ that generated file for the deployment.
 
 ## Authentication and repository access
 
-GitHub OAuth authenticates the Rudder user. The `/auth/github/start` endpoint
-redirects to GitHub, and the callback creates or links a Rudder `User` by the
-stable GitHub user ID. It then issues the existing Rudder session cookie.
+GitHub OAuth authenticates Rudder users. The `/auth/github/start` endpoint
+redirects to GitHub, and the callback creates or links a Rudder `User` only by
+GitHub's stable 64-bit numeric user ID. The nullable `github_id` and
+`github_login` fields are introduced by
+`control-plane/migrations/versions/0003_github_oauth_identity.py`; login names
+and emails remain mutable profile data, never account-linking keys. It then
+issues the existing Rudder session cookie.
 
 The GitHub App remains a server-side integration. It supplies repository
 contents, branch discovery, installation access, and webhook authentication.

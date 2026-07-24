@@ -4,7 +4,7 @@
 
 **Goal:** Replace browser password login with GitHub OAuth and retain the GitHub App for repositories.
 
-**Architecture:** GitHub OAuth identifies a Rudder user and sets the existing session cookie. GitHub App installations remain the server-side authority for repository access and webhooks.
+**Architecture:** GitHub OAuth identifies Rudder users by GitHub's immutable 64-bit numeric ID and sets the existing session cookie. GitHub App installations remain the server-side authority for repository access and webhooks.
 
 **Tech Stack:** FastAPI, SQLModel/Alembic, httpx, GitHub OAuth, Next.js, pytest.
 
@@ -15,7 +15,7 @@
 **Files:**
 - Modify: \`control-plane/rudder_cp/config.py\`
 - Modify: \`control-plane/rudder_cp/models/user.py\`
-- Create: \`control-plane/migrations/versions/0003_github_oauth.py\`
+- Create: \`control-plane/migrations/versions/0003_github_oauth_identity.py\`
 - Modify: \`control-plane/tests/test_auth.py\`
 
 - [ ] **Step 1: Write a failing service test**
@@ -37,7 +37,7 @@ Expected: FAIL because the service does not exist.
 - [ ] **Step 3: Add fields, configuration, and migration**
 
 \`\`\`python
-github_id: int | None = Field(default=None, unique=True, index=True)
+github_id: int | None = Field(sa_column=sa.Column(sa.BigInteger, unique=True, index=True))
 github_login: str | None = Field(default=None, max_length=255)
 github_oauth_client_id: str = ""
 github_oauth_client_secret: str = ""
@@ -45,14 +45,15 @@ github_oauth_redirect_uri: str = ""
 \`\`\`
 
 The migration adds nullable identity fields, and the service creates or updates
-the row matched by GitHub's stable numeric ID.
+OAuth users only by GitHub's stable 64-bit numeric ID. Mutable login names and
+emails are profile data, never account-linking keys.
 
 - [ ] **Step 4: Verify and commit**
 
 Run: \`cd control-plane && uv run pytest tests/test_auth.py -q\`
 
 \`\`\`bash
-git add control-plane/rudder_cp/config.py control-plane/rudder_cp/models/user.py control-plane/migrations/versions/0003_github_oauth.py control-plane/tests/test_auth.py
+git add control-plane/rudder_cp/config.py control-plane/rudder_cp/models/user.py control-plane/migrations/versions/0003_github_oauth_identity.py control-plane/tests/test_auth.py control-plane/tests/test_github_oauth_migration.py
 git commit -m "feat: persist GitHub OAuth identities"
 \`\`\`
 

@@ -13,7 +13,7 @@ actually owns: status codes, the error envelope, and where the token comes from.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from types import MethodType
+from pathlib import Path
 from uuid import uuid4
 
 import jwt
@@ -282,7 +282,7 @@ async def test_find_or_create_github_user_keeps_existing_email_when_another_user
     assert updated.email == "original@github.test"
 
 
-async def test_find_or_create_github_user_returns_the_winner_of_an_insert_race(
+async def test_find_or_create_github_user_recovers_after_retryable_insert_failure(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     winner = User(
@@ -294,28 +294,17 @@ async def test_find_or_create_github_user_returns_the_winner_of_an_insert_race(
     session.add(winner)
     session.commit()
 
-    real_exec = session.exec
-    calls = 0
-
-    def exec_with_initial_miss(self: Session, statement, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return type("NoResult", (), {"first": lambda self: None})()
-        return real_exec(statement, *args, **kwargs)
-
     real_commit = session.commit
     commits = 0
 
-    def commit_with_race(self: Session) -> None:
+    def commit_with_race() -> None:
         nonlocal commits
         commits += 1
         if commits == 1:
             raise sa.exc.IntegrityError("INSERT", {}, Exception("duplicate GitHub ID"))
         real_commit()
 
-    monkeypatch.setattr(session, "exec", MethodType(exec_with_initial_miss, session))
-    monkeypatch.setattr(session, "commit", MethodType(commit_with_race, session))
+    monkeypatch.setattr(session, "commit", commit_with_race)
 
     user = await auth_service.find_or_create_github_user(
         session,
@@ -327,6 +316,73 @@ async def test_find_or_create_github_user_returns_the_winner_of_an_insert_race(
     assert user.id == winner.id
     assert user.github_login == "winner-renamed"
     assert user.email == "winner@github.test"
+
+
+async def test_find_or_create_github_user_retries_a_bounded_number_of_times(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commits = 0
+    real_commit = session.commit
+
+    def fail_twice_then_commit() -> None:
+        nonlocal commits
+        commits += 1
+        if commits <= 2:
+            raise sa.exc.IntegrityError("INSERT", {}, Exception("retryable failure"))
+        real_commit()
+
+    monkeypatch.setattr(session, "commit", fail_twice_then_commit)
+
+    user = await auth_service.find_or_create_github_user(
+        session,
+        github_id=2468,
+        login="octocat",
+        email="octocat@github.test",
+    )
+
+    assert user.github_id == 2468
+    assert commits == auth_service.GITHUB_USER_WRITE_ATTEMPTS
+
+
+async def test_find_or_create_github_user_is_unique_across_independent_sqlite_sessions(
+    tmp_path: Path,
+) -> None:
+    """SQLite serializes writers, so this covers winner/uniqueness, not a PG race."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'github-identities.db'}")
+    SQLModel.metadata.create_all(engine)
+    try:
+        with Session(engine) as first_session:
+            created = await auth_service.find_or_create_github_user(
+                first_session,
+                github_id=13_579,
+                login="octocat",
+                email="octocat@github.test",
+            )
+
+        with Session(engine) as second_session:
+            second_session.add(
+                User(
+                    email="duplicate@github.test",
+                    password_hash="not-a-real-hash",
+                    github_id=13_579,
+                    github_login="duplicate",
+                )
+            )
+            with pytest.raises(sa.exc.IntegrityError):
+                second_session.commit()
+            second_session.rollback()
+
+            winner = await auth_service.find_or_create_github_user(
+                second_session,
+                github_id=13_579,
+                login="octocat-renamed",
+                email="octocat@github.test",
+            )
+
+        assert winner.id == created.id
+        assert winner.github_login == "octocat-renamed"
+    finally:
+        engine.dispose()
 
 
 async def test_authenticate_accepts_the_seeded_credentials(

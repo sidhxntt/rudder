@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 # The password Settings falls back to when RUDDER_ADMIN_PASSWORD is unset.
 _PLACEHOLDER_PASSWORD = "change-me"
+# A conflicted insert can be retried after a competing callback commits, but a
+# persistent database constraint failure must reach the caller rather than spin.
+GITHUB_USER_WRITE_ATTEMPTS = 3
 
 
 def _canonical_github_email(email: str | None) -> str | None:
@@ -144,8 +147,9 @@ async def find_or_create_github_user(
     ``IntegrityError`` to the OAuth callback.
     """
     canonical_email = _canonical_github_email(email)
+    last_error: IntegrityError | None = None
 
-    while True:
+    for _ in range(GITHUB_USER_WRITE_ATTEMPTS):
         user = session.exec(select(User).where(User.github_id == github_id)).first()
         if user is not None:
             user.github_login = login
@@ -169,12 +173,16 @@ async def find_or_create_github_user(
 
         try:
             session.commit()
-        except IntegrityError:
+        except IntegrityError as exc:
             session.rollback()
+            last_error = exc
             continue
 
         session.refresh(user)
         return user
+
+    assert last_error is not None
+    raise last_error
 
 
 async def authenticate(session: Session, email: str, password: str) -> User:

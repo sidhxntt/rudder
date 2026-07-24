@@ -24,11 +24,15 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     has_github_identities = op.get_bind().execute(
-        sa.text('SELECT 1 FROM "user" WHERE github_id IS NOT NULL LIMIT 1')
+        sa.text(
+            'SELECT 1 FROM "user" '
+            "WHERE github_id IS NOT NULL OR github_login IS NOT NULL LIMIT 1"
+        )
     ).scalar()
     if has_github_identities is not None:
         raise RuntimeError(
-            "Cannot downgrade GitHub OAuth identities while users have a github_id. "
+            "Cannot downgrade GitHub OAuth identities while users have a github_id or "
+            "github_login. "
             "Migrate or remove those identities explicitly before downgrading."
         )
     op.drop_index("ix_user_github_id", table_name="user")
