@@ -164,13 +164,21 @@ export interface GitHubInstallation {
 
 export interface GitHubImportPreview {
   is_node_app: boolean;
-  addons: Array<"postgres" | "redis">;
-  externally_managed: Array<"postgres" | "redis">;
+  addons: string[];
+  externally_managed: string[];
   compose_source: "repository" | "generated";
   compose_manifest: string;
   services: Array<{
     name: string;
     public_port: number | null;
+    container_port: number | null;
+    role: string;
+    is_public: boolean;
+  }>;
+  processes: Array<{
+    role: "web" | "worker" | "scheduler" | "realtime";
+    command: string;
+    source: "procfile" | "package_json";
   }>;
 }
 

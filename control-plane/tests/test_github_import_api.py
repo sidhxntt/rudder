@@ -26,13 +26,22 @@ class FakeGitHub:
 
     async def package_json(self, installation_id: int, repository: str, branch: str) -> dict:
         assert (installation_id, repository, branch) == (42, "acme/store-api", "main")
-        return {"dependencies": {"express": "1", "pg": "1", "redis": "1"}}
+        return {
+            "dependencies": {"express": "1", "pg": "1", "redis": "1"},
+            "scripts": {"start": "node server.js"},
+        }
 
     async def file_at_ref(
         self, installation_id: int, repository: str, branch: str, path: str
     ) -> str | None:
         assert (installation_id, repository, branch) == (42, "acme/store-api", "main")
-        assert path in {"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
+        assert path in {
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+            "Procfile",
+        }
         return None
 
 
@@ -120,6 +129,12 @@ def test_import_preview_returns_the_resolved_compose_plan(import_client: TestCli
     assert preview["compose_source"] == "generated"
     assert [service["name"] for service in preview["services"]] == ["app", "postgres", "redis"]
     assert preview["services"][0]["public_port"] == 3000
+    assert preview["services"][0]["role"] == "web"
+    assert preview["services"][1]["role"] == "database"
+    assert preview["services"][2]["container_port"] == 6379
+    assert preview["processes"] == [
+        {"role": "web", "command": "npm run start", "source": "package_json"}
+    ]
 
 
 def test_github_installations_lists_app_connections(import_client: TestClient) -> None:

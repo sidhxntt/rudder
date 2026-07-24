@@ -14,7 +14,7 @@ import {
 } from "@/lib/queries";
 import type { GitHubImportStep } from "@/lib/types";
 
-type Addon = "postgres" | "redis";
+type Addon = string;
 
 function stepLabel(step: GitHubImportStep): string {
   if (step.status === "live") return "live";
@@ -227,12 +227,12 @@ export function GitHubImportDialog({
                           {preview.data.services.map((service) => (
                             <li key={service.name} className="flex items-center justify-between gap-3 py-2">
                               <span className="font-medium text-ink">{service.name}</span>
-                              <span className={service.public_port ? "text-accent" : "text-ink-mute"}>{service.public_port ? `public · :${service.public_port}` : "private"}</span>
+                              <span className={service.public_port ? "text-accent" : "text-ink-mute"}>{service.public_port ? `${service.role} · public · :${service.public_port}` : `${service.role} · private`}</span>
                             </li>
                           ))}
                         </ul>
                         {preview.data.compose_source === "generated" ? <div className="space-y-2">
-                          {preview.data.addons.map((addon) => <label key={addon} className="flex items-center gap-2 text-ink"><input type="checkbox" checked={selectedAddons.includes(addon)} onChange={() => toggle(addon)} /> Provision private {addon === "postgres" ? "PostgreSQL 16" : "Redis 7"}</label>)}
+                          {preview.data.addons.map((addon) => <label key={addon} className="flex items-center gap-2 text-ink"><input type="checkbox" checked={selectedAddons.includes(addon)} onChange={() => toggle(addon)} /> Provision private {addon}</label>)}
                           {preview.data.externally_managed.map((addon) => <p key={addon} className="text-ink-mute">{addon} is already externally configured and will not be provisioned.</p>)}
                         </div> : <p className="text-ink-mute">Repository-defined services stay isolated unless they declare a public port.</p>}
                         <details className="group rounded bg-surface-raised px-3 py-2">

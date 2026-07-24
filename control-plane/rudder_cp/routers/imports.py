@@ -16,6 +16,7 @@ from rudder_cp.services.imports import (
     import_progress,
     provision_import,
 )
+from rudder_cp.services.processes import detect_processes
 
 router = APIRouter(tags=["github-import"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -52,11 +53,21 @@ class GitHubImportPreview(BaseModel):
     compose_source: str
     compose_manifest: str
     services: list["ComposeServicePreview"]
+    processes: list["ProcessPreview"]
 
 
 class ComposeServicePreview(BaseModel):
     name: str
     public_port: int | None
+    container_port: int | None
+    role: str
+    is_public: bool
+
+
+class ProcessPreview(BaseModel):
+    role: str
+    command: str
+    source: str
 
 
 class GitHubImportConfirmRequest(GitHubImportPreviewRequest):
@@ -149,6 +160,9 @@ async def github_import_preview(
         package_json = await request.app.state.github.package_json(
             payload.installation_id, payload.repository, payload.branch
         )
+        procfile = await request.app.state.github.file_at_ref(
+            payload.installation_id, payload.repository, payload.branch, "Procfile"
+        )
     except GitHubAppError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     proposal = detect_node_addons(package_json, existing_variable_keys=set())
@@ -166,8 +180,18 @@ async def github_import_preview(
         compose_source=compose_plan.source,
         compose_manifest=compose_plan.yaml,
         services=[
-            ComposeServicePreview(name=service.name, public_port=service.public_port)
+            ComposeServicePreview(
+                name=service.name,
+                public_port=service.public_port,
+                container_port=service.container_port,
+                role=service.role,
+                is_public=service.is_public,
+            )
             for service in compose_plan.services.values()
+        ],
+        processes=[
+            ProcessPreview(role=process.role, command=process.command, source=process.source)
+            for process in detect_processes(package_json, procfile)
         ],
     )
 

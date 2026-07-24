@@ -214,7 +214,7 @@ export function confirmGitHubImport(args: {
   installationId: number;
   repository: string;
   branch: string;
-  addons: Array<"postgres" | "redis">;
+  addons: string[];
 }): Promise<GitHubImportConfirmation> {
   return requestJson<GitHubImportConfirmation>("/github/imports", {
     method: "POST",
