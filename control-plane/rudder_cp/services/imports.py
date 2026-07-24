@@ -190,6 +190,35 @@ async def provision_import(
         ),
     )
 
+    # A repository Compose file describes the full topology, not just the
+    # route-owning web process. Create private Rudder service records for every
+    # child so the canvas can represent workers, brokers, and observability
+    # containers even though one Compose release owns their runtime lifecycle.
+    compose_children: list[tuple[Service, str, str, bool]] = []
+    if plan.source == "repository":
+        for offset, planned in enumerate(plan.services.values(), start=1):
+            if planned.name == public_service.name:
+                continue
+            child = Service(
+                environment_id=environment.id,
+                name=planned.name,
+                kind=(
+                    ServiceKind.DATABASE if planned.role == "database" else ServiceKind.APP
+                ),
+                build_config={
+                    "compose_service": planned.name,
+                    "compose_role": planned.role,
+                    "managed_by_service_id": str(app.id),
+                },
+                container_port=planned.container_port or 8080,
+                health_check_port=planned.container_port,
+                canvas_x=-220 if offset % 2 else 680,
+                canvas_y=(offset - 2) * 150,
+            )
+            session.add(child)
+            session.flush()
+            compose_children.append((child, planned.name, planned.role, planned.is_public))
+
     if postgres is not None:
         await variables.set_variable(
             session, app.id, "DATABASE_URL", "${{postgres.DATABASE_URL}}"
@@ -211,11 +240,16 @@ async def provision_import(
     )
     session.add(record)
     session.flush()
-    for service_id, compose_service, role, is_public in (
+    graph_entries: list[tuple[uuid.UUID | None, str, str, bool]] = [
         (app.id, public_service.name, public_service.role, True),
         (postgres.id if postgres else None, "postgres", "database", False),
         (redis.id if redis else None, "redis", "cache", False),
-    ):
+    ]
+    graph_entries.extend(
+        (child.id, compose_service, role, is_public)
+        for child, compose_service, role, is_public in compose_children
+    )
+    for service_id, compose_service, role, is_public in graph_entries:
         if service_id is None:
             continue
         session.add(

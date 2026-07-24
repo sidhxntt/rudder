@@ -57,9 +57,11 @@ def test_repository_compose_classifies_common_service_roles() -> None:
 
     assert plan.services["web"].role == "web"
     assert plan.services["web"].is_public is True
+    assert plan.services["web"].container_port == 8080
     assert plan.services["worker"].role == "worker"
     assert plan.services["worker"].is_public is False
     assert plan.services["postgres"].role == "database"
+    assert plan.services["postgres"].container_port is None
     assert plan.services["prometheus"].role == "observability"
     assert plan.services["grafana"].role == "observability"
 

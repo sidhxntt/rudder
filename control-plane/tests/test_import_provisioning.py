@@ -17,6 +17,7 @@ from rudder_cp.models import (
     Variable,
     Volume,
 )
+from rudder_cp.services.compose import parse_repository_compose
 from rudder_cp.services.imports import (
     AddonProposal,
     app_dependency_state,
@@ -111,6 +112,40 @@ async def test_confirmed_import_rejects_addons_not_in_the_review(session: Sessio
             selected_addons={"postgres"},
             proposal=AddonProposal(is_node_app=True, addons=(), externally_managed=()),
         )
+
+
+async def test_repository_compose_creates_private_worker_and_observability_services(
+    session: Session,
+) -> None:
+    result = await provision_import(
+        session,
+        installation_id=42,
+        repository="acme/observed-api",
+        branch="main",
+        selected_addons=set(),
+        proposal=AddonProposal(is_node_app=False, addons=(), externally_managed=()),
+        compose_plan=parse_repository_compose(
+            "services:\n"
+            "  web: {build: ., ports: [3000]}\n"
+            "  worker: {build: ., command: npm run worker}\n"
+            "  prometheus: {image: prom/prometheus:v3}\n"
+            "  grafana: {image: grafana/grafana:11}\n"
+        ),
+    )
+
+    graph = list(
+        session.exec(
+            select(GitHubImportService)
+            .where(GitHubImportService.github_import_id == result.import_id)
+            .order_by(GitHubImportService.compose_service)
+        ).all()
+    )
+    assert [(row.compose_service, row.role, row.is_public) for row in graph] == [
+        ("grafana", "observability", False),
+        ("prometheus", "observability", False),
+        ("web", "web", True),
+        ("worker", "worker", False),
+    ]
 
 
 async def test_repeat_import_gets_a_unique_app_hostname(session: Session) -> None:

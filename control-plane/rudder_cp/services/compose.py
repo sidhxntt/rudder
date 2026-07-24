@@ -132,6 +132,7 @@ class ComposeService:
     name: str
     public_port: int | None
     role: ServiceRole = "other"
+    container_port: int | None = None
 
     @property
     def is_public(self) -> bool:
@@ -213,6 +214,7 @@ def parse_repository_compose(manifest: str) -> ComposePlan:
             name=name,
             public_port=public_port,
             role=_service_role(name, service),
+            container_port=_container_port(service, public_port),
         )
 
     normalized = {
@@ -235,7 +237,9 @@ def generated_compose_plan(selected_addons: set[str]) -> ComposePlan:
     services: dict[str, dict[str, Any]] = {
         "app": {"build": ".", "expose": ["3000"]},
     }
-    plan_services = {"app": ComposeService(name="app", public_port=3000, role="web")}
+    plan_services = {
+        "app": ComposeService(name="app", public_port=3000, role="web", container_port=3000)
+    }
     volumes: dict[str, dict[str, object]] = {}
     for addon in sorted(selected_addons):
         definition = _CATALOG[addon]
@@ -255,6 +259,7 @@ def generated_compose_plan(selected_addons: set[str]) -> ComposePlan:
             name=addon,
             public_port=None,
             role=definition["role"],
+            container_port=definition["port"],
         )
     document: dict[str, Any] = {"services": services}
     if volumes:
@@ -372,3 +377,19 @@ def _public_port(name: str, ports: object) -> int | None:
     if not 1 <= port <= 65535:
         raise ComposeValidationError(f"Compose service {name} has an invalid public port.")
     return port
+
+
+def _container_port(service: dict[str, Any], public_port: int | None) -> int | None:
+    """Return the first internal exposed port for UI/runtime metadata."""
+    expose = service.get("expose")
+    if isinstance(expose, (str, int)):
+        expose = [expose]
+    if isinstance(expose, list) and expose:
+        value = str(expose[0]).split("/", 1)[0]
+        try:
+            port = int(value)
+        except ValueError:
+            port = None
+        if port is not None and 1 <= port <= 65535:
+            return port
+    return public_port
