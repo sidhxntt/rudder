@@ -80,7 +80,8 @@ async def run_deployment(
             # Another deploy for this service holds the lock. Leave this one
             # queued; the worker will pick it up again once that one finishes.
             return DeployOutcome(deployment_id, DeploymentStatus.QUEUED, "service busy")
-        return await _deploy_locked(
+        await _open_deployment_log(store, deployment, service)
+        outcome = await _deploy_locked(
             deployment,
             service,
             session=session,
@@ -89,6 +90,8 @@ async def run_deployment(
             settings=settings,
             builder=builder,
         )
+        await _close_deployment_log(store, outcome)
+        return outcome
 
 
 async def _deploy_locked(
@@ -244,6 +247,36 @@ async def _deploy_locked(
 
 
 # --------------------------------------------------------------------- helpers
+
+
+async def _open_deployment_log(
+    store: BuildLogStore, deployment: Deployment, service: Service
+) -> None:
+    """Every deployment gets a readable lifecycle log, including add-ons."""
+    await store.open_log(deployment.id)
+    managed_image = service.build_config.get("managed_image")
+    if isinstance(managed_image, str):
+        await store.append(
+            deployment.id,
+            f"using managed image {managed_image}; no source build is required\n"
+            f"starting private service {service.name}\n",
+        )
+    else:
+        await store.append(
+            deployment.id,
+            f"starting source build for {service.source_repo or service.name}\n",
+        )
+
+
+async def _close_deployment_log(store: BuildLogStore, outcome: DeployOutcome) -> None:
+    if outcome.status is DeploymentStatus.LIVE:
+        await store.append(outcome.deployment_id, "deployment is live\n")
+        await store.close_log(outcome.deployment_id, "succeeded")
+        return
+
+    reason = outcome.detail or "deployment did not reach live"
+    await store.append(outcome.deployment_id, f"DEPLOYMENT FAILED: {reason}\n")
+    await store.close_log(outcome.deployment_id, "failed")
 
 
 def _supersede_older(session: Session, current: Deployment) -> None:

@@ -61,7 +61,6 @@ async def build_image(
     settings: Settings,
 ) -> BuildResult:
     """Clone at a SHA, produce an image, push it. Raises BuildFailed."""
-    await store.open_log(request.deployment_id)
     workdir = Path(tempfile.mkdtemp(prefix=f"rudder-build-{request.service_id}-"))
     try:
         sha = request.commit_sha or await _resolve_branch_head(request, store, settings)
@@ -101,17 +100,14 @@ async def build_image(
             store=store,
             settings=settings,
         )
-        await store.close_log(request.deployment_id, "succeeded")
         return BuildResult(image_tag=image_tag, commit_sha=sha)
     except BuildFailed as exc:
         await _log(store, request, f"BUILD FAILED: {exc}")
-        await store.close_log(request.deployment_id, "failed")
         raise
     except Exception as exc:
         # Unexpected failures still have to close the log, or every SSE reader
         # attached to this build hangs until its client gives up.
         await _log(store, request, f"BUILD FAILED: {type(exc).__name__}")
-        await store.close_log(request.deployment_id, "failed")
         raise BuildFailed(f"Unexpected build error: {type(exc).__name__}") from exc
     finally:
         # Clones accumulate. Clean up on success, failure, and exception alike.

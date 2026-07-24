@@ -409,3 +409,34 @@ async def test_managed_addon_uses_an_image_volume_alias_and_tcp_readiness(
         {"bind": "/data", "mode": "rw"}
     ]
     assert agent.last_create_kwargs["command"] == ["redis-server", "--requirepass", "secret"]
+
+
+async def test_managed_addon_has_a_completed_lifecycle_log(engine, service, settings):
+    with Session(engine) as session:
+        managed = session.get(Service, service.id)
+        assert managed is not None
+        managed.name = "postgres"
+        managed.source_repo = None
+        managed.container_port = 5432
+        managed.health_check_port = 5432
+        managed.build_config = {"managed_image": "postgres:16-alpine"}
+        session.add(managed)
+        session.commit()
+
+    from rudder_cp.logs.store import BuildLogStore
+
+    store = BuildLogStore(settings.build_log_dir)
+    outcome = await _run(
+        engine,
+        _queue(engine, service.id),
+        FakeAgent(),
+        settings,
+        builder=lambda *_args: (_ for _ in ()).throw(AssertionError("must not build")),
+        store=store,
+    )
+
+    assert outcome.status is DeploymentStatus.LIVE
+    contents = store.path_for(outcome.deployment_id).read_text()
+    assert "using managed image postgres:16-alpine" in contents
+    assert "starting private service postgres" in contents
+    assert "deployment is live" in contents

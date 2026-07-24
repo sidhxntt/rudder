@@ -76,6 +76,12 @@ async def tick(
                 deployment.error_message = reason
                 session.add(deployment)
                 session.commit()
+                await store.open_log(deployment.id)
+                await store.append(
+                    deployment.id,
+                    f"DEPLOYMENT FAILED: {reason or 'A required managed dependency failed.'}\n",
+                )
+                await store.close_log(deployment.id, "failed")
                 log.info("deployment %s -> failed (%s)", deployment_id, reason)
                 continue
             outcome = await run_deployment(
