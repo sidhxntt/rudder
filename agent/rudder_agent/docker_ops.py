@@ -436,8 +436,14 @@ def _compose_states(log: str) -> list[ComposeServiceState]:
         return []
     try:
         payload = json.loads(log)
-    except ValueError as exc:
-        raise errors.compose_error("docker compose ps returned invalid JSON") from exc
+    except ValueError:
+        # Compose v2's `ps --format json` is not consistent across releases:
+        # some versions write one JSON array while v2.33 writes NDJSON (one
+        # object per service). Accept both documented machine-readable forms.
+        try:
+            payload = [json.loads(line) for line in log.splitlines() if line.strip()]
+        except ValueError as ndjson_exc:
+            raise errors.compose_error("docker compose ps returned invalid JSON") from ndjson_exc
     rows = payload if isinstance(payload, list) else [payload]
     states: list[ComposeServiceState] = []
     for row in rows:

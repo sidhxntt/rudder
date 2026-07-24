@@ -62,3 +62,25 @@ async def test_compose_ps_parses_only_docker_compose_json(tmp_path) -> None:
     assert states[0].container_id == "abc"
     assert states[0].health == "healthy"
     assert commands[-1][-3:] == ["ps", "--format", "json"]
+
+
+async def test_compose_ps_parses_ndjson_from_compose_v2(tmp_path) -> None:
+    """Compose v2.33 emits one JSON object per line, not a JSON array."""
+    commands: list[list[str]] = []
+    ops = DockerOps(
+        FakeDockerClient(),
+        compose_state_dir=str(tmp_path / "state"),
+        compose_runner=_runner(
+            commands,
+            '{"Service":"app","ID":"abc","State":"running","Health":""}\n'
+            '{"Service":"postgres","ID":"def","State":"running","Health":""}',
+        ),
+    )
+    await ops.compose_up("rudder-shop", "services: {}\n")
+
+    states = await ops.compose_ps("rudder-shop")
+
+    assert [(state.service, state.container_id, state.status) for state in states] == [
+        ("app", "abc", "running"),
+        ("postgres", "def", "running"),
+    ]
