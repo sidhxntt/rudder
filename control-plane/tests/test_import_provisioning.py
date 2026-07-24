@@ -114,6 +114,40 @@ async def test_confirmed_import_rejects_addons_not_in_the_review(session: Sessio
         )
 
 
+async def test_catalog_addons_create_private_services_and_app_references(session: Session) -> None:
+    result = await provision_import(
+        session,
+        installation_id=42,
+        repository="acme/queue-api",
+        branch="main",
+        selected_addons={"mysql", "rabbitmq", "minio", "prometheus", "grafana"},
+        proposal=AddonProposal(
+            is_node_app=True,
+            addons=("mysql", "rabbitmq", "minio", "prometheus", "grafana"),
+            externally_managed=(),
+        ),
+    )
+
+    services = list(session.exec(select(Service).order_by(Service.name)).all())
+    assert [service.name for service in services] == [
+        "grafana",
+        "minio",
+        "mysql",
+        "prometheus",
+        "queue-api",
+        "rabbitmq",
+    ]
+    assert len(session.exec(select(Volume)).all()) == 5
+    app_variables = list(
+        session.exec(select(Variable).where(Variable.service_id == result.app_service_id)).all()
+    )
+    assert {variable.key for variable in app_variables} == {
+        "MYSQL_URL",
+        "RABBITMQ_URL",
+        "MINIO_ENDPOINT",
+    }
+
+
 async def test_repository_compose_creates_private_worker_and_observability_services(
     session: Session,
 ) -> None:

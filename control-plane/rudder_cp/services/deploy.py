@@ -28,6 +28,7 @@ from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
     GitHubImport,
+    GitHubImportService,
     Instance,
     InstanceStatus,
     Node,
@@ -526,14 +527,14 @@ async def _compose_runtime_manifest(
     app["image"] = image
     app["environment"] = app_env
 
-    for service_id, compose_service in (
-        (imported.postgres_service_id, "postgres"),
-        (imported.redis_service_id, "redis"),
-    ):
-        if service_id is None:
+    graph = session.exec(
+        select(GitHubImportService).where(GitHubImportService.github_import_id == imported.id)
+    ).all()
+    for mapping in graph:
+        if mapping.service_id == app_service.id:
             continue
-        sibling = services.get(compose_service)
-        service = session.get(Service, service_id)
+        sibling = services.get(mapping.compose_service)
+        service = session.get(Service, mapping.service_id)
         if isinstance(sibling, dict) and service is not None:
             sibling["environment"] = await variables.resolve_service_env(session, service.id)
 

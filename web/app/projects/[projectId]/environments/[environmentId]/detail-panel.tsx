@@ -71,7 +71,11 @@ export function DetailPanel({
                 {service.source_branch ? `@${service.source_branch}` : ""}
               </span>
             ) : (
-              <span>{service.kind}</span>
+              <span>
+                {typeof service.build_config.compose_role === "string"
+                  ? service.build_config.compose_role
+                  : service.kind}
+              </span>
             )}
           </p>
           {url ? (

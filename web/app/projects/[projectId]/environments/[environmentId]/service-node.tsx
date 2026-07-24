@@ -12,6 +12,7 @@ export type ServiceNodeData = {
   serviceId: string;
   name: string;
   kind: ServiceKind;
+  role?: string;
   url: string | null;
   /** Compose dependencies share the application release and its lifecycle. */
   managedByServiceId?: string;
@@ -48,7 +49,7 @@ export function ServiceNode(props: NodeProps) {
       <div className="flex items-center justify-between gap-sm border-b border-hairline-faint px-md py-sm">
         <span className="truncate text-caption font-medium text-ink">{data.name}</span>
         <span className="shrink-0 rounded-xs border border-hairline px-xs py-xxs text-micro text-ink-mute">
-          {KIND_LABEL[data.kind]}
+          {data.role ?? KIND_LABEL[data.kind]}
         </span>
       </div>
 

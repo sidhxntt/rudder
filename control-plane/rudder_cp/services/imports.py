@@ -30,7 +30,12 @@ from rudder_cp.models import (
 from rudder_cp.schemas.project import ProjectCreate
 from rudder_cp.schemas.service import ServiceCreate
 from rudder_cp.services import projects, services, variables
-from rudder_cp.services.compose import ComposePlan, generated_compose_plan
+from rudder_cp.services.compose import (
+    ComposePlan,
+    generated_addon_metadata,
+    generated_compose_plan,
+    supported_generated_addons,
+)
 from rudder_cp.services.naming import system_hostname
 from rudder_cp.services.variables import encrypt_value, is_reference
 
@@ -48,7 +53,21 @@ _ADDON_CLIENTS: tuple[tuple[str, frozenset[str], str], ...] = (
     ("minio", frozenset({"minio"}), "MINIO_ENDPOINT"),
     ("qdrant", frozenset({"@qdrant/js-client-rest", "qdrant-client"}), "QDRANT_URL"),
 )
-_SUPPORTED_ADDONS = frozenset({name for name, _, _ in _ADDON_CLIENTS})
+_SUPPORTED_ADDONS = supported_generated_addons()
+_ADDON_REFERENCE_KEYS = {
+    "postgres": "DATABASE_URL",
+    "redis": "REDIS_URL",
+    "mysql": "MYSQL_URL",
+    "mariadb": "MARIADB_URL",
+    "mongodb": "MONGODB_URI",
+    "memcached": "MEMCACHED_URL",
+    "rabbitmq": "RABBITMQ_URL",
+    "nats": "NATS_URL",
+    "meilisearch": "MEILISEARCH_HOST",
+    "typesense": "TYPESENSE_HOST",
+    "minio": "MINIO_ENDPOINT",
+    "qdrant": "QDRANT_URL",
+}
 _SERVICE_NAME = re.compile(r"[^a-z0-9-]+")
 
 
@@ -170,10 +189,16 @@ async def provision_import(
         )
     ).one()
 
-    postgres = (
-        _managed_postgres(session, environment.id) if "postgres" in selected_addons else None
-    )
-    redis = _managed_redis(session, environment.id) if "redis" in selected_addons else None
+    managed_addons: dict[str, Service] = {}
+    for addon in sorted(selected_addons):
+        if addon == "postgres":
+            managed_addons[addon] = _managed_postgres(session, environment.id)
+        elif addon == "redis":
+            managed_addons[addon] = _managed_redis(session, environment.id)
+        else:
+            managed_addons[addon] = _managed_catalog_addon(session, environment.id, addon)
+    postgres = managed_addons.get("postgres")
+    redis = managed_addons.get("redis")
     session.commit()
 
     app = await services.create_service(
@@ -219,12 +244,15 @@ async def provision_import(
             session.flush()
             compose_children.append((child, planned.name, planned.role, planned.is_public))
 
-    if postgres is not None:
-        await variables.set_variable(
-            session, app.id, "DATABASE_URL", "${{postgres.DATABASE_URL}}"
-        )
-    if redis is not None:
-        await variables.set_variable(session, app.id, "REDIS_URL", "${{redis.REDIS_URL}}")
+    for addon in sorted(managed_addons):
+        reference_key = _ADDON_REFERENCE_KEYS.get(addon)
+        if reference_key:
+            await variables.set_variable(
+                session,
+                app.id,
+                reference_key,
+                f"${{{{{addon}.{reference_key}}}}}",
+            )
 
     record = GitHubImport(
         installation_id=installation_id,
@@ -242,8 +270,10 @@ async def provision_import(
     session.flush()
     graph_entries: list[tuple[uuid.UUID | None, str, str, bool]] = [
         (app.id, public_service.name, public_service.role, True),
-        (postgres.id if postgres else None, "postgres", "database", False),
-        (redis.id if redis else None, "redis", "cache", False),
+        *[
+            (managed.id, addon, plan.services[addon].role, False)
+            for addon, managed in managed_addons.items()
+        ],
     ]
     graph_entries.extend(
         (child.id, compose_service, role, is_public)
@@ -330,7 +360,11 @@ def _managed_postgres(session: Session, environment_id: uuid.UUID) -> Service:
         environment_id=environment_id,
         name="postgres",
         kind=ServiceKind.DATABASE,
-        build_config={"managed_image": "postgres:16-alpine"},
+        build_config={
+            "managed_image": "postgres:16-alpine",
+            "compose_service": "postgres",
+            "compose_role": "database",
+        },
         container_port=5432,
         health_check_port=5432,
         health_check_path="/",
@@ -363,6 +397,8 @@ def _managed_redis(session: Session, environment_id: uuid.UUID) -> Service:
         kind=ServiceKind.DATABASE,
         build_config={
             "managed_image": "redis:7-alpine",
+            "compose_service": "redis",
+            "compose_role": "cache",
             "command": ["redis-server", "--requirepass", password],
         },
         container_port=6379,
@@ -379,6 +415,81 @@ def _managed_redis(session: Session, environment_id: uuid.UUID) -> Service:
         session, service.id, "REDIS_URL", f"redis://:{password}@redis:6379/0"
     )
     return service
+
+
+def _managed_catalog_addon(
+    session: Session, environment_id: uuid.UUID, addon: str
+) -> Service:
+    """Create one private service record for a generated catalog add-on."""
+    metadata = generated_addon_metadata(addon)
+    role = str(metadata["role"])
+    service = Service(
+        environment_id=environment_id,
+        name=addon,
+        kind=ServiceKind.DATABASE if role == "database" else ServiceKind.APP,
+        build_config={
+            "managed_image": metadata["image"],
+            "compose_service": addon,
+            "compose_role": role,
+        },
+        container_port=int(metadata["port"]),
+        health_check_port=int(metadata["port"]),
+        health_check_path="/",
+        canvas_x=0,
+        canvas_y=0,
+    )
+    session.add(service)
+    session.flush()
+    volume = metadata.get("volume")
+    if isinstance(volume, tuple):
+        session.add(Volume(service_id=service.id, mount_path=str(volume[1])))
+    _set_catalog_credentials(session, service.id, addon)
+    session.commit()
+    return service
+
+
+def _set_catalog_credentials(session: Session, service_id: uuid.UUID, addon: str) -> None:
+    """Create minimum viable credentials and connection values for known images."""
+    password = secrets.token_urlsafe(32)
+    if addon in {"mysql", "mariadb"}:
+        _set_managed_variable(session, service_id, "MYSQL_DATABASE", "app")
+        _set_managed_variable(session, service_id, "MYSQL_USER", "rudder")
+        _set_managed_variable(session, service_id, "MYSQL_PASSWORD", password)
+        _set_managed_variable(session, service_id, "MYSQL_ROOT_PASSWORD", secrets.token_urlsafe(32))
+        _set_managed_variable(
+            session, service_id, "MYSQL_URL", f"mysql://rudder:{password}@{addon}:3306/app"
+        )
+    elif addon == "mongodb":
+        _set_managed_variable(session, service_id, "MONGO_INITDB_ROOT_USERNAME", "rudder")
+        _set_managed_variable(session, service_id, "MONGO_INITDB_ROOT_PASSWORD", password)
+        _set_managed_variable(
+            session,
+            service_id,
+            "MONGODB_URI",
+            f"mongodb://rudder:{password}@mongodb:27017/app?authSource=admin",
+        )
+    elif addon == "memcached":
+        _set_managed_variable(session, service_id, "MEMCACHED_URL", "memcached://memcached:11211")
+    elif addon == "rabbitmq":
+        _set_managed_variable(session, service_id, "RABBITMQ_DEFAULT_USER", "rudder")
+        _set_managed_variable(session, service_id, "RABBITMQ_DEFAULT_PASS", password)
+        _set_managed_variable(
+            session, service_id, "RABBITMQ_URL", f"amqp://rudder:{password}@rabbitmq:5672"
+        )
+    elif addon == "nats":
+        _set_managed_variable(session, service_id, "NATS_URL", "nats://nats:4222")
+    elif addon == "meilisearch":
+        _set_managed_variable(session, service_id, "MEILI_MASTER_KEY", password)
+        _set_managed_variable(session, service_id, "MEILISEARCH_HOST", "http://meilisearch:7700")
+    elif addon == "typesense":
+        _set_managed_variable(session, service_id, "TYPESENSE_API_KEY", password)
+        _set_managed_variable(session, service_id, "TYPESENSE_HOST", "http://typesense:8108")
+    elif addon == "minio":
+        _set_managed_variable(session, service_id, "MINIO_ROOT_USER", "rudder")
+        _set_managed_variable(session, service_id, "MINIO_ROOT_PASSWORD", password)
+        _set_managed_variable(session, service_id, "MINIO_ENDPOINT", "http://minio:9000")
+    elif addon == "qdrant":
+        _set_managed_variable(session, service_id, "QDRANT_URL", "http://qdrant:6333")
 
 
 def _set_managed_variable(session: Session, service_id: uuid.UUID, key: str, value: str) -> None:

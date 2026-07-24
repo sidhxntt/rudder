@@ -276,6 +276,14 @@ def supported_generated_addons() -> frozenset[str]:
     return frozenset(_CATALOG)
 
 
+def generated_addon_metadata(name: str) -> dict[str, Any]:
+    """Return a copy of one catalog definition for service-record creation."""
+    try:
+        return dict(_CATALOG[name])
+    except KeyError as exc:
+        raise ComposeValidationError(f"Unsupported generated add-on: {name}.") from exc
+
+
 def _service_role(name: str, service: dict[str, Any]) -> ServiceRole:
     """Classify only concrete Compose evidence; unknown services remain other."""
     lowered_name = name.lower()

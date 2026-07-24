@@ -89,12 +89,18 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
           serviceId: service.id,
           name: service.name,
           kind: service.kind,
+          role:
+            typeof service.build_config.compose_role === "string"
+              ? service.build_config.compose_role
+              : undefined,
           url: serviceUrl(service, domainList),
           managedByServiceId:
-            service.id !== composeAppServiceId &&
-            typeof service.build_config.managed_image === "string"
-              ? composeAppServiceId
-              : undefined,
+            typeof service.build_config.managed_by_service_id === "string"
+              ? service.build_config.managed_by_service_id
+              : service.id !== composeAppServiceId &&
+                  typeof service.build_config.managed_image === "string"
+                ? composeAppServiceId
+                : undefined,
         };
         return {
           id: service.id,
@@ -183,10 +189,12 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
           service={selectedService}
           url={serviceUrl(selectedService, domainList)}
           managedByServiceId={
-            selectedService.id !== composeAppServiceId &&
-            typeof selectedService.build_config.managed_image === "string"
-              ? composeAppServiceId
-              : undefined
+            typeof selectedService.build_config.managed_by_service_id === "string"
+              ? selectedService.build_config.managed_by_service_id
+              : selectedService.id !== composeAppServiceId &&
+                  typeof selectedService.build_config.managed_image === "string"
+                ? composeAppServiceId
+                : undefined
           }
           onClose={() => setSelectedServiceId(null)}
         />
