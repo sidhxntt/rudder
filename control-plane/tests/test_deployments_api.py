@@ -4,6 +4,7 @@ The webhook is the one endpoint on this service that an unauthenticated
 stranger can reach, so most of what is asserted here is about refusing them.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -11,13 +12,14 @@ from collections.abc import Iterator
 from uuid import UUID, uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from rudder_cp.config import Settings
+from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import (
     Deployment,
@@ -35,6 +37,7 @@ from rudder_cp.models import (
 from rudder_cp.routers import deployments as deployments_router
 from rudder_cp.routers import webhooks as webhooks_router
 from rudder_cp.schemas.common import install_error_handlers
+from rudder_cp.services.imports import AddonProposal, provision_import
 
 SECRET = "hook-secret"
 
@@ -227,6 +230,42 @@ def test_a_compose_child_lists_its_owner_release_history(
             "became_live_at": None,
         }
     ]
+
+
+def test_a_managed_catalog_addon_lists_its_owner_release_history(
+    client: TestClient, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generated databases share the app release just like Compose children."""
+    monkeypatch.setenv("RUDDER_SECRET_KEYS", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    with Session(engine) as session:
+        session.add(User(email="catalog-owner@example.com", password_hash="x"))
+        session.commit()
+        result = asyncio.run(
+            provision_import(
+                session,
+                installation_id=42,
+                repository="acme/catalog-api",
+                branch="main",
+                selected_addons={"postgres"},
+                proposal=AddonProposal(
+                    is_node_app=True,
+                    addons=("postgres",),
+                    externally_managed=(),
+                ),
+            )
+        )
+        addon = session.exec(select(Service).where(Service.name == "postgres")).one()
+        deployment = session.exec(
+            select(Deployment).where(Deployment.service_id == result.app_service_id)
+        ).one()
+
+    response = client.get(f"/services/{addon.id}/deployments")
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == str(deployment.id)
+    assert response.json()[0]["service_id"] == str(result.app_service_id)
+    get_settings.cache_clear()
 
 
 def test_instances_are_exposed_for_a_service(

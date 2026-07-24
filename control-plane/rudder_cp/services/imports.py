@@ -235,6 +235,17 @@ async def provision_import(
         ),
     )
 
+    # A generated catalog service is still a member of the same Compose
+    # release.  Persist the owner once it exists so every service endpoint
+    # (not only the canvas) resolves deployment history, instance state, and
+    # build logs through the route-owning application.
+    for managed_addon in managed_addons.values():
+        managed_addon.build_config = {
+            **managed_addon.build_config,
+            "managed_by_service_id": str(app.id),
+        }
+        session.add(managed_addon)
+
     # A repository Compose file describes the full topology, not just the
     # route-owning web process. Create private Rudder service records for every
     # child so the canvas can represent workers, brokers, and observability

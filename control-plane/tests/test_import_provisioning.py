@@ -66,6 +66,9 @@ async def test_confirmed_import_provisions_private_addons_before_the_app(session
         "postgres:16-alpine",
         "redis:7-alpine",
     ]
+    assert {service.build_config.get("managed_by_service_id") for service in services[:2]} == {
+        str(result.app_service_id)
+    }
     assert session.exec(select(Domain)).one().service_id == result.app_service_id
     assert len(session.exec(select(Volume)).all()) == 2
 
