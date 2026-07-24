@@ -47,11 +47,16 @@ class Settings(BaseSettings):
 
     @property
     def github_app_configured(self) -> bool:
-        return bool(
-            self.github_app_id
-            and self.github_app_slug
-            and self.resolved_github_app_private_key
-        )
+        try:
+            return bool(
+                self.github_app_id
+                and self.github_app_slug
+                and self.resolved_github_app_private_key
+            )
+        except OSError:
+            # A missing local PEM must make the integration unavailable, not
+            # turn the import dialog into a 500 response.
+            return False
 
     # D8 — ACME cannot do HTTP-01 against localhost.
     tls_mode: Literal["off", "acme"] = "off"

@@ -156,7 +156,10 @@ export function GitHubImportDialog() {
                 {status.isLoading ? <p className="text-caption text-ink-mute">Checking GitHub App setup…</p> : null}
                 {status.isError ? <p className="text-caption text-status-failed">Could not check GitHub App setup.</p> : null}
                 {status.data && !status.data.configured ? (
-                  <p className="text-caption text-ink-faint">Set <code>RUDDER_GITHUB_APP_ID</code>, <code>RUDDER_GITHUB_APP_SLUG</code>, and <code>RUDDER_GITHUB_APP_PRIVATE_KEY</code> to enable repository selection.</p>
+                  <div className="space-y-2 text-caption text-ink-mute">
+                    <p>GitHub import is not enabled for this Rudder instance yet.</p>
+                    <p>Ask the workspace operator to connect the Rudder GitHub App, then reopen this dialog.</p>
+                  </div>
                 ) : null}
                 {status.data?.configured ? (
                   <>
