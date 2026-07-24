@@ -2,8 +2,8 @@
 
 ## Automated checks completed
 
-- Compose import, catalog, routing, lifecycle, and rollback coverage: 78 passed.
-- Current control-plane suite collection: 317 tests.
+- Compose import, catalog, routing, lifecycle, and rollback coverage: 92 passed.
+- Current control-plane suite collection: 320 tests.
 - Control plane lint: `uv run ruff check rudder_cp tests migrations/versions` — passed.
 - Node agent: `uv run pytest tests -q` — 55 passed.
 - Node agent lint: `uv run ruff check rudder_agent tests` — passed.
