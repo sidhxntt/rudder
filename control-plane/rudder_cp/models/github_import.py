@@ -22,6 +22,14 @@ class GitHubImport(SQLModel, table=True):
     installation_id: int = Field(nullable=False)
     repository: str = Field(sa_column=sa.Column(sa.String(255), nullable=False))
     branch: str = Field(sa_column=sa.Column(sa.String(255), nullable=False))
+    # The resolved Compose document is immutable input to a deployment.  We
+    # keep it beside the import instead of reconstructing it from mutable
+    # repository state when a deploy is retried.
+    compose_source: str = Field(sa_column=sa.Column(sa.String(32), nullable=False))
+    compose_manifest: str = Field(sa_column=sa.Column(sa.Text(), nullable=False))
+    compose_project_name: str = Field(
+        sa_column=sa.Column(sa.String(63), nullable=False, unique=True, index=True)
+    )
     project_id: uuid.UUID = Field(foreign_key="project.id", sa_type=sa.Uuid, nullable=False)
     app_service_id: uuid.UUID = Field(foreign_key="service.id", sa_type=sa.Uuid, nullable=False)
     postgres_service_id: uuid.UUID | None = Field(

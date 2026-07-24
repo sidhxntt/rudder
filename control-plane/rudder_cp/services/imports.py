@@ -117,6 +117,44 @@ class ConfirmedImport:
     app_service_id: uuid.UUID
 
 
+def compose_project_name(project_id: uuid.UUID) -> str:
+    """Return a deterministic, Docker Compose-safe project namespace."""
+    return f"rudder-{project_id.hex}"
+
+
+def generated_compose_manifest(selected_addons: set[str]) -> str:
+    """Create the minimal Compose input for a detected Node application.
+
+    A repository-supplied compose file replaces this document in the next
+    runtime step.  Persisting even the generated form now gives every import
+    an immutable deployment input and avoids re-inferring infrastructure on a
+    later retry.
+    """
+    services = ["  app:", "    build: .", "    expose:", "      - '3000'"]
+    if "postgres" in selected_addons:
+        services.extend(
+            [
+                "  postgres:",
+                "    image: postgres:16-alpine",
+                "    volumes:",
+                "      - postgres-data:/var/lib/postgresql/data",
+            ]
+        )
+    if "redis" in selected_addons:
+        services.extend(
+            ["  redis:", "    image: redis:7-alpine", "    volumes:", "      - redis-data:/data"]
+        )
+    volumes: list[str] = []
+    if "postgres" in selected_addons:
+        volumes.append("  postgres-data: {}")
+    if "redis" in selected_addons:
+        volumes.append("  redis-data: {}")
+    document = ["services:", *services]
+    if volumes:
+        document.extend(["volumes:", *volumes])
+    return "\n".join(document) + "\n"
+
+
 async def provision_import(
     session: Session,
     *,
@@ -179,6 +217,9 @@ async def provision_import(
         installation_id=installation_id,
         repository=repository,
         branch=branch,
+        compose_source="generated",
+        compose_manifest=generated_compose_manifest(selected_addons),
+        compose_project_name=compose_project_name(project.id),
         project_id=project.id,
         app_service_id=app.id,
         postgres_service_id=postgres.id if postgres else None,

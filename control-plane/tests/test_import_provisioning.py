@@ -80,6 +80,10 @@ async def test_confirmed_import_provisions_private_addons_before_the_app(session
 
     record = session.get(GitHubImport, result.import_id)
     assert record is not None
+    assert record.compose_source == "generated"
+    assert record.compose_project_name == f"rudder-{record.project_id.hex}"
+    assert "postgres:16-alpine" in record.compose_manifest
+    assert "redis:7-alpine" in record.compose_manifest
     assert [step["label"] for step in import_progress(session, record)] == [
         "Postgres",
         "Redis",
