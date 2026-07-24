@@ -67,15 +67,29 @@ class GitHubAppClient:
         return [str(branch["name"]) for branch in payload]
 
     async def package_json(self, installation_id: int, repo: str, branch: str) -> dict[str, Any]:
-        payload = await self._get(
-            installation_id, f"/repos/{repo}/contents/package.json?ref={branch}"
-        )
+        content = await self.file_at_ref(installation_id, repo, branch, "package.json")
+        if content is None:
+            raise GitHubAppError("Repository has no valid package.json on this branch.")
         try:
             import json
 
-            return json.loads(base64.b64decode(str(payload["content"])).decode())
-        except (KeyError, ValueError, UnicodeDecodeError) as exc:
+            return json.loads(content)
+        except ValueError as exc:
             raise GitHubAppError("Repository has no valid package.json on this branch.") from exc
+
+    async def file_at_ref(
+        self, installation_id: int, repo: str, branch: str, path: str
+    ) -> str | None:
+        """Return one UTF-8 repository file, or ``None`` when it is absent."""
+        payload = await self._get_optional(
+            installation_id, f"/repos/{repo}/contents/{path}?ref={branch}"
+        )
+        if payload is None:
+            return None
+        try:
+            return base64.b64decode(str(payload["content"])).decode()
+        except (KeyError, ValueError, UnicodeDecodeError) as exc:
+            raise GitHubAppError(f"Repository file {path} is not valid UTF-8 content.") from exc
 
     async def installation_token(self, installation_id: int) -> str:
         """Mint a short-lived installation token for a source checkout."""
@@ -86,6 +100,17 @@ class GitHubAppClient:
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
         async with httpx.AsyncClient(base_url="https://api.github.com", headers=headers) as client:
             response = await client.get(path)
+        if response.status_code >= 400:
+            raise GitHubAppError(f"GitHub returned {response.status_code}: {response.text[:200]}")
+        return response.json()
+
+    async def _get_optional(self, installation_id: int, path: str) -> Any | None:
+        token = await self._installation_token(installation_id)
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient(base_url="https://api.github.com", headers=headers) as client:
+            response = await client.get(path)
+        if response.status_code == 404:
+            return None
         if response.status_code >= 400:
             raise GitHubAppError(f"GitHub returned {response.status_code}: {response.text[:200]}")
         return response.json()
