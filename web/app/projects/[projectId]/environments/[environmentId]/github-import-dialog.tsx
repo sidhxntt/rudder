@@ -120,8 +120,8 @@ export function GitHubImportDialog() {
         Import from GitHub
       </button>
       {open ? (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-surface/80 p-6 backdrop-blur-sm">
-          <section className="w-full max-w-lg rounded-lg border border-hairline bg-surface-raised p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-surface/80 p-4 backdrop-blur-sm sm:p-6">
+          <section className="w-full min-w-0 max-w-lg rounded-lg border border-hairline bg-surface-raised p-5 shadow-2xl sm:p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-heading">Import from GitHub</p>
