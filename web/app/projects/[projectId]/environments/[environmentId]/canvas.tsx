@@ -22,6 +22,7 @@ import type { Service } from "@/lib/types";
 
 import { DetailPanel } from "./detail-panel";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
+import { GitHubImportDialog } from "./github-import-dialog";
 
 const nodeTypes: NodeTypes = { service: ServiceNode };
 
@@ -122,6 +123,9 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
   return (
     <div className="flex h-full min-h-0 w-full">
       <div className="relative min-w-0 flex-1">
+        <div className="absolute left-5 top-5 z-10">
+          <GitHubImportDialog />
+        </div>
         <ReactFlow
           nodes={nodes}
           edges={NO_EDGES}

@@ -144,6 +144,12 @@ export interface Domain {
   created_at: string;
 }
 
+export interface GitHubImportStatus {
+  configured: boolean;
+  install_url: string | null;
+  message: string;
+}
+
 /** Payload of the terminal `event: end` frame on the build-log stream. */
 export type BuildOutcome = "succeeded" | "failed";
 

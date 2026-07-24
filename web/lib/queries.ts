@@ -12,6 +12,7 @@ import * as api from "./api";
 import type { Deployment, ServiceUpdate } from "./types";
 
 export const keys = {
+  githubImportStatus: ["github-import-status"] as const,
   projects: ["projects"] as const,
   environments: (projectId: string) => ["environments", projectId] as const,
   services: (environmentId: string) => ["services", environmentId] as const,
@@ -20,6 +21,10 @@ export const keys = {
   instances: (serviceId: string) => ["instances", serviceId] as const,
   variables: (serviceId: string) => ["variables", serviceId] as const,
 };
+
+export function useGitHubImportStatus() {
+  return useQuery({ queryKey: keys.githubImportStatus, queryFn: api.getGitHubImportStatus });
+}
 
 /** Slow enough not to hammer the control plane, fast enough to watch a deploy. */
 const LIVE_POLL_MS = 2_000;

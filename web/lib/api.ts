@@ -20,6 +20,7 @@
 import type {
   Deployment,
   Domain,
+  GitHubImportStatus,
   Environment,
   Instance,
   Project,
@@ -165,6 +166,11 @@ export function me(): Promise<User> {
 /** GET /projects */
 export function listProjects(): Promise<Project[]> {
   return requestJson<Project[]>("/projects");
+}
+
+/** GET /github/import/status — whether the operator configured the GitHub App. */
+export function getGitHubImportStatus(): Promise<GitHubImportStatus> {
+  return requestJson<GitHubImportStatus>("/github/import/status");
 }
 
 /** GET /projects/{project_id}/environments */
