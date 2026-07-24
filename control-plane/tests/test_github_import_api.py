@@ -188,6 +188,32 @@ def test_observability_template_is_reviewed_even_without_client_dependencies(
     assert response.json()["addons"] == ["grafana", "postgres", "prometheus", "redis"]
 
 
+def test_preview_includes_detected_worker_as_a_private_generated_service(
+    import_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = import_client.app.state.github
+
+    async def worker_package_json(*_args: object) -> dict:
+        return {
+            "dependencies": {"express": "1", "redis": "1"},
+            "scripts": {"start": "node server.js", "worker": "node worker.js"},
+        }
+
+    monkeypatch.setattr(github, "package_json", worker_package_json)
+    response = import_client.post(
+        "/github/import/preview",
+        json={"installation_id": 42, "repository": "acme/store-api", "branch": "main"},
+    )
+
+    assert response.status_code == 200, response.text
+    services = response.json()["services"]
+    assert [(row["name"], row["role"], row["is_public"]) for row in services] == [
+        ("app", "web", True),
+        ("worker", "worker", False),
+        ("redis", "cache", False),
+    ]
+
+
 def test_github_installations_lists_app_connections(import_client: TestClient) -> None:
     response = import_client.get("/github/import/installations")
 

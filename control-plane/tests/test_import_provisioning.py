@@ -17,7 +17,11 @@ from rudder_cp.models import (
     Variable,
     Volume,
 )
-from rudder_cp.services.compose import parse_repository_compose
+from rudder_cp.services.compose import (
+    GeneratedProcess,
+    generated_compose_plan,
+    parse_repository_compose,
+)
 from rudder_cp.services.imports import (
     AddonProposal,
     app_dependency_state,
@@ -146,6 +150,29 @@ async def test_catalog_addons_create_private_services_and_app_references(session
         "RABBITMQ_URL",
         "MINIO_ENDPOINT",
     }
+
+
+async def test_generated_worker_is_private_and_receives_app_addon_references(
+    session: Session,
+) -> None:
+    result = await provision_import(
+        session,
+        installation_id=42,
+        repository="acme/jobs-api",
+        branch="main",
+        selected_addons={"redis"},
+        proposal=AddonProposal(is_node_app=True, addons=("redis",), externally_managed=()),
+        compose_plan=generated_compose_plan(
+            {"redis"}, (GeneratedProcess(role="worker", command="npm run worker"),)
+        ),
+    )
+
+    worker = session.exec(select(Service).where(Service.name == "worker")).one()
+    assert worker.build_config["managed_by_service_id"] == str(result.app_service_id)
+    variables_for_worker = list(
+        session.exec(select(Variable).where(Variable.service_id == worker.id)).all()
+    )
+    assert {variable.key for variable in variables_for_worker} == {"REDIS_URL"}
 
 
 async def test_repository_compose_creates_private_worker_and_observability_services(

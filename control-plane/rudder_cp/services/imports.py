@@ -240,9 +240,12 @@ async def provision_import(
     # child so the canvas can represent workers, brokers, and observability
     # containers even though one Compose release owns their runtime lifecycle.
     compose_children: list[tuple[Service, str, str, bool]] = []
-    if plan.source == "repository":
+    if plan.source == "repository" or any(
+        planned.name not in managed_addons and planned.name != public_service.name
+        for planned in plan.services.values()
+    ):
         for offset, planned in enumerate(plan.services.values(), start=1):
-            if planned.name == public_service.name:
+            if planned.name == public_service.name or planned.name in managed_addons:
                 continue
             child = Service(
                 environment_id=environment.id,
@@ -269,15 +272,21 @@ async def provision_import(
                 )
             compose_children.append((child, planned.name, planned.role, child_is_public))
 
-    for addon in sorted(managed_addons):
-        reference_key = _ADDON_REFERENCE_KEYS.get(addon)
-        if reference_key:
-            await variables.set_variable(
-                session,
-                app.id,
-                reference_key,
-                f"${{{{{addon}.{reference_key}}}}}",
-            )
+    application_service_ids = [app.id] + [
+        child.id
+        for child, _, role, _ in compose_children
+        if role in {"worker", "scheduler", "realtime"}
+    ]
+    for service_id in application_service_ids:
+        for addon in sorted(managed_addons):
+            reference_key = _ADDON_REFERENCE_KEYS.get(addon)
+            if reference_key:
+                await variables.set_variable(
+                    session,
+                    service_id,
+                    reference_key,
+                    f"${{{{{addon}.{reference_key}}}}}",
+                )
 
     record = GitHubImport(
         installation_id=installation_id,

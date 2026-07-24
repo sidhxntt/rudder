@@ -4,6 +4,7 @@ import pytest
 
 from rudder_cp.services.compose import (
     ComposeValidationError,
+    GeneratedProcess,
     generated_compose_plan,
     parse_repository_compose,
     resolve_compose_plan,
@@ -96,6 +97,18 @@ def test_generated_compose_uses_private_managed_addons() -> None:
     assert plan.services["redis"].public_port is None
     assert "postgres-data" in plan.yaml
     assert "redis-data" in plan.yaml
+
+
+def test_generated_compose_creates_private_worker_from_reviewed_process() -> None:
+    plan = generated_compose_plan(
+        {"redis"},
+        (GeneratedProcess(role="worker", command="npm run worker"),),
+    )
+
+    assert plan.services["app"].is_public is True
+    assert plan.services["worker"].role == "worker"
+    assert plan.services["worker"].is_public is False
+    assert "command: npm run worker" in plan.yaml
 
 
 @pytest.mark.parametrize(

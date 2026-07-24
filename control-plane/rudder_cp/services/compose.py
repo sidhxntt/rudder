@@ -154,6 +154,12 @@ class StarterTemplate:
     addons: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class GeneratedProcess:
+    role: Literal["web", "worker", "scheduler", "realtime"]
+    command: str
+
+
 _STARTER_TEMPLATES = (
     StarterTemplate("node-web", "Node web service", "One public Node application.", ()),
     StarterTemplate(
@@ -196,13 +202,14 @@ async def resolve_compose_plan(
     repository: str,
     branch: str,
     selected_addons: set[str],
+    generated_processes: tuple[GeneratedProcess, ...] = (),
 ) -> ComposePlan:
     """Prefer the first supported repository Compose file over Rudder's plan."""
     for filename in COMPOSE_FILENAMES:
         manifest = await reader.file_at_ref(installation_id, repository, branch, filename)
         if manifest is not None:
             return parse_repository_compose(manifest)
-    return generated_compose_plan(selected_addons)
+    return generated_compose_plan(selected_addons, generated_processes)
 
 
 def parse_repository_compose(manifest: str) -> ComposePlan:
@@ -265,18 +272,30 @@ def parse_repository_compose(manifest: str) -> ComposePlan:
     )
 
 
-def generated_compose_plan(selected_addons: set[str]) -> ComposePlan:
+def generated_compose_plan(
+    selected_addons: set[str], generated_processes: tuple[GeneratedProcess, ...] = ()
+) -> ComposePlan:
     """Return Rudder's minimal Compose plan for a detected Node application."""
     unsupported = selected_addons - set(_CATALOG)
     if unsupported:
         names = ", ".join(sorted(unsupported))
         raise ComposeValidationError(f"Unsupported generated add-ons: {names}.")
-    services: dict[str, dict[str, Any]] = {
-        "app": {"build": ".", "expose": ["3000"]},
-    }
+    web_process = next((process for process in generated_processes if process.role == "web"), None)
+    services: dict[str, dict[str, Any]] = {"app": {"build": ".", "expose": ["3000"]}}
+    if web_process is not None:
+        services["app"]["command"] = web_process.command
     plan_services = {
         "app": ComposeService(name="app", public_port=3000, role="web", container_port=3000)
     }
+    for process in generated_processes:
+        if process.role == "web":
+            continue
+        services[process.role] = {"build": ".", "command": process.command}
+        plan_services[process.role] = ComposeService(
+            name=process.role,
+            public_port=None,
+            role=process.role,
+        )
     volumes: dict[str, dict[str, object]] = {}
     for addon in sorted(selected_addons):
         definition = _CATALOG[addon]

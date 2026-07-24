@@ -11,6 +11,7 @@ from rudder_cp.db import get_session
 from rudder_cp.models import Environment, GitHubImport
 from rudder_cp.services.compose import (
     ComposeValidationError,
+    GeneratedProcess,
     resolve_compose_plan,
     starter_template,
     starter_templates,
@@ -197,12 +198,17 @@ async def github_import_preview(
     if payload.template_id is not None and template is None:
         raise HTTPException(status_code=422, detail="Unknown starter template.")
     reviewed_addons = set(proposal.addons) | set(template.addons if template else ())
+    processes = tuple(
+        GeneratedProcess(role=process.role, command=process.command)
+        for process in detect_processes(package_json, procfile)
+    )
     compose_plan = await resolve_compose_plan(
         request.app.state.github,
         installation_id=payload.installation_id,
         repository=payload.repository,
         branch=payload.branch,
         selected_addons=reviewed_addons,
+        generated_processes=processes,
     )
     return GitHubImportPreview(
         is_node_app=proposal.is_node_app,
@@ -242,6 +248,9 @@ async def confirm_github_import(
         package_json = await request.app.state.github.package_json(
             payload.installation_id, payload.repository, payload.branch
         )
+        procfile = await request.app.state.github.file_at_ref(
+            payload.installation_id, payload.repository, payload.branch, "Procfile"
+        )
         proposal = detect_node_addons(package_json, existing_variable_keys=set())
         template = starter_template(payload.template_id)
         if payload.template_id is not None and template is None:
@@ -257,6 +266,10 @@ async def confirm_github_import(
             repository=payload.repository,
             branch=payload.branch,
             selected_addons=set(payload.addons),
+            generated_processes=tuple(
+                GeneratedProcess(role=process.role, command=process.command)
+                for process in detect_processes(package_json, procfile)
+            ),
         )
         created = await provision_import(
             session,

@@ -527,6 +527,15 @@ async def _compose_runtime_manifest(
     app["image"] = image
     app["environment"] = app_env
 
+    # Generated workers/schedulers and repository Compose services that share
+    # the app build must use the one immutable image BuildKit produced for this
+    # release. Compose has no checkout context at runtime, so leaving `build:`
+    # here would make those private processes fail independently of the app.
+    for raw_service in services.values():
+        if isinstance(raw_service, dict) and "build" in raw_service:
+            raw_service.pop("build", None)
+            raw_service["image"] = image
+
     graph = session.exec(
         select(GitHubImportService).where(GitHubImportService.github_import_id == imported.id)
     ).all()
