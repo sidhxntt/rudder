@@ -167,6 +167,51 @@ async def test_seed_refuses_empty_credentials(session: Session) -> None:
 # --------------------------------------------------------------------------
 
 
+async def test_find_or_create_github_user_links_repeated_logins_by_stable_id(
+    session: Session,
+) -> None:
+    first = await auth_service.find_or_create_github_user(
+        session,
+        github_id=12345,
+        login="octo-before",
+        email="octo@github.test",
+    )
+    second = await auth_service.find_or_create_github_user(
+        session,
+        github_id=12345,
+        login="octo-after",
+        email="updated-octo@github.test",
+    )
+
+    assert second.id == first.id
+    assert second.github_id == 12345
+    assert second.github_login == "octo-after"
+    assert second.email == "updated-octo@github.test"
+    assert len(all_users(session)) == 1
+
+
+async def test_find_or_create_github_user_does_not_erase_an_email_with_none(
+    session: Session,
+) -> None:
+    user = await auth_service.find_or_create_github_user(
+        session,
+        github_id=67890,
+        login="octocat",
+        email="octocat@github.test",
+    )
+
+    updated = await auth_service.find_or_create_github_user(
+        session,
+        github_id=67890,
+        login="octocat-renamed",
+        email=None,
+    )
+
+    assert updated.id == user.id
+    assert updated.github_login == "octocat-renamed"
+    assert updated.email == "octocat@github.test"
+
+
 async def test_authenticate_accepts_the_seeded_credentials(
     session: Session, seeded_user: User
 ) -> None:

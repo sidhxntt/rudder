@@ -18,4 +18,12 @@ class User(SQLModel, table=True):
     id: uuid.UUID = uuid_pk()
     email: str = Field(sa_column=sa.Column(sa.String(255), unique=True, nullable=False))
     password_hash: str = Field(nullable=False)
+    github_id: int | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.Integer, unique=True, index=True, nullable=True),
+    )
+    github_login: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(255), nullable=True),
+    )
     created_at: datetime = created_at_column()

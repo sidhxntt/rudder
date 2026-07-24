@@ -11,6 +11,7 @@ comes from ``.env`` and is seeded on first boot.
 from __future__ import annotations
 
 import logging
+import secrets
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 # The password Settings falls back to when RUDDER_ADMIN_PASSWORD is unset.
 _PLACEHOLDER_PASSWORD = "change-me"
+
+
+def _github_fallback_email(github_id: int) -> str:
+    """Provide a non-deliverable address when GitHub does not disclose one."""
+    return f"github-{github_id}@oauth.rudder.invalid"
 
 
 class InvalidCredentials(Exception):
@@ -87,6 +93,54 @@ async def seed_admin_user(session: Session, settings: Settings | None = None) ->
 
     session.refresh(user)
     logger.info("Seeded the single user %s", user.email)
+    return user
+
+
+async def find_or_create_github_user(
+    session: Session,
+    *,
+    github_id: int,
+    login: str,
+    email: str | None,
+) -> User:
+    """Find a user by immutable GitHub ID, or create one for a first OAuth login.
+
+    GitHub login names and emails may change, so only the numeric GitHub ID is
+    used to link an existing account. A unique constraint makes the create path
+    safe when two OAuth callbacks for a new user arrive concurrently.
+    """
+    user = session.exec(select(User).where(User.github_id == github_id)).first()
+    if user is not None:
+        user.github_login = login
+        if email is not None:
+            user.email = email
+        session.commit()
+        session.refresh(user)
+        return user
+
+    user = User(
+        email=email or _github_fallback_email(github_id),
+        password_hash=hash_password(secrets.token_urlsafe(48)),
+        github_id=github_id,
+        github_login=login,
+    )
+    session.add(user)
+    try:
+        session.commit()
+    except IntegrityError:
+        # Another callback may have inserted this GitHub identity first.
+        session.rollback()
+        winner = session.exec(select(User).where(User.github_id == github_id)).first()
+        if winner is None:
+            raise
+        winner.github_login = login
+        if email is not None:
+            winner.email = email
+        session.commit()
+        session.refresh(winner)
+        return winner
+
+    session.refresh(user)
     return user
 
 
