@@ -166,6 +166,12 @@ export interface GitHubImportPreview {
   is_node_app: boolean;
   addons: Array<"postgres" | "redis">;
   externally_managed: Array<"postgres" | "redis">;
+  compose_source: "repository" | "generated";
+  compose_manifest: string;
+  services: Array<{
+    name: string;
+    public_port: number | null;
+  }>;
 }
 
 export interface GitHubImportConfirmation {

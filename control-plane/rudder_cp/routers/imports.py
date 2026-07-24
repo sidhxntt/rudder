@@ -49,6 +49,14 @@ class GitHubImportPreview(BaseModel):
     is_node_app: bool
     addons: list[str]
     externally_managed: list[str]
+    compose_source: str
+    compose_manifest: str
+    services: list["ComposeServicePreview"]
+
+
+class ComposeServicePreview(BaseModel):
+    name: str
+    public_port: int | None
 
 
 class GitHubImportConfirmRequest(GitHubImportPreviewRequest):
@@ -144,10 +152,23 @@ async def github_import_preview(
     except GitHubAppError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     proposal = detect_node_addons(package_json, existing_variable_keys=set())
+    compose_plan = await resolve_compose_plan(
+        request.app.state.github,
+        installation_id=payload.installation_id,
+        repository=payload.repository,
+        branch=payload.branch,
+        selected_addons=set(proposal.addons),
+    )
     return GitHubImportPreview(
         is_node_app=proposal.is_node_app,
         addons=list(proposal.addons),
         externally_managed=list(proposal.externally_managed),
+        compose_source=compose_plan.source,
+        compose_manifest=compose_plan.yaml,
+        services=[
+            ComposeServicePreview(name=service.name, public_port=service.public_port)
+            for service in compose_plan.services.values()
+        ],
     )
 
 

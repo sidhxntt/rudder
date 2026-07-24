@@ -104,11 +104,11 @@ export function GitHubImportDialog() {
   }, [branch, branches.data, repositories.data, repository]);
 
   useEffect(() => {
-    setSelectedAddons(preview.data?.addons ?? []);
-  }, [preview.data?.addons]);
+    setSelectedAddons(preview.data?.compose_source === "generated" ? preview.data.addons : []);
+  }, [preview.data]);
 
   const canConfirm = Boolean(
-    installationId && repository && branch && preview.data?.is_node_app && !confirm.isPending,
+    installationId && repository && branch && preview.data && !confirm.isPending,
   );
 
   function reset() {
@@ -151,7 +151,7 @@ export function GitHubImportDialog() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-heading">Import from GitHub</p>
-                <p className="mt-1 text-caption text-ink-mute">Choose a repository, confirm private add-ons, then watch the real deployment.</p>
+                <p className="mt-1 text-caption text-ink-mute">Choose source, review the resolved Compose release, then deploy it.</p>
               </div>
               <button className="text-ink-faint hover:text-ink" onClick={() => { reset(); setOpen(false); }} aria-label="Close">×</button>
             </div>
@@ -209,11 +209,30 @@ export function GitHubImportDialog() {
                     </label> : null}
                     {stage === "source" && installationId && repository && branch ? <button onClick={() => setStage("review")} className="rounded-md bg-accent px-3 py-2 text-caption font-medium text-surface">Continue</button> : null}
                     {stage === "review" && preview.data ? (
-                      <div className="rounded border border-hairline p-3 text-caption">
-                        {preview.data.is_node_app ? <p className="text-ink">Node.js application detected.</p> : <p className="text-status-failed">This repository is not an Express Node.js application. Phase 1 imports Node apps only.</p>}
-                        {preview.data.addons.map((addon) => <label key={addon} className="mt-2 flex items-center gap-2 text-ink"><input type="checkbox" checked={selectedAddons.includes(addon)} onChange={() => toggle(addon)} /> Provision private {addon === "postgres" ? "PostgreSQL 16" : "Redis 7"}</label>)}
-                        {preview.data.externally_managed.map((addon) => <p key={addon} className="mt-2 text-ink-mute">{addon} is already externally configured and will not be provisioned.</p>)}
-                        <p className="mt-3 text-ink-faint">Only the app gets a public URL. Add-ons get encrypted credentials, private DNS, and persistent volumes.</p>
+                      <div className="space-y-4 rounded border border-hairline p-3 text-caption">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-ink">{preview.data.compose_source === "repository" ? "Repository Compose detected" : "Rudder-generated Compose"}</p>
+                            <p className="mt-1 text-ink-mute">{preview.data.compose_source === "repository" ? "Your compose file defines the release topology." : "A Node app was detected and Rudder prepared its private dependencies."}</p>
+                          </div>
+                          <span className="shrink-0 rounded border border-hairline px-2 py-1 text-[11px] text-ink-mute">{preview.data.services.length} services</span>
+                        </div>
+                        <ul className="divide-y divide-hairline border-y border-hairline">
+                          {preview.data.services.map((service) => (
+                            <li key={service.name} className="flex items-center justify-between gap-3 py-2">
+                              <span className="font-medium text-ink">{service.name}</span>
+                              <span className={service.public_port ? "text-accent" : "text-ink-mute"}>{service.public_port ? `public · :${service.public_port}` : "private"}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        {preview.data.compose_source === "generated" ? <div className="space-y-2">
+                          {preview.data.addons.map((addon) => <label key={addon} className="flex items-center gap-2 text-ink"><input type="checkbox" checked={selectedAddons.includes(addon)} onChange={() => toggle(addon)} /> Provision private {addon === "postgres" ? "PostgreSQL 16" : "Redis 7"}</label>)}
+                          {preview.data.externally_managed.map((addon) => <p key={addon} className="text-ink-mute">{addon} is already externally configured and will not be provisioned.</p>)}
+                        </div> : <p className="text-ink-mute">Repository-defined services stay isolated unless they declare a public port.</p>}
+                        <details className="group rounded bg-surface-raised px-3 py-2">
+                          <summary className="cursor-pointer text-ink-mute marker:text-ink-faint">View resolved Compose manifest</summary>
+                          <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-words border-t border-hairline pt-3 font-mono text-[11px] leading-5 text-ink-mute">{preview.data.compose_manifest}</pre>
+                        </details>
                       </div>
                     ) : null}
                     {stage === "review" && preview.isLoading ? <p className="text-caption text-ink-mute">Inspecting package.json…</p> : null}

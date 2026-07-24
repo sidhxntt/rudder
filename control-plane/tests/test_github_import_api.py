@@ -109,6 +109,19 @@ def test_confirm_import_creates_a_pollable_app_graph(import_client: TestClient) 
     assert all(step["status"] == "queued" for step in progress.json()["steps"])
 
 
+def test_import_preview_returns_the_resolved_compose_plan(import_client: TestClient) -> None:
+    response = import_client.post(
+        "/github/import/preview",
+        json={"installation_id": 42, "repository": "acme/store-api", "branch": "main"},
+    )
+
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["compose_source"] == "generated"
+    assert [service["name"] for service in preview["services"]] == ["app", "postgres", "redis"]
+    assert preview["services"][0]["public_port"] == 3000
+
+
 def test_github_installations_lists_app_connections(import_client: TestClient) -> None:
     response = import_client.get("/github/import/installations")
 
