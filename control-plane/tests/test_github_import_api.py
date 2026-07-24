@@ -171,6 +171,23 @@ def test_import_preview_returns_the_resolved_compose_plan(import_client: TestCli
     ]
 
 
+def test_observability_template_is_reviewed_even_without_client_dependencies(
+    import_client: TestClient,
+) -> None:
+    response = import_client.post(
+        "/github/import/preview",
+        json={
+            "installation_id": 42,
+            "repository": "acme/store-api",
+            "branch": "main",
+            "template_id": "node-observability",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["addons"] == ["grafana", "postgres", "prometheus", "redis"]
+
+
 def test_github_installations_lists_app_connections(import_client: TestClient) -> None:
     response = import_client.get("/github/import/installations")
 

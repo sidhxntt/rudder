@@ -200,6 +200,7 @@ export function previewGitHubImport(args: {
   installationId: number;
   repository: string;
   branch: string;
+  templateId?: string | null;
 }): Promise<GitHubImportPreview> {
   return requestJson<GitHubImportPreview>("/github/import/preview", {
     method: "POST",
@@ -207,6 +208,7 @@ export function previewGitHubImport(args: {
       installation_id: args.installationId,
       repository: args.repository,
       branch: args.branch,
+      template_id: args.templateId ?? null,
     },
   });
 }
@@ -221,6 +223,7 @@ export function confirmGitHubImport(args: {
   repository: string;
   branch: string;
   addons: string[];
+  templateId?: string | null;
 }): Promise<GitHubImportConfirmation> {
   return requestJson<GitHubImportConfirmation>("/github/imports", {
     method: "POST",
@@ -229,6 +232,7 @@ export function confirmGitHubImport(args: {
       repository: args.repository,
       branch: args.branch,
       addons: args.addons,
+      template_id: args.templateId ?? null,
     },
   });
 }

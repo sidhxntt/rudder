@@ -29,7 +29,7 @@ from rudder_cp.models import (
 )
 from rudder_cp.schemas.project import ProjectCreate
 from rudder_cp.schemas.service import ServiceCreate
-from rudder_cp.services import projects, services, variables
+from rudder_cp.services import domains, projects, services, variables
 from rudder_cp.services.compose import (
     ComposePlan,
     generated_addon_metadata,
@@ -156,6 +156,7 @@ async def provision_import(
     branch: str,
     selected_addons: set[str],
     proposal: AddonProposal,
+    selected_public_services: set[str] | None = None,
     compose_plan: ComposePlan | None = None,
 ) -> ConfirmedImport:
     """Create an app graph, wire private dependencies, then queue it in order.
@@ -174,10 +175,29 @@ async def provision_import(
     if plan.source == "repository" and selected_addons:
         raise ValueError("Repository Compose files define their own dependencies.")
 
-    public_services = [service for service in plan.services.values() if service.public_port]
-    if len(public_services) != 1:
-        raise ValueError("A Compose import must declare exactly one public application service.")
-    public_service = public_services[0]
+    public_candidates = {
+        service.name for service in plan.services.values() if service.public_port is not None
+    }
+    if not public_candidates:
+        raise ValueError("A Compose import must declare at least one public service.")
+    if selected_public_services is None:
+        if len(public_candidates) != 1:
+            raise ValueError("Choose which declared Compose services should receive public URLs.")
+        selected_public_services = set(public_candidates)
+    if not selected_public_services or not selected_public_services <= public_candidates:
+        raise ValueError("Public services must be selected from declared Compose ports.")
+    public_service = next(
+        (
+            service
+            for service in plan.services.values()
+            if service.name in selected_public_services and service.role == "web"
+        ),
+        next(
+            service
+            for service in plan.services.values()
+            if service.name in selected_public_services
+        ),
+    )
 
     project = await projects.create_project(
         session, ProjectCreate(name=_project_name(repository))
@@ -242,7 +262,12 @@ async def provision_import(
             )
             session.add(child)
             session.flush()
-            compose_children.append((child, planned.name, planned.role, planned.is_public))
+            child_is_public = planned.name in selected_public_services
+            if child_is_public:
+                await domains.create_system_domain(
+                    session, environment=environment, service=child
+                )
+            compose_children.append((child, planned.name, planned.role, child_is_public))
 
     for addon in sorted(managed_addons):
         reference_key = _ADDON_REFERENCE_KEYS.get(addon)
@@ -269,7 +294,12 @@ async def provision_import(
     session.add(record)
     session.flush()
     graph_entries: list[tuple[uuid.UUID | None, str, str, bool]] = [
-        (app.id, public_service.name, public_service.role, True),
+        (
+            app.id,
+            public_service.name,
+            public_service.role,
+            public_service.name in selected_public_services,
+        ),
         *[
             (managed.id, addon, plan.services[addon].role, False)
             for addon, managed in managed_addons.items()

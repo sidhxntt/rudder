@@ -65,6 +65,7 @@ export function GitHubImportDialog({
     open && status.data?.configured ? installationId : null,
     repository,
     stage === "review" ? branch : null,
+    templateId,
   );
   const confirm = useConfirmGitHubImport();
   const imported = useGitHubImport(importId);
@@ -149,6 +150,7 @@ export function GitHubImportDialog({
       repository,
       branch,
       addons: selectedAddons,
+      templateId,
     });
     setImportId(created.import_id);
   }

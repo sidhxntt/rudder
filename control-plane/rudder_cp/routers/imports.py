@@ -12,6 +12,7 @@ from rudder_cp.models import Environment, GitHubImport
 from rudder_cp.services.compose import (
     ComposeValidationError,
     resolve_compose_plan,
+    starter_template,
     starter_templates,
 )
 from rudder_cp.services.github_app import GitHubAppError
@@ -55,6 +56,7 @@ class GitHubImportPreviewRequest(BaseModel):
     installation_id: int
     repository: str
     branch: str
+    template_id: str | None = None
 
 
 class GitHubImportPreview(BaseModel):
@@ -83,6 +85,7 @@ class ProcessPreview(BaseModel):
 
 class GitHubImportConfirmRequest(GitHubImportPreviewRequest):
     addons: list[str]
+    public_services: list[str] | None = None
 
 
 class GitHubImportConfirm(BaseModel):
@@ -190,16 +193,20 @@ async def github_import_preview(
     except GitHubAppError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     proposal = detect_node_addons(package_json, existing_variable_keys=set())
+    template = starter_template(payload.template_id)
+    if payload.template_id is not None and template is None:
+        raise HTTPException(status_code=422, detail="Unknown starter template.")
+    reviewed_addons = set(proposal.addons) | set(template.addons if template else ())
     compose_plan = await resolve_compose_plan(
         request.app.state.github,
         installation_id=payload.installation_id,
         repository=payload.repository,
         branch=payload.branch,
-        selected_addons=set(proposal.addons),
+        selected_addons=reviewed_addons,
     )
     return GitHubImportPreview(
         is_node_app=proposal.is_node_app,
-        addons=list(proposal.addons),
+        addons=sorted(reviewed_addons),
         externally_managed=list(proposal.externally_managed),
         compose_source=compose_plan.source,
         compose_manifest=compose_plan.yaml,
@@ -236,6 +243,14 @@ async def confirm_github_import(
             payload.installation_id, payload.repository, payload.branch
         )
         proposal = detect_node_addons(package_json, existing_variable_keys=set())
+        template = starter_template(payload.template_id)
+        if payload.template_id is not None and template is None:
+            raise ValueError("Unknown starter template.")
+        proposal = type(proposal)(
+            is_node_app=proposal.is_node_app,
+            addons=tuple(sorted(set(proposal.addons) | set(template.addons if template else ()))),
+            externally_managed=proposal.externally_managed,
+        )
         compose_plan = await resolve_compose_plan(
             request.app.state.github,
             installation_id=payload.installation_id,
@@ -250,6 +265,9 @@ async def confirm_github_import(
             branch=payload.branch,
             selected_addons=set(payload.addons),
             proposal=proposal,
+            selected_public_services=(
+                set(payload.public_services) if payload.public_services is not None else None
+            ),
             compose_plan=compose_plan,
         )
     except GitHubAppError as exc:

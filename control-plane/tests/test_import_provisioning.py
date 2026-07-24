@@ -182,6 +182,48 @@ async def test_repository_compose_creates_private_worker_and_observability_servi
     ]
 
 
+async def test_repository_compose_creates_domains_only_for_reviewed_public_services(
+    session: Session,
+) -> None:
+    result = await provision_import(
+        session,
+        installation_id=42,
+        repository="acme/observed-api",
+        branch="main",
+        selected_addons=set(),
+        selected_public_services={"web", "grafana"},
+        proposal=AddonProposal(is_node_app=False, addons=(), externally_managed=()),
+        compose_plan=parse_repository_compose(
+            "services:\n"
+            "  web: {build: ., ports: [3000]}\n"
+            "  worker: {build: ., command: npm run worker}\n"
+            "  grafana: {image: grafana/grafana:11, ports: [3000]}\n"
+        ),
+    )
+
+    domains = list(session.exec(select(Domain).order_by(Domain.hostname)).all())
+    names_by_id = {
+        service.id: service.name for service in session.exec(select(Service)).all()
+    }
+    assert {names_by_id[domain.service_id] for domain in domains} == {
+        "observed-api",
+        "grafana",
+    }
+
+    graph = list(
+        session.exec(
+            select(GitHubImportService)
+            .where(GitHubImportService.github_import_id == result.import_id)
+            .order_by(GitHubImportService.compose_service)
+        ).all()
+    )
+    assert [(row.compose_service, row.is_public) for row in graph] == [
+        ("grafana", True),
+        ("web", True),
+        ("worker", False),
+    ]
+
+
 async def test_repeat_import_gets_a_unique_app_hostname(session: Session) -> None:
     proposal = AddonProposal(
         is_node_app=True,

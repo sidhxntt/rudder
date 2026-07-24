@@ -318,6 +318,12 @@ def starter_templates() -> tuple[StarterTemplate, ...]:
     return _STARTER_TEMPLATES
 
 
+def starter_template(template_id: str | None) -> StarterTemplate | None:
+    if template_id is None:
+        return None
+    return next((template for template in _STARTER_TEMPLATES if template.id == template_id), None)
+
+
 def generated_addon_metadata(name: str) -> dict[str, Any]:
     """Return a copy of one catalog definition for service-record creation."""
     try:

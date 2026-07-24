@@ -18,8 +18,8 @@ export const keys = {
   githubRepositories: (installationId: number) => ["github-repositories", installationId] as const,
   githubBranches: (installationId: number, repository: string) =>
     ["github-branches", installationId, repository] as const,
-  githubPreview: (installationId: number, repository: string, branch: string) =>
-    ["github-preview", installationId, repository, branch] as const,
+  githubPreview: (installationId: number, repository: string, branch: string, templateId: string) =>
+    ["github-preview", installationId, repository, branch, templateId] as const,
   githubImport: (importId: string) => ["github-import", importId] as const,
   projects: ["projects"] as const,
   environments: (projectId: string) => ["environments", projectId] as const,
@@ -66,14 +66,16 @@ export function useGitHubImportPreview(
   installationId: number | null,
   repository: string | null,
   branch: string | null,
+  templateId: string | null,
 ) {
   return useQuery({
-    queryKey: keys.githubPreview(installationId ?? 0, repository ?? "", branch ?? ""),
+    queryKey: keys.githubPreview(installationId ?? 0, repository ?? "", branch ?? "", templateId ?? ""),
     queryFn: () =>
       api.previewGitHubImport({
         installationId: installationId ?? 0,
         repository: repository ?? "",
         branch: branch ?? "",
+        templateId,
       }),
     enabled: installationId !== null && repository !== null && branch !== null,
   });
