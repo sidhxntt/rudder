@@ -33,9 +33,21 @@ from rudder_cp.services.compose import ComposePlan, generated_compose_plan
 from rudder_cp.services.naming import system_hostname
 from rudder_cp.services.variables import encrypt_value, is_reference
 
-POSTGRES_CLIENTS = frozenset({"pg", "@prisma/client", "prisma", "sequelize"})
-REDIS_CLIENTS = frozenset({"redis", "ioredis"})
-_SUPPORTED_ADDONS = frozenset({"postgres", "redis"})
+_ADDON_CLIENTS: tuple[tuple[str, frozenset[str], str], ...] = (
+    ("postgres", frozenset({"pg", "@prisma/client", "prisma", "sequelize"}), "DATABASE_URL"),
+    ("redis", frozenset({"redis", "ioredis"}), "REDIS_URL"),
+    ("mysql", frozenset({"mysql", "mysql2", "typeorm"}), "MYSQL_URL"),
+    ("mariadb", frozenset({"mariadb"}), "MARIADB_URL"),
+    ("mongodb", frozenset({"mongodb", "mongoose"}), "MONGODB_URI"),
+    ("memcached", frozenset({"memjs", "memcached"}), "MEMCACHED_URL"),
+    ("rabbitmq", frozenset({"amqplib"}), "RABBITMQ_URL"),
+    ("nats", frozenset({"nats"}), "NATS_URL"),
+    ("meilisearch", frozenset({"meilisearch"}), "MEILISEARCH_HOST"),
+    ("typesense", frozenset({"typesense"}), "TYPESENSE_HOST"),
+    ("minio", frozenset({"minio"}), "MINIO_ENDPOINT"),
+    ("qdrant", frozenset({"@qdrant/js-client-rest", "qdrant-client"}), "QDRANT_URL"),
+)
+_SUPPORTED_ADDONS = frozenset({name for name, _, _ in _ADDON_CLIENTS})
 _SERVICE_NAME = re.compile(r"[^a-z0-9-]+")
 
 
@@ -61,22 +73,15 @@ def detect_node_addons(
     addons: list[str] = []
     externally_managed: list[str] = []
 
-    if dependencies & POSTGRES_CLIENTS:
-        _propose_or_mark_external(
-            addon="postgres",
-            variable_key="DATABASE_URL",
-            existing_variable_keys=existing_variable_keys,
-            addons=addons,
-            externally_managed=externally_managed,
-        )
-    if dependencies & REDIS_CLIENTS:
-        _propose_or_mark_external(
-            addon="redis",
-            variable_key="REDIS_URL",
-            existing_variable_keys=existing_variable_keys,
-            addons=addons,
-            externally_managed=externally_managed,
-        )
+    for addon, clients, variable_key in _ADDON_CLIENTS:
+        if dependencies & clients:
+            _propose_or_mark_external(
+                addon=addon,
+                variable_key=variable_key,
+                existing_variable_keys=existing_variable_keys,
+                addons=addons,
+                externally_managed=externally_managed,
+            )
 
     return AddonProposal(
         is_node_app=is_node_app,
