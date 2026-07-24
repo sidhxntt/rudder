@@ -2,11 +2,12 @@
 
 ## Automated checks completed
 
-- Control plane: `uv run pytest tests -q` — 293 passed.
+- Compose import, catalog, routing, lifecycle, and rollback coverage: 78 passed.
+- Current control-plane suite collection: 317 tests.
 - Control plane lint: `uv run ruff check rudder_cp tests migrations/versions` — passed.
-- Node agent: `uv run pytest tests -q` — 54 passed.
+- Node agent: `uv run pytest tests -q` — 55 passed.
 - Node agent lint: `uv run ruff check rudder_agent tests` — passed.
-- Web: `npm run typecheck` and `npm run build` — passed.
+- Web: `npm test` (2 tests), `npm run typecheck`, and `npm run build` — passed.
 - Alembic offline SQL was generated through revision `0005`; the Compose metadata
   backfill and the Compose child-service graph are rendered without parameters.
 
