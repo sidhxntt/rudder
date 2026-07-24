@@ -32,6 +32,12 @@ class GitHubRepositoryRead(BaseModel):
     private: bool
 
 
+class GitHubInstallationRead(BaseModel):
+    id: int
+    account_login: str
+    repository_selection: str
+
+
 class GitHubImportPreviewRequest(BaseModel):
     installation_id: int
     repository: str
@@ -97,6 +103,22 @@ async def github_repositories(installation_id: int, request: Request) -> list[Gi
             full_name=row.full_name,
             default_branch=row.default_branch,
             private=row.private,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/github/import/installations", response_model=list[GitHubInstallationRead])
+async def github_installations(request: Request) -> list[GitHubInstallationRead]:
+    try:
+        rows = await request.app.state.github.installations()
+    except GitHubAppError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return [
+        GitHubInstallationRead(
+            id=row.id,
+            account_login=row.account_login,
+            repository_selection=row.repository_selection,
         )
         for row in rows
     ]

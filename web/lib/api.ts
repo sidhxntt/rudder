@@ -24,6 +24,7 @@ import type {
   GitHubImport,
   GitHubImportConfirmation,
   GitHubImportPreview,
+  GitHubInstallation,
   GitHubRepository,
   Environment,
   Instance,
@@ -175,6 +176,11 @@ export function listProjects(): Promise<Project[]> {
 /** GET /github/import/status — whether the operator configured the GitHub App. */
 export function getGitHubImportStatus(): Promise<GitHubImportStatus> {
   return requestJson<GitHubImportStatus>("/github/import/status");
+}
+
+/** GET /github/import/installations — GitHub App accounts connected to Rudder. */
+export function listGitHubInstallations(): Promise<GitHubInstallation[]> {
+  return requestJson<GitHubInstallation[]>("/github/import/installations");
 }
 
 /** GET /github/import/repositories?installation_id=... */

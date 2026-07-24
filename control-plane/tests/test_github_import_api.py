@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
@@ -14,6 +15,15 @@ from rudder_cp.routers import imports as imports_router
 
 
 class FakeGitHub:
+    async def installations(self) -> list[object]:
+        return [
+            SimpleNamespace(
+                id=42,
+                account_login="acme",
+                repository_selection="selected",
+            )
+        ]
+
     async def package_json(self, installation_id: int, repository: str, branch: str) -> dict:
         assert (installation_id, repository, branch) == (42, "acme/store-api", "main")
         return {"dependencies": {"express": "1", "pg": "1", "redis": "1"}}
@@ -90,3 +100,16 @@ def test_confirm_import_creates_a_pollable_app_graph(import_client: TestClient) 
         "Application",
     ]
     assert all(step["status"] == "queued" for step in progress.json()["steps"])
+
+
+def test_github_installations_lists_app_connections(import_client: TestClient) -> None:
+    response = import_client.get("/github/import/installations")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == [
+        {
+            "id": 42,
+            "account_login": "acme",
+            "repository_selection": "selected",
+        }
+    ]

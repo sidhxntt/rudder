@@ -24,6 +24,13 @@ class GitHubRepository:
     private: bool
 
 
+@dataclass(frozen=True, slots=True)
+class GitHubInstallation:
+    id: int
+    account_login: str
+    repository_selection: str
+
+
 class GitHubAppClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -41,6 +48,18 @@ class GitHubAppClient:
                 private=bool(repo["private"]),
             )
             for repo in payload.get("repositories", [])
+        ]
+
+    async def installations(self) -> list[GitHubInstallation]:
+        """List accounts where this Rudder App is installed."""
+        payload = await self._app_get("/app/installations")
+        return [
+            GitHubInstallation(
+                id=int(installation["id"]),
+                account_login=str(installation["account"]["login"]),
+                repository_selection=str(installation["repository_selection"]),
+            )
+            for installation in payload
         ]
 
     async def branches(self, installation_id: int, repo: str) -> list[str]:
@@ -74,13 +93,7 @@ class GitHubAppClient:
     async def _installation_token(self, installation_id: int) -> str:
         if not self.configured:
             raise GitHubAppError("GitHub App credentials are not configured.")
-        now = int(time.time())
-        key = self._settings.resolved_github_app_private_key.replace("\\n", "\n")
-        app_jwt = jwt.encode(
-            {"iat": now - 60, "exp": now + 540, "iss": self._settings.github_app_id},
-            key,
-            algorithm="RS256",
-        )
+        app_jwt = self._app_jwt()
         async with httpx.AsyncClient(base_url="https://api.github.com") as client:
             response = await client.post(
                 f"/app/installations/{installation_id}/access_tokens",
@@ -92,3 +105,25 @@ class GitHubAppClient:
         if response.status_code >= 400:
             raise GitHubAppError("Could not authorize this GitHub App installation.")
         return str(response.json()["token"])
+
+    def _app_jwt(self) -> str:
+        if not self.configured:
+            raise GitHubAppError("GitHub App credentials are not configured.")
+        now = int(time.time())
+        key = self._settings.resolved_github_app_private_key.replace("\\n", "\n")
+        return jwt.encode(
+            {"iat": now - 60, "exp": now + 540, "iss": self._settings.github_app_id},
+            key,
+            algorithm="RS256",
+        )
+
+    async def _app_get(self, path: str) -> Any:
+        headers = {
+            "Authorization": f"Bearer {self._app_jwt()}",
+            "Accept": "application/vnd.github+json",
+        }
+        async with httpx.AsyncClient(base_url="https://api.github.com", headers=headers) as client:
+            response = await client.get(path)
+        if response.status_code >= 400:
+            raise GitHubAppError("Could not list GitHub App installations.")
+        return response.json()

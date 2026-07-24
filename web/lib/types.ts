@@ -156,6 +156,12 @@ export interface GitHubRepository {
   private: boolean;
 }
 
+export interface GitHubInstallation {
+  id: number;
+  account_login: string;
+  repository_selection: string;
+}
+
 export interface GitHubImportPreview {
   is_node_app: boolean;
   addons: Array<"postgres" | "redis">;

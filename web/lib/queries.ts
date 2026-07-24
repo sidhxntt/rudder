@@ -13,6 +13,7 @@ import type { Deployment, ServiceUpdate } from "./types";
 
 export const keys = {
   githubImportStatus: ["github-import-status"] as const,
+  githubInstallations: ["github-installations"] as const,
   githubRepositories: (installationId: number) => ["github-repositories", installationId] as const,
   githubBranches: (installationId: number, repository: string) =>
     ["github-branches", installationId, repository] as const,
@@ -30,6 +31,14 @@ export const keys = {
 
 export function useGitHubImportStatus() {
   return useQuery({ queryKey: keys.githubImportStatus, queryFn: api.getGitHubImportStatus });
+}
+
+export function useGitHubInstallations(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.githubInstallations,
+    queryFn: api.listGitHubInstallations,
+    enabled,
+  });
 }
 
 export function useGitHubRepositories(installationId: number | null) {

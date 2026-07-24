@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   useConfirmGitHubImport,
@@ -9,6 +9,7 @@ import {
   useGitHubImport,
   useGitHubImportPreview,
   useGitHubImportStatus,
+  useGitHubInstallations,
   useGitHubRepositories,
 } from "@/lib/queries";
 import type { GitHubImportStep } from "@/lib/types";
@@ -40,17 +41,14 @@ export function GitHubImportDialog() {
   const search = useSearchParams();
   const [open, setOpen] = useState(false);
   const queryInstallation = search.get("installation_id");
-  const [installationText, setInstallationText] = useState(queryInstallation ?? "");
-  const installationId = useMemo(() => {
-    const parsed = Number(installationText);
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-  }, [installationText]);
+  const [installationId, setInstallationId] = useState<number | null>(null);
   const [repository, setRepository] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
   const [selectedAddons, setSelectedAddons] = useState<Addon[]>([]);
   const [importId, setImportId] = useState<string | null>(null);
 
   const status = useGitHubImportStatus();
+  const installations = useGitHubInstallations(open && Boolean(status.data?.configured));
   const repositories = useGitHubRepositories(open && status.data?.configured ? installationId : null);
   const branches = useGitHubBranches(open && status.data?.configured ? installationId : null, repository);
   const preview = useGitHubImportPreview(
@@ -62,8 +60,15 @@ export function GitHubImportDialog() {
   const imported = useGitHubImport(importId);
 
   useEffect(() => {
-    if (queryInstallation) setInstallationText(queryInstallation);
-  }, [queryInstallation]);
+    const requestedId = Number(queryInstallation);
+    const rows = installations.data ?? [];
+    if (Number.isSafeInteger(requestedId) && requestedId > 0 && rows.some((row) => row.id === requestedId)) {
+      setInstallationId(requestedId);
+      return;
+    }
+    if (installationId && rows.some((row) => row.id === installationId)) return;
+    setInstallationId(rows[0]?.id ?? null);
+  }, [installationId, installations.data, queryInstallation]);
 
   useEffect(() => {
     const rows = repositories.data ?? [];
@@ -157,9 +162,14 @@ export function GitHubImportDialog() {
                   <>
                     <p className="text-caption text-ink">{status.data.message}</p>
                     {status.data.install_url ? <a className="inline-block text-caption text-accent underline" href={status.data.install_url}>Install or manage GitHub App access</a> : null}
-                    <label className="block text-caption text-ink-mute">GitHub installation ID
-                      <input value={installationText} onChange={(event) => { reset(); setInstallationText(event.target.value); }} placeholder="From GitHub App redirect" inputMode="numeric" className="mt-1 w-full rounded border border-hairline bg-surface-raised px-2 py-2 text-ink" />
-                    </label>
+                    {installations.isLoading ? <p className="text-caption text-ink-mute">Finding your GitHub App connection…</p> : null}
+                    {installations.isError ? <p className="text-caption text-status-failed">Could not load GitHub App installations.</p> : null}
+                    {installations.data?.length === 0 ? <p className="text-caption text-ink-faint">Install the GitHub App above, then reopen this dialog.</p> : null}
+                    {(installations.data?.length ?? 0) > 0 ? <label className="block text-caption text-ink-mute">GitHub connection
+                      <select value={installationId ?? ""} onChange={(event) => { reset(); setInstallationId(Number(event.target.value) || null); }} className="mt-1 w-full rounded border border-hairline bg-surface-raised px-2 py-2 text-ink">
+                        {(installations.data ?? []).map((row) => <option key={row.id} value={row.id}>{row.account_login} · {row.repository_selection === "all" ? "all repositories" : "selected repositories"}</option>)}
+                      </select>
+                    </label> : null}
                     {installationId ? (
                       <label className="block text-caption text-ink-mute">Repository
                         <select value={repository ?? ""} onChange={(event) => { setRepository(event.target.value || null); setBranch(null); }} className="mt-1 w-full rounded border border-hairline bg-surface-raised px-2 py-2 text-ink">
