@@ -20,6 +20,7 @@ from rudder_cp.routers import (
     deployments,
     domains,
     environments,
+    imports,
     logs,
     projects,
     services,
@@ -29,6 +30,7 @@ from rudder_cp.routers import (
 from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.auth import seed_admin_user
+from rudder_cp.services.github_app import GitHubAppClient
 from rudder_cp.services.variables import verify_secret_keys
 from rudder_cp.services.worker import run_worker
 
@@ -81,6 +83,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app.state.settings = settings
     app.state.agent = AgentClient(settings.agent_url)
+    app.state.github = GitHubAppClient(settings)
 
     # Both are needed: install_error_handlers flattens FastAPI's `detail`
     # nesting (including Pydantic 422s) into the PRD's {code, message, details},
@@ -92,7 +95,7 @@ def create_app() -> FastAPI:
     # dependency repeated on each route — one missed decorator would otherwise
     # leave an endpoint open, and `POST /services/{id}/deploy` runs arbitrary
     # code from a git repo.
-    protected = (projects, environments, services, domains, variables, deployments, logs)
+    protected = (projects, environments, services, domains, variables, deployments, logs, imports)
     for module in protected:
         app.include_router(module.router, dependencies=[Depends(auth_router.get_current_user)])
 

@@ -21,7 +21,9 @@ import { serviceUrl } from "@/lib/status";
 import type { Service } from "@/lib/types";
 
 import { DetailPanel } from "./detail-panel";
+import { composeManagedByServiceId, composeReleaseOwnerId } from "./compose-lifecycle";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
+import { GitHubImportDialog } from "./github-import-dialog";
 
 const nodeTypes: NodeTypes = { service: ServiceNode };
 
@@ -68,6 +70,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
 
   const serviceList = useMemo(() => services.data ?? [], [services.data]);
   const domainList = useMemo(() => domains.data ?? [], [domains.data]);
+  const composeAppServiceId = useMemo(() => composeReleaseOwnerId(serviceList), [serviceList]);
 
   // Rebuild nodes when the service set changes. Positions already on screen are
   // kept: a drag in flight must not be yanked back by a poll. Layout is UI
@@ -81,7 +84,12 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
           serviceId: service.id,
           name: service.name,
           kind: service.kind,
+          role:
+            typeof service.build_config.compose_role === "string"
+              ? service.build_config.compose_role
+              : undefined,
           url: serviceUrl(service, domainList),
+          managedByServiceId: composeManagedByServiceId(service, composeAppServiceId),
         };
         return {
           id: service.id,
@@ -122,6 +130,9 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
   return (
     <div className="flex h-full min-h-0 w-full">
       <div className="relative min-w-0 flex-1">
+        <div className="absolute left-5 top-5 z-10">
+          <GitHubImportDialog />
+        </div>
         <ReactFlow
           nodes={nodes}
           edges={NO_EDGES}
@@ -166,6 +177,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
         <DetailPanel
           service={selectedService}
           url={serviceUrl(selectedService, domainList)}
+          managedByServiceId={composeManagedByServiceId(selectedService, composeAppServiceId)}
           onClose={() => setSelectedServiceId(null)}
         />
       ) : null}

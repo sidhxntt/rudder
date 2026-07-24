@@ -19,6 +19,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from rudder_cp.config import get_settings
 from rudder_cp.db import get_session
 from rudder_cp.main import create_app
+from rudder_cp.services.github_oauth import GitHubIdentity, GitHubOAuthClient
 
 # Endpoints that must stay reachable without a token, each for a stated reason.
 PUBLIC = {
@@ -115,3 +116,29 @@ def test_public_routes_stay_public(client: TestClient) -> None:
     assert client.delete("/auth/token").status_code < 400
     # Wrong password, not missing auth: proves the endpoint was reached.
     assert client.post("/auth/token", json={"email": "a@b.c", "password": "x"}).status_code == 401
+
+
+def test_github_oauth_start_redirects_to_github(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings.github_oauth_client_id = "client-id"
+    settings.github_oauth_client_secret = "client-secret"
+    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
+    response = client.get("/auth/github/start", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"].startswith("https://github.com/login/oauth/authorize?")
+
+
+async def _identity(_self: GitHubOAuthClient, _code: str, _state: str) -> GitHubIdentity:
+    return GitHubIdentity(id=1234, login="octocat", email="octocat@github.test")
+
+
+def test_github_oauth_callback_sets_rudder_session(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(GitHubOAuthClient, "exchange", _identity)
+    response = client.get("/auth/github/callback?code=valid&state=valid", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/"
+    assert "rudder_token=" in response.headers["set-cookie"]

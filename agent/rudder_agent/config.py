@@ -20,3 +20,7 @@ class AgentSettings(BaseSettings):
 
     # Seconds Docker waits after SIGTERM before SIGKILL when stopping.
     stop_timeout_seconds: int = 10
+
+    # Compose manifests are written only beneath this host-local directory.
+    # Imported repositories never choose arbitrary Docker Compose file paths.
+    compose_state_dir: str = "/var/lib/rudder-agent/compose"

@@ -20,6 +20,13 @@
 import type {
   Deployment,
   Domain,
+  GitHubImportStatus,
+  GitHubImport,
+  GitHubImportConfirmation,
+  GitHubImportPreview,
+  GitHubInstallation,
+  GitHubRepository,
+  StarterTemplate,
   Environment,
   Instance,
   Project,
@@ -165,6 +172,75 @@ export function me(): Promise<User> {
 /** GET /projects */
 export function listProjects(): Promise<Project[]> {
   return requestJson<Project[]>("/projects");
+}
+
+/** GET /github/import/status — whether the operator configured the GitHub App. */
+export function getGitHubImportStatus(): Promise<GitHubImportStatus> {
+  return requestJson<GitHubImportStatus>("/github/import/status");
+}
+
+/** GET /github/import/installations — GitHub App accounts connected to Rudder. */
+export function listGitHubInstallations(): Promise<GitHubInstallation[]> {
+  return requestJson<GitHubInstallation[]>("/github/import/installations");
+}
+
+/** GET /github/import/repositories?installation_id=... */
+export function listGitHubRepositories(installationId: number): Promise<GitHubRepository[]> {
+  return requestJson<GitHubRepository[]>(`/github/import/repositories?installation_id=${installationId}`);
+}
+
+/** GET /github/import/branches?installation_id=...&repository=... */
+export function listGitHubBranches(installationId: number, repository: string): Promise<string[]> {
+  return requestJson<string[]>(
+    `/github/import/branches?installation_id=${installationId}&repository=${id(repository)}`,
+  );
+}
+
+export function previewGitHubImport(args: {
+  installationId: number;
+  repository: string;
+  branch: string;
+  templateId?: string | null;
+}): Promise<GitHubImportPreview> {
+  return requestJson<GitHubImportPreview>("/github/import/preview", {
+    method: "POST",
+    body: {
+      installation_id: args.installationId,
+      repository: args.repository,
+      branch: args.branch,
+      template_id: args.templateId ?? null,
+    },
+  });
+}
+
+/** `GET /github/import/templates` → reviewed starter templates. */
+export function listGitHubImportTemplates(): Promise<StarterTemplate[]> {
+  return requestJson<StarterTemplate[]>("/github/import/templates");
+}
+
+export function confirmGitHubImport(args: {
+  installationId: number;
+  repository: string;
+  branch: string;
+  addons: string[];
+  templateId?: string | null;
+  publicServices?: string[];
+}): Promise<GitHubImportConfirmation> {
+  return requestJson<GitHubImportConfirmation>("/github/imports", {
+    method: "POST",
+    body: {
+      installation_id: args.installationId,
+      repository: args.repository,
+      branch: args.branch,
+      addons: args.addons,
+      template_id: args.templateId ?? null,
+      public_services: args.publicServices ?? null,
+    },
+  });
+}
+
+export function getGitHubImport(importId: string): Promise<GitHubImport> {
+  return requestJson<GitHubImport>(`/github/imports/${id(importId)}`);
 }
 
 /** GET /projects/{project_id}/environments */

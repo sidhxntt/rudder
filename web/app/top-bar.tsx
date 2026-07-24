@@ -22,17 +22,24 @@ export function TopBar() {
 
   const project = (projects.data ?? []).find((p) => p.id === projectId);
   const environment = (environments.data ?? []).find((e) => e.id === environmentId);
+  const isWorkspace = !projectId;
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-md border-b border-hairline bg-surface-soft px-lg">
       <div className="flex min-w-0 items-center gap-sm">
-        <span className="truncate text-caption text-ink-mute">{project?.name ?? "—"}</span>
-        <span className="text-ink-faint" aria-hidden>
-          /
-        </span>
-        <span className="truncate text-caption font-medium text-ink">
-          {environment?.name ?? "—"}
-        </span>
+        {isWorkspace ? (
+          <span className="truncate text-caption font-medium text-ink">Workspace</span>
+        ) : (
+          <>
+            <span className="truncate text-caption text-ink-mute">{project?.name ?? "—"}</span>
+            <span className="text-ink-faint" aria-hidden>
+              /
+            </span>
+            <span className="truncate text-caption font-medium text-ink">
+              {environment?.name ?? "—"}
+            </span>
+          </>
+        )}
         {environment?.is_production ? (
           <span className="rounded-xs border border-hairline-strong px-xs py-xxs text-micro uppercase tracking-wide text-ink-mute">
             production

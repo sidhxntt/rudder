@@ -12,6 +12,15 @@ import * as api from "./api";
 import type { Deployment, ServiceUpdate } from "./types";
 
 export const keys = {
+  githubImportStatus: ["github-import-status"] as const,
+  githubImportTemplates: ["github-import-templates"] as const,
+  githubInstallations: ["github-installations"] as const,
+  githubRepositories: (installationId: number) => ["github-repositories", installationId] as const,
+  githubBranches: (installationId: number, repository: string) =>
+    ["github-branches", installationId, repository] as const,
+  githubPreview: (installationId: number, repository: string, branch: string, templateId: string) =>
+    ["github-preview", installationId, repository, branch, templateId] as const,
+  githubImport: (importId: string) => ["github-import", importId] as const,
   projects: ["projects"] as const,
   environments: (projectId: string) => ["environments", projectId] as const,
   services: (environmentId: string) => ["services", environmentId] as const,
@@ -20,6 +29,70 @@ export const keys = {
   instances: (serviceId: string) => ["instances", serviceId] as const,
   variables: (serviceId: string) => ["variables", serviceId] as const,
 };
+
+export function useGitHubImportStatus() {
+  return useQuery({ queryKey: keys.githubImportStatus, queryFn: api.getGitHubImportStatus });
+}
+
+export function useGitHubImportTemplates() {
+  return useQuery({ queryKey: keys.githubImportTemplates, queryFn: api.listGitHubImportTemplates });
+}
+
+export function useGitHubInstallations(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.githubInstallations,
+    queryFn: api.listGitHubInstallations,
+    enabled,
+  });
+}
+
+export function useGitHubRepositories(installationId: number | null) {
+  return useQuery({
+    queryKey: keys.githubRepositories(installationId ?? 0),
+    queryFn: () => api.listGitHubRepositories(installationId ?? 0),
+    enabled: installationId !== null,
+  });
+}
+
+export function useGitHubBranches(installationId: number | null, repository: string | null) {
+  return useQuery({
+    queryKey: keys.githubBranches(installationId ?? 0, repository ?? ""),
+    queryFn: () => api.listGitHubBranches(installationId ?? 0, repository ?? ""),
+    enabled: installationId !== null && repository !== null,
+  });
+}
+
+export function useGitHubImportPreview(
+  installationId: number | null,
+  repository: string | null,
+  branch: string | null,
+  templateId: string | null,
+) {
+  return useQuery({
+    queryKey: keys.githubPreview(installationId ?? 0, repository ?? "", branch ?? "", templateId ?? ""),
+    queryFn: () =>
+      api.previewGitHubImport({
+        installationId: installationId ?? 0,
+        repository: repository ?? "",
+        branch: branch ?? "",
+        templateId,
+      }),
+    enabled: installationId !== null && repository !== null && branch !== null,
+  });
+}
+
+export function useConfirmGitHubImport() {
+  return useMutation({ mutationFn: api.confirmGitHubImport });
+}
+
+export function useGitHubImport(importId: string | null) {
+  return useQuery({
+    queryKey: keys.githubImport(importId ?? ""),
+    queryFn: () => api.getGitHubImport(importId ?? ""),
+    enabled: importId !== null,
+    refetchInterval: LIVE_POLL_MS,
+  });
+}
 
 /** Slow enough not to hammer the control plane, fast enough to watch a deploy. */
 const LIVE_POLL_MS = 2_000;

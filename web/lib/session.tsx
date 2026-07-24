@@ -31,7 +31,6 @@ export type SessionState =
 
 interface SessionValue {
   state: SessionState;
-  signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   /** Called when any request comes back 401. Drops straight to the login screen. */
   expire: () => void;
@@ -60,12 +59,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    await api.login(email, password);
-    const user = await api.me();
-    setState({ status: "authenticated", user });
-  }, []);
-
   const signOut = useCallback(async () => {
     try {
       await api.logout();
@@ -79,8 +72,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<SessionValue>(
-    () => ({ state, signIn, signOut, expire }),
-    [state, signIn, signOut, expire],
+    () => ({ state, signOut, expire }),
+    [state, signOut, expire],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

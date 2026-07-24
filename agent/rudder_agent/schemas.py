@@ -6,7 +6,7 @@ the agent observed. No desired state is stored here.
 """
 
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -46,6 +46,9 @@ class ContainerSpec(BaseModel):
     memory_limit_mb: int = Field(ge=6, description="Docker's floor is 6 MB")
     network: str = Field(min_length=1)
     labels: dict[str, str] = Field(default_factory=dict)
+    network_aliases: list[str] = Field(default_factory=list)
+    volumes: dict[str, dict[str, str]] = Field(default_factory=dict)
+    command: list[str] | None = None
 
 
 class ContainerState(BaseModel):
@@ -85,6 +88,7 @@ class HealthProbeRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
     path: str = "/"
+    protocol: Literal["http", "tcp"] = "http"
     port: Port
     timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     network: str | None = Field(
@@ -102,3 +106,37 @@ class HealthProbeResult(BaseModel):
     reason: str | None = None
     latency_ms: float
     probed_url: str | None = None
+
+
+ComposeProjectName = Annotated[
+    str,
+    Field(pattern=r"^[a-z][a-z0-9-]{0,62}$", description="Rudder-owned Compose namespace"),
+]
+
+
+class ComposeUpRequest(BaseModel):
+    """One validated manifest to write below the agent-owned state directory."""
+
+    model_config = {"extra": "forbid"}
+
+    project_name: ComposeProjectName
+    manifest: str = Field(min_length=1, max_length=64 * 1024)
+
+
+class ComposeProjectRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    project_name: ComposeProjectName
+
+
+class ComposeResult(BaseModel):
+    project_name: str
+    log: str
+
+
+class ComposeServiceState(BaseModel):
+    service: str
+    container_id: str | None = None
+    status: str
+    health: str | None = None
+    exit_code: int | None = None

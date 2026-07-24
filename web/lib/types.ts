@@ -144,6 +144,73 @@ export interface Domain {
   created_at: string;
 }
 
+export interface GitHubImportStatus {
+  configured: boolean;
+  install_url: string | null;
+  message: string;
+}
+
+export interface GitHubRepository {
+  full_name: string;
+  default_branch: string;
+  private: boolean;
+}
+
+export interface GitHubInstallation {
+  id: number;
+  account_login: string;
+  repository_selection: string;
+}
+
+export interface StarterTemplate {
+  id: string;
+  name: string;
+  description: string;
+  addons: string[];
+}
+
+export interface GitHubImportPreview {
+  is_node_app: boolean;
+  addons: string[];
+  externally_managed: string[];
+  compose_source: "repository" | "generated";
+  compose_manifest: string;
+  services: Array<{
+    name: string;
+    public_port: number | null;
+    container_port: number | null;
+    role: string;
+    is_public: boolean;
+  }>;
+  processes: Array<{
+    role: "web" | "worker" | "scheduler" | "realtime";
+    command: string;
+    source: "procfile" | "package_json";
+  }>;
+}
+
+export interface GitHubImportConfirmation {
+  import_id: string;
+  project_id: string;
+  environment_id: string;
+  app_service_id: string;
+}
+
+export interface GitHubImportStep {
+  label: string;
+  service_id: string;
+  service_name: string | null;
+  deployment_id: string | null;
+  status: DeploymentStatus;
+  error_message: string | null;
+}
+
+export interface GitHubImport extends GitHubImportConfirmation {
+  repository: string;
+  branch: string;
+  steps: GitHubImportStep[];
+}
+
 /** Payload of the terminal `event: end` frame on the build-log stream. */
 export type BuildOutcome = "succeeded" | "failed";
 

@@ -79,13 +79,22 @@ services:
       RUDDER_BUILDKIT_ADDR: tcp://registry:1234
       RUDDER_AGENT_URL: http://agent:9000
       RUDDER_TRAEFIK_DYNAMIC_DIR: /traefik/dynamic
+      # Keep the GitHub App key on the host. The container receives only a
+      # read-only mount at a stable path; Settings reads this path instead of
+      # exposing a multiline PEM through the compose file.
+      RUDDER_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/rudder-github-app.pem
     ports:
       - "8000:8000"
     volumes:
       - ./control-plane:/app
       - ./infra/traefik/dynamic:/traefik/dynamic
       - buildlogs:/var/log/rudder/builds
-    command: uvicorn rudder_cp.main:app --host 0.0.0.0 --port 8000 --reload
+      - ${RUDDER_GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/rudder-github-app.pem:ro
+    # Keep the local API schema aligned with the mounted development source.
+    # This prevents new import endpoints from running against an older database
+    # after `docker compose up` or a branch change.
+    command: >-
+      sh -c "alembic upgrade head && exec uvicorn rudder_cp.main:app --host 0.0.0.0 --port 8000 --reload"
     networks: [rudder]
 
   agent:
@@ -101,6 +110,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agent:/app
+      - agentcomposestate:/var/lib/rudder-agent/compose
     ports:
       - "9000:9000"
     networks: [rudder]
@@ -116,3 +126,4 @@ volumes:
   registrydata:
   buildkitdata:
   buildlogs:
+  agentcomposestate:

@@ -1,6 +1,7 @@
 """Settings. Every knob is an env var prefixed RUDDER_ (see .env.example)."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +28,38 @@ class Settings(BaseSettings):
     # D2 — one token for the whole install, no per-repo model in Phase 1.
     github_token: str = ""
     github_webhook_secret: str = ""
+    github_app_id: str = ""
+    github_app_slug: str = ""
+    github_app_private_key: str = ""
+    github_app_private_key_file: str = ""
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    github_oauth_redirect_uri: str = ""
+
+    @property
+    def resolved_github_app_private_key(self) -> str:
+        """Use a mounted PEM when configured, otherwise use the env value.
+
+        A file path keeps a multiline GitHub App private key out of `.env` and
+        lets a local install mount or rotate the key without changing the app
+        configuration itself.
+        """
+        if self.github_app_private_key_file:
+            return Path(self.github_app_private_key_file).read_text(encoding="utf-8")
+        return self.github_app_private_key
+
+    @property
+    def github_app_configured(self) -> bool:
+        try:
+            return bool(
+                self.github_app_id
+                and self.github_app_slug
+                and self.resolved_github_app_private_key
+            )
+        except OSError:
+            # A missing local PEM must make the integration unavailable, not
+            # turn the import dialog into a 500 response.
+            return False
 
     # D8 — ACME cannot do HTTP-01 against localhost.
     tls_mode: Literal["off", "acme"] = "off"

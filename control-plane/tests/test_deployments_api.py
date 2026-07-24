@@ -4,6 +4,7 @@ The webhook is the one endpoint on this service that an unauthenticated
 stranger can reach, so most of what is asserted here is about refusing them.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -11,18 +12,21 @@ from collections.abc import Iterator
 from uuid import UUID, uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from rudder_cp.config import Settings
+from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
     Environment,
+    GitHubImport,
+    GitHubImportService,
     Instance,
     InstanceStatus,
     Node,
@@ -33,6 +37,7 @@ from rudder_cp.models import (
 from rudder_cp.routers import deployments as deployments_router
 from rudder_cp.routers import webhooks as webhooks_router
 from rudder_cp.schemas.common import install_error_handlers
+from rudder_cp.services.imports import AddonProposal, provision_import
 
 SECRET = "hook-secret"
 
@@ -134,6 +139,23 @@ def test_deploying_a_service_with_no_repo_is_a_readable_422(
     assert response.json()["code"] == "no_source_repo"
 
 
+def test_deploying_a_compose_child_points_to_its_owning_release(
+    client: TestClient, engine: Engine, seed: dict[str, str]
+) -> None:
+    with Session(engine) as session:
+        child = session.get(Service, UUID(seed["no_repo"]))
+        assert child is not None
+        child.build_config = {"managed_by_service_id": seed["service"]}
+        session.add(child)
+        session.commit()
+
+    response = client.post(f"/services/{seed['no_repo']}/deploy", json={})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "managed_by_compose"
+    assert response.json()["details"]["release_service_id"] == seed["service"]
+
+
 def test_deploying_an_unknown_service_is_404(client: TestClient) -> None:
     response = client.post(f"/services/{uuid4()}/deploy", json={})
     assert response.status_code == 404
@@ -151,6 +173,99 @@ def test_deployments_are_listed_newest_first(client: TestClient, seed: dict[str,
     second = client.post(f"/services/{seed['service']}/deploy", json={}).json()["id"]
     listed = [d["id"] for d in client.get(f"/services/{seed['service']}/deployments").json()]
     assert listed[0] == second and first in listed
+
+
+def test_a_compose_child_lists_its_owner_release_history(
+    client: TestClient, engine: Engine, seed: dict[str, str]
+) -> None:
+    """Compose children inherit the owner release state and its build-log id."""
+    owner_id = UUID(seed["service"])
+    child_id = UUID(seed["no_repo"])
+    with Session(engine) as session:
+        owner = session.get(Service, owner_id)
+        assert owner is not None
+        environment = session.get(Environment, owner.environment_id)
+        assert environment is not None
+        child = session.get(Service, child_id)
+        assert child is not None
+        child.build_config = {"managed_by_service_id": str(owner_id)}
+        record = GitHubImport(
+            installation_id=42,
+            repository="acme/shop",
+            branch="main",
+            compose_source="repository",
+            compose_manifest="services: {}",
+            compose_project_name="rudder-shop",
+            project_id=environment.project_id,
+            app_service_id=owner_id,
+        )
+        session.add(record)
+        session.flush()
+        session.add(
+            GitHubImportService(
+                github_import_id=record.id,
+                service_id=child_id,
+                compose_service="worker",
+                role="worker",
+                is_public=False,
+            )
+        )
+        deployment = Deployment(service_id=owner_id, status=DeploymentStatus.BUILDING)
+        session.add(deployment)
+        session.commit()
+        deployment_id = deployment.id
+
+    response = client.get(f"/services/{child_id}/deployments")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": str(deployment_id),
+            "service_id": str(owner_id),
+            "status": "building",
+            "image_tag": None,
+            "commit_sha": None,
+            "error_message": None,
+            "created_at": response.json()[0]["created_at"],
+            "became_live_at": None,
+        }
+    ]
+
+
+def test_a_managed_catalog_addon_lists_its_owner_release_history(
+    client: TestClient, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generated databases share the app release just like Compose children."""
+    monkeypatch.setenv("RUDDER_SECRET_KEYS", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    with Session(engine) as session:
+        session.add(User(email="catalog-owner@example.com", password_hash="x"))
+        session.commit()
+        result = asyncio.run(
+            provision_import(
+                session,
+                installation_id=42,
+                repository="acme/catalog-api",
+                branch="main",
+                selected_addons={"postgres"},
+                proposal=AddonProposal(
+                    is_node_app=True,
+                    addons=("postgres",),
+                    externally_managed=(),
+                ),
+            )
+        )
+        addon = session.exec(select(Service).where(Service.name == "postgres")).one()
+        deployment = session.exec(
+            select(Deployment).where(Deployment.service_id == result.app_service_id)
+        ).one()
+
+    response = client.get(f"/services/{addon.id}/deployments")
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == str(deployment.id)
+    assert response.json()[0]["service_id"] == str(result.app_service_id)
+    get_settings.cache_clear()
 
 
 def test_instances_are_exposed_for_a_service(

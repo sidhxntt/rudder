@@ -33,8 +33,10 @@ def settings() -> AgentSettings:
 
 
 @pytest.fixture
-def ops(docker_client: FakeDockerClient) -> DockerOps:
-    return DockerOps(docker_client, stop_timeout_seconds=1)
+def ops(docker_client: FakeDockerClient, tmp_path) -> DockerOps:
+    return DockerOps(
+        docker_client, stop_timeout_seconds=1, compose_state_dir=str(tmp_path / "compose")
+    )
 
 
 @pytest.fixture

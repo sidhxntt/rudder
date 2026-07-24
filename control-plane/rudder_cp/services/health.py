@@ -24,6 +24,7 @@ async def wait_until_healthy(
     *,
     path: str,
     port: int,
+    protocol: str = "http",
     settings: Settings,
 ) -> HealthOutcome:
     """Poll until the container answers, it dies, or we run out of time.
@@ -51,7 +52,13 @@ async def wait_until_healthy(
             )
 
         try:
-            probe = await agent.probe(container_id, path=path, port=port)
+            probe_kwargs = {"path": path, "port": port}
+            # Keep the existing HTTP request shape untouched. Apart from
+            # compatibility with older agents, this makes the new TCP mode an
+            # explicit opt-in for managed add-ons.
+            if protocol != "http":
+                probe_kwargs["protocol"] = protocol
+            probe = await agent.probe(container_id, **probe_kwargs)
         except AgentError as exc:
             last_reason = str(exc)
         else:

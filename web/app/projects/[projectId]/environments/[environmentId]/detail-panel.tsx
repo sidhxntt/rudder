@@ -22,14 +22,18 @@ const TABS: readonly { id: Tab; label: string }[] = [
 export function DetailPanel({
   service,
   url,
+  managedByServiceId,
   onClose,
 }: {
   service: Service;
   url: string | null;
+  managedByServiceId?: string;
   onClose: () => void;
 }) {
-  const deployments = useDeployments(service.id);
-  const instances = useInstances(service.id);
+  const lifecycleServiceId = managedByServiceId ?? service.id;
+  const isComposeManaged = managedByServiceId !== undefined;
+  const deployments = useDeployments(lifecycleServiceId);
+  const instances = useInstances(lifecycleServiceId);
   const deploy = useDeploy(service.id);
 
   const [tab, setTab] = useState<Tab>("logs");
@@ -67,7 +71,11 @@ export function DetailPanel({
                 {service.source_branch ? `@${service.source_branch}` : ""}
               </span>
             ) : (
-              <span>{service.kind}</span>
+              <span>
+                {typeof service.build_config.compose_role === "string"
+                  ? service.build_config.compose_role
+                  : service.kind}
+              </span>
             )}
           </p>
           {url ? (
@@ -82,6 +90,11 @@ export function DetailPanel({
           ) : (
             <p className="pt-xxs text-micro text-ink-faint">no public domain</p>
           )}
+          {isComposeManaged ? (
+            <p className="pt-xs text-micro text-ink-mute">
+              Managed by the application&apos;s Compose release.
+            </p>
+          ) : null}
         </div>
 
         <button
@@ -110,15 +123,18 @@ export function DetailPanel({
           </div>
         </dl>
 
-        {/* The one filled green action in this view. Near-black on green. */}
-        <button
-          type="button"
-          onClick={() => deploy.mutate()}
-          disabled={deploy.isPending || status === "building"}
-          className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {status === "building" || deploy.isPending ? "Deploying…" : "Deploy"}
-        </button>
+        {isComposeManaged ? (
+          <span className="text-micro text-ink-mute">Managed by Compose</span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => deploy.mutate()}
+            disabled={deploy.isPending || status === "building"}
+            className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {status === "building" || deploy.isPending ? "Deploying…" : "Deploy"}
+          </button>
+        )}
       </div>
 
       {failedWhileServing ? (
@@ -171,7 +187,7 @@ export function DetailPanel({
         />
       ) : null}
 
-      {deploy.isError ? (
+      {!isComposeManaged && deploy.isError ? (
         <p className="border-t border-hairline px-lg py-sm text-micro text-status-failed">
           deploy request failed
         </p>

@@ -23,14 +23,23 @@ from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
     Environment,
+    GitHubImport,
+    GitHubImportService,
     Instance,
     InstanceStatus,
     Project,
     Service,
     User,
+    Volume,
 )
 from rudder_cp.services import locks
-from rudder_cp.services.agent_client import AgentError, ContainerState, ProbeResult
+from rudder_cp.services.agent_client import (
+    AgentError,
+    ComposeResult,
+    ComposeServiceState,
+    ContainerState,
+    ProbeResult,
+)
 from rudder_cp.services.builder import BuildFailed, BuildResult
 from rudder_cp.services.deploy import run_deployment
 
@@ -92,17 +101,30 @@ def service(engine) -> Service:
 class FakeAgent:
     """Stands in for the node agent. Records what the deploy path asked for."""
 
-    def __init__(self, *, healthy: bool = True, alive_after_health: bool = True):
+    def __init__(
+        self,
+        *,
+        healthy: bool = True,
+        alive_after_health: bool = True,
+        compose_fails: bool = False,
+        compose_services: tuple[str, ...] = ("app",),
+    ):
         self.healthy = healthy
         self.alive_after_health = alive_after_health
         self.created: list[str] = []
         self.removed: list[str] = []
         self._probe_count = 0
+        self.compose_fails = compose_fails
+        self.compose_projects: list[str] = []
+        self.compose_down_projects: list[str] = []
+        self.compose_services = compose_services
 
     async def create_container(self, *, image, name, env, container_port, **_kw) -> ContainerState:
         self.created.append(name)
         self.last_env = env
         self.last_port = container_port
+        self.last_create_kwargs = _kw
+        self.last_image = image
         return ContainerState(id=f"container-{name}", status="starting", docker_status="running")
 
     async def inspect(self, container_id: str) -> ContainerState:
@@ -110,14 +132,40 @@ class FakeAgent:
             return ContainerState(id=container_id, status="stopped", exit_code=1)
         return ContainerState(id=container_id, status="healthy", docker_status="running")
 
-    async def probe(self, container_id, *, path, port, timeout_seconds=5.0) -> ProbeResult:
+    async def probe(
+        self, container_id, *, path, port, timeout_seconds=5.0, protocol="http"
+    ) -> ProbeResult:
         self._probe_count += 1
+        self.last_protocol = protocol
         if self.healthy:
             return ProbeResult(ok=True, status_code=200, reason=None)
         return ProbeResult(ok=False, status_code=502, reason="connection refused")
 
     async def remove(self, container_id: str, *, drain_seconds: float) -> None:
         self.removed.append(container_id)
+
+    async def compose_up(self, *, project_name: str, manifest: str) -> ComposeResult:
+        if self.compose_fails:
+            raise AgentError("compose_error: application exited")
+        self.compose_projects.append(project_name)
+        self.last_compose_manifest = manifest
+        return ComposeResult(project_name=project_name, log="Container app Started\n")
+
+    async def compose_ps(self, *, project_name: str) -> list[ComposeServiceState]:
+        return [
+            ComposeServiceState(
+                service=service,
+                container_id=f"compose-{project_name}-{service}",
+                status="running",
+                health="healthy",
+                exit_code=None,
+            )
+            for service in self.compose_services
+        ]
+
+    async def compose_down(self, *, project_name: str) -> ComposeResult:
+        self.compose_down_projects.append(project_name)
+        return ComposeResult(project_name=project_name, log="Container app Removed\n")
 
 
 @dataclass
@@ -228,6 +276,126 @@ async def test_failed_deploy_leaves_previous_version_serving(engine, service, se
         ).all()
         assert len(healthy) == 1
         assert healthy[0].deployment_id == first.deployment_id
+
+
+async def test_imported_compose_failure_keeps_the_previous_release_live(
+    engine, service, settings
+):
+    """Candidate Compose projects are isolated until their app is healthy."""
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        session.add(app)
+        session.add(
+            GitHubImport(
+                installation_id=7,
+                repository="acme/shop-api",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services:\n  app:\n    build: .\n    expose: ['8080']\n",
+                compose_project_name="rudder-compose-test",
+                project_id=environment.project_id,
+                app_service_id=app.id,
+            )
+        )
+        session.commit()
+
+    first_agent = FakeAgent()
+    first = await _run(engine, _queue(engine, service.id), first_agent, settings, _ok_builder)
+    failed = await _run(
+        engine, _queue(engine, service.id), FakeAgent(compose_fails=True), settings, _ok_builder
+    )
+
+    assert first.status is DeploymentStatus.LIVE
+    assert failed.status is DeploymentStatus.FAILED
+    assert first_agent.compose_projects
+    with Session(engine) as session:
+        assert session.get(Deployment, first.deployment_id).status is DeploymentStatus.LIVE
+        healthy = session.exec(
+            select(Instance).where(Instance.deployment_id == first.deployment_id)
+        ).one()
+        assert healthy.status is InstanceStatus.HEALTHY
+
+
+async def test_imported_compose_records_every_graph_container_after_release_is_live(
+    engine, service, settings
+):
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        grafana = Service(
+            environment_id=environment.id,
+            name="grafana",
+            container_port=3000,
+            build_config={"compose_service": "grafana", "managed_by_service_id": str(app.id)},
+        )
+        session.add(grafana)
+        session.add(app)
+        session.commit()
+        imported = GitHubImport(
+            installation_id=7,
+            repository="acme/observed-api",
+            branch="main",
+            compose_source="generated",
+            compose_manifest=(
+                "services:\n  app:\n    build: .\n    expose: ['8080']\n"
+                "  grafana:\n    image: grafana/grafana\n    expose: ['3000']\n"
+            ),
+            compose_project_name="rudder-observed-test",
+            project_id=environment.project_id,
+            app_service_id=app.id,
+        )
+        session.add(imported)
+        session.commit()
+        session.add_all(
+            [
+                GitHubImportService(
+                    github_import_id=imported.id,
+                    service_id=app.id,
+                    compose_service="app",
+                    role="web",
+                    is_public=True,
+                ),
+                GitHubImportService(
+                    github_import_id=imported.id,
+                    service_id=grafana.id,
+                    compose_service="grafana",
+                    role="observability",
+                    is_public=True,
+                ),
+            ]
+        )
+        session.commit()
+
+    outcome = await _run(
+        engine,
+        _queue(engine, service.id),
+        FakeAgent(compose_services=("app", "grafana")),
+        settings,
+        _ok_builder,
+    )
+
+    assert outcome.status is DeploymentStatus.LIVE
+    with Session(engine) as session:
+        graph = list(session.exec(select(GitHubImportService)).all())
+        assert all(entry.container_id for entry in graph)
+        assert {
+            entry.compose_service: (entry.container_id or "").rsplit("-", 1)[-1]
+            for entry in graph
+        } == {"app": "app", "grafana": "grafana"}
+        instances = list(
+            session.exec(
+                select(Instance).where(Instance.deployment_id == outcome.deployment_id)
+            ).all()
+        )
+        assert len(instances) == 2
+        assert {instance.status for instance in instances} == {InstanceStatus.HEALTHY}
 
 
 async def test_unhealthy_container_is_removed_and_deploy_fails(engine, service, settings):
@@ -367,3 +535,70 @@ async def test_a_non_queued_deployment_is_not_run_twice(engine, service, setting
 
     assert again.detail == "not queued"
     assert builder.started == 0
+
+
+async def test_managed_addon_uses_an_image_volume_alias_and_tcp_readiness(
+    engine, service, settings
+):
+    """Managed infrastructure bypasses BuildKit but stays private and durable."""
+    with Session(engine) as session:
+        managed = session.get(Service, service.id)
+        assert managed is not None
+        managed.name = "redis"
+        managed.source_repo = None
+        managed.container_port = 6379
+        managed.health_check_port = 6379
+        managed.build_config = {
+            "managed_image": "redis:7-alpine",
+            "command": ["redis-server", "--requirepass", "secret"],
+        }
+        session.add(managed)
+        session.flush()
+        session.add(Volume(service_id=managed.id, mount_path="/data"))
+        session.commit()
+
+    async def should_not_build(*_args, **_kwargs):
+        raise AssertionError("managed images must not go through BuildKit")
+
+    agent = FakeAgent()
+    outcome = await _run(engine, _queue(engine, service.id), agent, settings, should_not_build)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    assert agent.last_image == "redis:7-alpine"
+    assert agent.last_protocol == "tcp"
+    assert agent.last_create_kwargs["network_aliases"] == ["redis"]
+    assert list(agent.last_create_kwargs["volumes"].values()) == [
+        {"bind": "/data", "mode": "rw"}
+    ]
+    assert agent.last_create_kwargs["command"] == ["redis-server", "--requirepass", "secret"]
+
+
+async def test_managed_addon_has_a_completed_lifecycle_log(engine, service, settings):
+    with Session(engine) as session:
+        managed = session.get(Service, service.id)
+        assert managed is not None
+        managed.name = "postgres"
+        managed.source_repo = None
+        managed.container_port = 5432
+        managed.health_check_port = 5432
+        managed.build_config = {"managed_image": "postgres:16-alpine"}
+        session.add(managed)
+        session.commit()
+
+    from rudder_cp.logs.store import BuildLogStore
+
+    store = BuildLogStore(settings.build_log_dir)
+    outcome = await _run(
+        engine,
+        _queue(engine, service.id),
+        FakeAgent(),
+        settings,
+        builder=lambda *_args: (_ for _ in ()).throw(AssertionError("must not build")),
+        store=store,
+    )
+
+    assert outcome.status is DeploymentStatus.LIVE
+    contents = store.path_for(outcome.deployment_id).read_text()
+    assert "using managed image postgres:16-alpine" in contents
+    assert "starting private service postgres" in contents
+    assert "deployment is live" in contents

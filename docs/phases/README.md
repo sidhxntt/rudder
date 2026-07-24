@@ -14,13 +14,21 @@ file is a bug.
 |---|---|---|---|
 | 1 | [PHASE-1-single-host.md](PHASE-1-single-host.md) | 3–4 wk | Push to GitHub, container comes up, public URL serves it |
 | 2 | [PHASE-2-multi-host.md](PHASE-2-multi-host.md) | 3–4 wk | Two nodes, service lands on the less loaded one, node dies, service reschedules |
+| 2.5 | [PHASE-2.5-kubernetes-runtime.md](PHASE-2.5-kubernetes-runtime.md) | 3–5 wk | Isolated Kubernetes namespace deploys an imported app and rolls back a failed revision |
 | 3 | [PHASE-3-mesh.md](PHASE-3-mesh.md) | 2–3 wk | App reaches Postgres by hostname, DB has no public port |
 | 4 | [PHASE-4-environments.md](PHASE-4-environments.md) | 2 wk | Clone production to staging, everything rewires |
 | 5 | [PHASE-5-operations.md](PHASE-5-operations.md) | 2–3 wk | Volumes, DB templates, logs, metrics, instant rollback |
 | 5.5 | [PHASE-5.5-frontends.md](PHASE-5.5-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
 | 6 | [PHASE-6-advisor.md](PHASE-6-advisor.md) | 1–2 wk | Point at a repo, get a proposed service graph as ghost nodes |
 
-Total: 14–19 weeks.
+Total: 17–24 weeks on the Kubernetes production track.
+
+## Production runtime track
+
+Phase 2.5 is the production Kubernetes track. It follows Phase 2 and replaces
+the Docker-host networking portion of Phase 3 for that track: Kubernetes
+Services, namespaces, and NetworkPolicies provide internal discovery and
+isolation. Phase 3 remains for the multi-Docker-host/WireGuard runtime.
 
 **Do not start a phase until the previous one is verified working end to end.**
 "It compiles" and "the happy path worked once" are not verification. Each file

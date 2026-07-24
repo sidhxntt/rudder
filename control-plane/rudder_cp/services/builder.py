@@ -44,6 +44,9 @@ class BuildRequest:
     dockerfile_path: str | None
     container_port: int
     start_command: str | None
+    # A short-lived GitHub App installation token. It is never logged and
+    # overrides the legacy install-wide PAT when the import flow supplied it.
+    git_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,7 +61,6 @@ async def build_image(
     settings: Settings,
 ) -> BuildResult:
     """Clone at a SHA, produce an image, push it. Raises BuildFailed."""
-    await store.open_log(request.deployment_id)
     workdir = Path(tempfile.mkdtemp(prefix=f"rudder-build-{request.service_id}-"))
     try:
         sha = request.commit_sha or await _resolve_branch_head(request, store, settings)
@@ -98,17 +100,14 @@ async def build_image(
             store=store,
             settings=settings,
         )
-        await store.close_log(request.deployment_id, "succeeded")
         return BuildResult(image_tag=image_tag, commit_sha=sha)
     except BuildFailed as exc:
         await _log(store, request, f"BUILD FAILED: {exc}")
-        await store.close_log(request.deployment_id, "failed")
         raise
     except Exception as exc:
         # Unexpected failures still have to close the log, or every SSE reader
         # attached to this build hangs until its client gives up.
         await _log(store, request, f"BUILD FAILED: {type(exc).__name__}")
-        await store.close_log(request.deployment_id, "failed")
         raise BuildFailed(f"Unexpected build error: {type(exc).__name__}") from exc
     finally:
         # Clones accumulate. Clean up on success, failure, and exception alike.
@@ -123,7 +122,7 @@ def _write_dockerfile(directory: Path, name: str, contents: str) -> None:
 # ------------------------------------------------------------------ git
 
 
-def _authed_remote(source_repo: str, settings: Settings) -> str:
+def _authed_remote(source_repo: str, settings: Settings, git_token: str | None = None) -> str:
     """Build the clone URL.
 
     D2: one install-wide token. It is embedded in the remote URL, which means it
@@ -132,14 +131,16 @@ def _authed_remote(source_repo: str, settings: Settings) -> str:
     an error message.
     """
     repo = source_repo.removeprefix("https://github.com/").removesuffix(".git")
-    if settings.github_token:
-        return f"https://x-access-token:{settings.github_token}@github.com/{repo}.git"
+    token = git_token or settings.github_token
+    if token:
+        return f"https://x-access-token:{token}@github.com/{repo}.git"
     return f"https://github.com/{repo}.git"
 
 
-def _scrub(text: str, settings: Settings) -> str:
-    if settings.github_token:
-        return text.replace(settings.github_token, "***")
+def _scrub(text: str, settings: Settings, git_token: str | None = None) -> str:
+    for token in (settings.github_token, git_token):
+        if token:
+            text = text.replace(token, "***")
     return text
 
 
@@ -147,11 +148,12 @@ async def _resolve_branch_head(
     request: BuildRequest, store: BuildLogStore, settings: Settings
 ) -> str:
     """A manual deploy has no pushed SHA, so resolve the branch tip."""
-    remote = _authed_remote(request.source_repo, settings)
+    remote = _authed_remote(request.source_repo, settings, request.git_token)
     code, output = await _run(
         ["git", "ls-remote", remote, f"refs/heads/{request.source_branch}"],
         timeout=_GIT_TIMEOUT_SECONDS,
         settings=settings,
+        git_token=request.git_token,
     )
     if code != 0 or not output.strip():
         raise BuildFailed(
@@ -176,7 +178,7 @@ async def _clone_at_sha(
     repo on every push is wasted bandwidth, so this is init + fetch --depth 1.
     """
     await asyncio.to_thread(repo_dir.mkdir, parents=True)
-    remote = _authed_remote(request.source_repo, settings)
+    remote = _authed_remote(request.source_repo, settings, request.git_token)
     steps = [
         ["git", "init", "--quiet", str(repo_dir)],
         ["git", "-C", str(repo_dir), "remote", "add", "origin", remote],
@@ -184,7 +186,12 @@ async def _clone_at_sha(
         ["git", "-C", str(repo_dir), "checkout", "--quiet", "FETCH_HEAD"],
     ]
     for step in steps:
-        code, output = await _run(step, timeout=_GIT_TIMEOUT_SECONDS, settings=settings)
+        code, output = await _run(
+            step,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            settings=settings,
+            git_token=request.git_token,
+        )
         if output.strip():
             await _log(store, request, output)
         if code != 0:
@@ -260,6 +267,7 @@ async def _run(
     *,
     timeout: int,  # noqa: ASYNC109
     settings: Settings,
+    git_token: str | None = None,
 ) -> tuple[int, str]:
     """Run to completion, capturing merged output. For short commands only."""
     process = await asyncio.create_subprocess_exec(
@@ -273,7 +281,9 @@ async def _run(
         process.kill()
         await process.wait()
         raise BuildFailed(f"'{command[0]}' timed out after {timeout}s") from None
-    return process.returncode or 0, _scrub(stdout.decode(errors="replace"), settings)
+    return process.returncode or 0, _scrub(
+        stdout.decode(errors="replace"), settings, git_token
+    )
 
 
 async def _stream(
@@ -298,7 +308,11 @@ async def _stream(
 
     async def pump() -> None:
         async for raw in process.stdout:  # type: ignore[union-attr]
-            await _log(store, request, _scrub(raw.decode(errors="replace").rstrip("\n"), settings))
+            await _log(
+                store,
+                request,
+                _scrub(raw.decode(errors="replace").rstrip("\n"), settings, request.git_token),
+            )
 
     try:
         await asyncio.wait_for(asyncio.gather(pump(), process.wait()), timeout=timeout)

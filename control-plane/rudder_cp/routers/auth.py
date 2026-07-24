@@ -32,7 +32,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session
 
@@ -41,6 +41,7 @@ from rudder_cp.db import get_session
 from rudder_cp.models import User
 from rudder_cp.schemas.auth import ErrorBody, LoginRequest, TokenResponse, UserRead
 from rudder_cp.services import auth as auth_service
+from rudder_cp.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 
 SESSION_COOKIE = "rudder_token"
 
@@ -181,6 +182,33 @@ async def create_token(
     expires_in = issued.expires_in
     _set_session_cookie(response, issued.token, expires_in, settings)
     return TokenResponse(access_token=issued.token, expires_in=expires_in)
+
+
+@router.get("/github/start", include_in_schema=False)
+async def github_start(request: Request) -> RedirectResponse:
+    try:
+        return RedirectResponse(GitHubOAuthClient(request.app.state.settings).authorization_url())
+    except GitHubOAuthError as exc:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "github_oauth_unavailable", str(exc)
+        ) from exc
+
+
+@router.get("/github/callback", include_in_schema=False)
+async def github_callback(
+    request: Request, code: str, state: str, session: SessionDep
+) -> RedirectResponse:
+    try:
+        identity = await GitHubOAuthClient(request.app.state.settings).exchange(code, state)
+    except GitHubOAuthError as exc:
+        raise ApiError(status.HTTP_401_UNAUTHORIZED, "github_oauth_failed", str(exc)) from exc
+    user = await auth_service.find_or_create_github_user(
+        session, github_id=identity.id, login=identity.login, email=identity.email
+    )
+    issued = auth_service.issue_token(user.id)
+    response = RedirectResponse("/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    _set_session_cookie(response, issued.token, issued.expires_in, request.app.state.settings)
+    return response
 
 
 @router.delete(

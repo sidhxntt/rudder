@@ -21,3 +21,5 @@ infra/traefik/dynamic/*.yml
 .agents/
 .claude/
 .codex/
+.worktrees/
+.superpowers/

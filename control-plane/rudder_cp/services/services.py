@@ -197,6 +197,10 @@ async def purge_service(session: Session, service: Service) -> None:
     for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all():
         session.delete(volume)
 
+    # Volume.service_id has no database-level ON DELETE cascade.  Flush its
+    # deletion before the parent service is deleted, otherwise SQLAlchemy can
+    # order both statements incorrectly and the transaction fails on the FK.
+    session.flush()
     session.delete(service)
     session.flush()
 

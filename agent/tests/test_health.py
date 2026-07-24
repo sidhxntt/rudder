@@ -60,6 +60,20 @@ async def test_probe_success_returns_status_code(
     assert body["latency_ms"] >= 0
 
 
+async def test_tcp_probe_succeeds_without_an_http_response(
+    client: TestClient, docker_client: FakeDockerClient, app_server: TestServer
+) -> None:
+    docker_client.containers.add(FakeContainer("abc", "redis-1", make_attrs(ip="127.0.0.1")))
+    resp = await client.post(
+        "/containers/abc/health", json={"protocol": "tcp", "port": app_server.port}
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["ok"] is True
+    assert body["status_code"] is None
+    assert body["probed_url"] == f"tcp://127.0.0.1:{app_server.port}"
+
+
 async def test_probe_non_2xx_is_a_result_not_an_error(
     client: TestClient, docker_client: FakeDockerClient, app_server: TestServer
 ) -> None:
