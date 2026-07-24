@@ -40,11 +40,31 @@ Initial catalog:
 | Search | Meilisearch, Typesense |
 | Object storage | MinIO |
 | Vector database | Qdrant |
+| Observability | Prometheus, Grafana |
 
-Complex systems such as Kafka, OpenSearch, Temporal, Airflow, Prometheus,
-Grafana, Loki, Ollama, and vLLM are supported through repository Compose, not
-generated templates. This avoids unsafe or unreliable guesses about clusters,
-storage, and resource requirements.
+Complex systems such as Kafka, OpenSearch, Temporal, Airflow, Loki, Ollama,
+and vLLM are supported through repository Compose, not generated templates.
+This avoids unsafe or unreliable guesses about clusters, storage, and resource
+requirements.
+
+## Starting templates
+
+The import dashboard will also offer explicit starter templates before a
+repository is selected. Templates are versioned, reviewed Compose plans rather
+than AI-generated text. Initial options are:
+
+- Node web application;
+- Node web application with PostgreSQL and Redis;
+- web application with a worker and Redis queue;
+- web application with PostgreSQL, Redis, Prometheus, and Grafana; and
+- empty Compose project.
+
+Prometheus and Grafana can be inferred as existing repository Compose services
+and represented in the Rudder canvas. In generated plans they are an explicit
+observability selection, not an automatic package-dependency proposal.
+Prometheus remains private. Grafana is private by default and can receive a
+public domain only when the user explicitly designates it as public during the
+review step.
 
 ## Import flow
 
