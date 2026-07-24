@@ -14,9 +14,11 @@ from typing import Any
 
 from sqlmodel import Session, select
 
+from rudder_cp.config import get_settings
 from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
+    Domain,
     Environment,
     GitHubImport,
     Service,
@@ -27,6 +29,7 @@ from rudder_cp.models import (
 from rudder_cp.schemas.project import ProjectCreate
 from rudder_cp.schemas.service import ServiceCreate
 from rudder_cp.services import projects, services, variables
+from rudder_cp.services.naming import system_hostname
 from rudder_cp.services.variables import encrypt_value, is_reference
 
 POSTGRES_CLIENTS = frozenset({"pg", "@prisma/client", "prisma", "sequelize"})
@@ -156,7 +159,7 @@ async def provision_import(
         session,
         environment.id,
         ServiceCreate(
-            name=_app_name(repository),
+            name=_available_app_name(session, repository),
             source_repo=repository,
             source_branch=branch,
             container_port=3000,
@@ -339,6 +342,27 @@ def _set_managed_variable(session: Session, service_id: uuid.UUID, key: str, val
 def _app_name(repository: str) -> str:
     candidate = _SERVICE_NAME.sub("-", repository.rsplit("/", 1)[-1].lower()).strip("-")
     return (candidate or "app")[:32].rstrip("-")
+
+
+def _available_app_name(session: Session, repository: str) -> str:
+    """Find a hostname-safe service name for a repeat import.
+
+    System domains are globally unique, while every imported project starts
+    with an environment named ``production``. Importing the same repository a
+    second time must therefore suffix the app name rather than returning a
+    hostname conflict after partially creating its managed add-ons.
+    """
+    base = _app_name(repository)
+    settings = get_settings()
+    suffix = 1
+    while True:
+        ending = "" if suffix == 1 else f"-{suffix}"
+        candidate = f"{base[: 32 - len(ending)].rstrip('-')}{ending}"
+        hostname = system_hostname(candidate, "production", settings.base_domain)
+        existing = session.exec(select(Domain.id).where(Domain.hostname == hostname)).first()
+        if existing is None:
+            return candidate
+        suffix += 1
 
 
 def _project_name(repository: str) -> str:

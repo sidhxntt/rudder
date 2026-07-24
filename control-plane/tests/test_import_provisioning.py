@@ -99,6 +99,33 @@ async def test_confirmed_import_rejects_addons_not_in_the_review(session: Sessio
         )
 
 
+async def test_repeat_import_gets_a_unique_app_hostname(session: Session) -> None:
+    proposal = AddonProposal(
+        is_node_app=True,
+        addons=("postgres",),
+        externally_managed=(),
+    )
+    first = await provision_import(
+        session,
+        installation_id=42,
+        repository="acme/store-api",
+        branch="main",
+        selected_addons={"postgres"},
+        proposal=proposal,
+    )
+    second = await provision_import(
+        session,
+        installation_id=42,
+        repository="acme/store-api",
+        branch="main",
+        selected_addons={"postgres"},
+        proposal=proposal,
+    )
+
+    assert session.get(Service, first.app_service_id).name == "store-api"
+    assert session.get(Service, second.app_service_id).name == "store-api-2"
+
+
 async def test_imported_app_waits_for_addons_and_stops_after_an_addon_failure(
     session: Session,
 ) -> None:

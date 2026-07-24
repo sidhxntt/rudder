@@ -19,6 +19,7 @@ import aiohttp
 import docker.errors
 from docker import DockerClient
 from docker.models.containers import Container
+from docker.types import EndpointConfig
 
 from . import errors
 from .schemas import (
@@ -133,8 +134,17 @@ class DockerOps:
             "name": spec.name,
             "environment": dict(spec.env),
             "labels": dict(spec.labels),
+            # docker-py's high-level `containers.create` does not accept the
+            # `network_aliases` shorthand. It requires the `network` selector
+            # plus its raw endpoint mapping; ContainerCollection.create wraps
+            # that mapping in NetworkingConfig itself.
             "network": spec.network,
-            "network_aliases": list(spec.network_aliases),
+            "networking_config": {
+                spec.network: EndpointConfig(
+                    getattr(getattr(self._client, "api", None), "_version", "1.41"),
+                    aliases=list(spec.network_aliases),
+                )
+            },
             "volumes": dict(spec.volumes),
             "command": spec.command,
             "detach": True,
