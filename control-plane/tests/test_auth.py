@@ -13,10 +13,12 @@ actually owns: status codes, the error envelope, and where the token comes from.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import MethodType
 from uuid import uuid4
 
 import jwt
 import pytest
+import sqlalchemy as sa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -172,19 +174,19 @@ async def test_find_or_create_github_user_links_repeated_logins_by_stable_id(
 ) -> None:
     first = await auth_service.find_or_create_github_user(
         session,
-        github_id=12345,
+        github_id=4_294_967_297,
         login="octo-before",
         email="octo@github.test",
     )
     second = await auth_service.find_or_create_github_user(
         session,
-        github_id=12345,
+        github_id=4_294_967_297,
         login="octo-after",
         email="updated-octo@github.test",
     )
 
     assert second.id == first.id
-    assert second.github_id == 12345
+    assert second.github_id == 4_294_967_297
     assert second.github_login == "octo-after"
     assert second.email == "updated-octo@github.test"
     assert len(all_users(session)) == 1
@@ -210,6 +212,121 @@ async def test_find_or_create_github_user_does_not_erase_an_email_with_none(
     assert updated.id == user.id
     assert updated.github_login == "octocat-renamed"
     assert updated.email == "octocat@github.test"
+
+
+def test_user_github_id_uses_a_64_bit_database_type() -> None:
+    assert isinstance(User.__table__.c.github_id.type, sa.BigInteger)
+
+
+async def test_find_or_create_github_user_normalizes_email_case_and_whitespace(
+    session: Session,
+) -> None:
+    user = await auth_service.find_or_create_github_user(
+        session,
+        github_id=123,
+        login="octocat",
+        email=" OctoCat@GitHub.Test ",
+    )
+    updated = await auth_service.find_or_create_github_user(
+        session,
+        github_id=123,
+        login="octocat",
+        email="OCTOCAT@GITHUB.TEST",
+    )
+
+    assert updated.id == user.id
+    assert updated.email == "octocat@github.test"
+
+
+async def test_find_or_create_github_user_does_not_link_or_collide_on_email(
+    session: Session,
+) -> None:
+    password_user = User(email="claimed@github.test", password_hash="not-a-real-hash")
+    session.add(password_user)
+    session.commit()
+
+    github_user = await auth_service.find_or_create_github_user(
+        session,
+        github_id=456,
+        login="new-octocat",
+        email=" Claimed@GitHub.Test ",
+    )
+
+    assert github_user.id != password_user.id
+    assert github_user.email == "github-456@oauth.rudder.invalid"
+    assert password_user.github_id is None
+
+
+async def test_find_or_create_github_user_keeps_existing_email_when_another_user_claims_it(
+    session: Session,
+) -> None:
+    github_user = await auth_service.find_or_create_github_user(
+        session,
+        github_id=789,
+        login="octocat",
+        email="original@github.test",
+    )
+    claimant = User(email="claimed@github.test", password_hash="not-a-real-hash")
+    session.add(claimant)
+    session.commit()
+
+    updated = await auth_service.find_or_create_github_user(
+        session,
+        github_id=789,
+        login="octocat-renamed",
+        email="CLAIMED@GITHUB.TEST",
+    )
+
+    assert updated.id == github_user.id
+    assert updated.github_login == "octocat-renamed"
+    assert updated.email == "original@github.test"
+
+
+async def test_find_or_create_github_user_returns_the_winner_of_an_insert_race(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    winner = User(
+        email="winner@github.test",
+        password_hash="not-a-real-hash",
+        github_id=987,
+        github_login="winner",
+    )
+    session.add(winner)
+    session.commit()
+
+    real_exec = session.exec
+    calls = 0
+
+    def exec_with_initial_miss(self: Session, statement, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return type("NoResult", (), {"first": lambda self: None})()
+        return real_exec(statement, *args, **kwargs)
+
+    real_commit = session.commit
+    commits = 0
+
+    def commit_with_race(self: Session) -> None:
+        nonlocal commits
+        commits += 1
+        if commits == 1:
+            raise sa.exc.IntegrityError("INSERT", {}, Exception("duplicate GitHub ID"))
+        real_commit()
+
+    monkeypatch.setattr(session, "exec", MethodType(exec_with_initial_miss, session))
+    monkeypatch.setattr(session, "commit", MethodType(commit_with_race, session))
+
+    user = await auth_service.find_or_create_github_user(
+        session,
+        github_id=987,
+        login="winner-renamed",
+        email="WINNER@GITHUB.TEST",
+    )
+
+    assert user.id == winner.id
+    assert user.github_login == "winner-renamed"
+    assert user.email == "winner@github.test"
 
 
 async def test_authenticate_accepts_the_seeded_credentials(

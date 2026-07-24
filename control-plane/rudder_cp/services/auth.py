@@ -1,11 +1,12 @@
-"""Auth logic: seed the single user, check credentials, resolve a token.
+"""Auth logic: seed password access, link GitHub identities, resolve a token.
 
 Per the PRD's FastAPI layout this layer holds all the logic, takes ``Session``
 as an argument, and never imports ``fastapi``. The router above it only maps the
 exceptions raised here onto status codes.
 
-There is no signup and no user CRUD. Both are explicit non-goals — the one user
-comes from ``.env`` and is seeded on first boot.
+There is no signup or user CRUD. Password access is seeded from ``.env``;
+GitHub OAuth access creates local users linked solely by GitHub's immutable
+numeric ID, never by an email address or mutable login name.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import logging
 import secrets
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -35,9 +37,34 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_PASSWORD = "change-me"
 
 
-def _github_fallback_email(github_id: int) -> str:
-    """Provide a non-deliverable address when GitHub does not disclose one."""
-    return f"github-{github_id}@oauth.rudder.invalid"
+def _canonical_github_email(email: str | None) -> str | None:
+    """Canonicalize an optional GitHub email before it reaches a unique column."""
+    if email is None:
+        return None
+    return email.strip().lower() or None
+
+
+def _github_fallback_email(github_id: int, suffix: int = 0) -> str:
+    """Return a deterministic, non-deliverable address for an OAuth identity."""
+    tail = "" if suffix == 0 else f"-{suffix}"
+    return f"github-{github_id}{tail}@oauth.rudder.invalid"
+
+
+def _email_owner(session: Session, email: str) -> User | None:
+    """Find the owner of an email under the same canonicalization policy."""
+    return session.exec(
+        select(User).where(func.lower(func.trim(User.email)) == email)
+    ).first()
+
+
+def _fallback_email(session: Session, github_id: int) -> str:
+    """Choose a deterministic fallback that is unique among local accounts."""
+    suffix = 0
+    while True:
+        candidate = _github_fallback_email(github_id, suffix)
+        if _email_owner(session, candidate) is None:
+            return candidate
+        suffix += 1
 
 
 class InvalidCredentials(Exception):
@@ -49,7 +76,7 @@ class SeedError(Exception):
 
 
 async def seed_admin_user(session: Session, settings: Settings | None = None) -> User:
-    """Create the single user from settings if the table is empty. Idempotent.
+    """Create the configured password admin if no local user exists. Idempotent.
 
     Called from the FastAPI lifespan on every boot, so the important property is
     the negative one: if *any* user already exists this returns it untouched and
@@ -67,7 +94,7 @@ async def seed_admin_user(session: Session, settings: Settings | None = None) ->
     if not settings.admin_email or not settings.admin_password:
         raise SeedError(
             "RUDDER_ADMIN_EMAIL and RUDDER_ADMIN_PASSWORD must both be set to seed the "
-            "single user. There is no signup, so an unseeded install has no way in."
+            "password admin. There is no signup, so an unseeded install has no way in."
         )
     if settings.admin_password == _PLACEHOLDER_PASSWORD:
         logger.warning(
@@ -106,42 +133,48 @@ async def find_or_create_github_user(
     """Find a user by immutable GitHub ID, or create one for a first OAuth login.
 
     GitHub login names and emails may change, so only the numeric GitHub ID is
-    used to link an existing account. A unique constraint makes the create path
-    safe when two OAuth callbacks for a new user arrive concurrently.
+    used to link an existing account. Email is only profile data: it is
+    canonicalized, and a value already owned by a different local account is
+    never used to merge identities or overwrite that account. New OAuth users
+    use a deterministic non-deliverable fallback in that case.
+
+    The unique GitHub-ID constraint makes concurrent first callbacks safe. If
+    an insert races, the loop re-reads the winning identity; if only an email
+    races, it re-evaluates the email policy and falls back without leaking an
+    ``IntegrityError`` to the OAuth callback.
     """
-    user = session.exec(select(User).where(User.github_id == github_id)).first()
-    if user is not None:
-        user.github_login = login
-        if email is not None:
-            user.email = email
-        session.commit()
+    canonical_email = _canonical_github_email(email)
+
+    while True:
+        user = session.exec(select(User).where(User.github_id == github_id)).first()
+        if user is not None:
+            user.github_login = login
+            owner = _email_owner(session, canonical_email) if canonical_email else None
+            if owner is None or owner.id == user.id:
+                if canonical_email is not None:
+                    user.email = canonical_email
+        else:
+            owner = _email_owner(session, canonical_email) if canonical_email else None
+            user = User(
+                email=(
+                    canonical_email
+                    if canonical_email is not None and owner is None
+                    else _fallback_email(session, github_id)
+                ),
+                password_hash=hash_password(secrets.token_urlsafe(48)),
+                github_id=github_id,
+                github_login=login,
+            )
+            session.add(user)
+
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            continue
+
         session.refresh(user)
         return user
-
-    user = User(
-        email=email or _github_fallback_email(github_id),
-        password_hash=hash_password(secrets.token_urlsafe(48)),
-        github_id=github_id,
-        github_login=login,
-    )
-    session.add(user)
-    try:
-        session.commit()
-    except IntegrityError:
-        # Another callback may have inserted this GitHub identity first.
-        session.rollback()
-        winner = session.exec(select(User).where(User.github_id == github_id)).first()
-        if winner is None:
-            raise
-        winner.github_login = login
-        if email is not None:
-            winner.email = email
-        session.commit()
-        session.refresh(winner)
-        return winner
-
-    session.refresh(user)
-    return user
 
 
 async def authenticate(session: Session, email: str, password: str) -> User:

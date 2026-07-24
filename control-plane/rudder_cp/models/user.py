@@ -8,9 +8,11 @@ from rudder_cp.models.base import created_at_column, uuid_pk
 
 
 class User(SQLModel, table=True):
-    """Single-tenant: exactly one row, seeded from .env on first boot.
+    """A local account, optionally linked to one durable GitHub identity.
 
-    There is no signup and no RBAC — both are explicit non-goals.
+    Password login remains available for the configured seeded admin. GitHub
+    OAuth users are linked only by GitHub's immutable numeric ``github_id``;
+    login names and email addresses are mutable profile data.
     """
 
     __tablename__ = "user"
@@ -20,7 +22,7 @@ class User(SQLModel, table=True):
     password_hash: str = Field(nullable=False)
     github_id: int | None = Field(
         default=None,
-        sa_column=sa.Column(sa.Integer, unique=True, index=True, nullable=True),
+        sa_column=sa.Column(sa.BigInteger, unique=True, index=True, nullable=True),
     )
     github_login: str | None = Field(
         default=None,
