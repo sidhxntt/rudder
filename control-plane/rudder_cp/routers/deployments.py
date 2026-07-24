@@ -111,10 +111,11 @@ async def create_deployment(
     summary="Deploy history for a service, newest first",
 )
 async def list_deployments(service_id: uuid.UUID, session: SessionDep) -> list[Deployment]:
+    release_service_id = _release_owner_id(session, service_id)
     return list(
         session.exec(
             select(Deployment)
-            .where(Deployment.service_id == service_id)
+            .where(Deployment.service_id == release_service_id)
             .order_by(Deployment.created_at.desc())  # type: ignore[attr-defined]
         ).all()
     )
@@ -132,14 +133,35 @@ async def list_deployments(service_id: uuid.UUID, session: SessionDep) -> list[D
     ),
 )
 async def list_instances(service_id: uuid.UUID, session: SessionDep) -> list[Instance]:
+    release_service_id = _release_owner_id(session, service_id)
     return list(
         session.exec(
             select(Instance)
             .join(Deployment, Deployment.id == Instance.deployment_id)  # type: ignore[arg-type]
-            .where(Deployment.service_id == service_id)
+            .where(Deployment.service_id == release_service_id)
             .order_by(Instance.created_at.desc())  # type: ignore[attr-defined]
         ).all()
     )
+
+
+def _release_owner_id(session: Session, service_id: uuid.UUID) -> uuid.UUID:
+    """Return the one deployment owner for a Compose-managed child service.
+
+    Compose releases have exactly one ``Deployment`` record: the route-owning
+    application service. Child services intentionally do not create their own
+    deployments, but their panels still need the same immutable history and
+    build-log identifiers.
+    """
+    service = session.get(Service, service_id)
+    if service is None:
+        return service_id
+    value = service.build_config.get("managed_by_service_id")
+    if not isinstance(value, str):
+        return service_id
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return service_id
 
 
 @router.get(
