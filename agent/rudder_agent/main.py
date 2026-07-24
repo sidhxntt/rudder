@@ -29,7 +29,7 @@ from pydantic import ValidationError
 from . import errors
 from .config import AgentSettings
 from .docker_ops import DockerOps
-from .schemas import ContainerSpec, HealthProbeRequest
+from .schemas import ComposeProjectRequest, ComposeUpRequest, ContainerSpec, HealthProbeRequest
 
 log = logging.getLogger("rudder_agent")
 
@@ -137,6 +137,25 @@ async def probe_container(request: web.Request) -> web.Response:
     return web.json_response(result.model_dump(mode="json"))
 
 
+async def compose_up(request: web.Request) -> web.Response:
+    payload: ComposeUpRequest = await _read_model(request, ComposeUpRequest)
+    result = await request.app[OPS_KEY].compose_up(payload.project_name, payload.manifest)
+    return web.json_response(result.model_dump(mode="json"))
+
+
+async def compose_down(request: web.Request) -> web.Response:
+    payload: ComposeProjectRequest = await _read_model(request, ComposeProjectRequest)
+    result = await request.app[OPS_KEY].compose_down(payload.project_name)
+    return web.json_response(result.model_dump(mode="json"))
+
+
+async def compose_ps(request: web.Request) -> web.Response:
+    project_name = request.match_info["project_name"]
+    payload = ComposeProjectRequest(project_name=project_name)
+    states = await request.app[OPS_KEY].compose_ps(payload.project_name)
+    return web.json_response([state.model_dump(mode="json") for state in states])
+
+
 # ------------------------------------------------------------------ app factory
 
 
@@ -153,6 +172,9 @@ def create_app(ops: DockerOps, settings: AgentSettings | None = None) -> web.App
             web.get("/containers/{container_id}", get_container),
             web.delete("/containers/{container_id}", delete_container),
             web.post("/containers/{container_id}/health", probe_container),
+            web.post("/compose/up", compose_up),
+            web.post("/compose/down", compose_down),
+            web.get("/compose/{project_name}/ps", compose_ps),
         ]
     )
     return app
@@ -162,7 +184,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = AgentSettings()
     client = docker.from_env()
-    ops = DockerOps(client, stop_timeout_seconds=settings.stop_timeout_seconds)
+    ops = DockerOps(
+        client,
+        stop_timeout_seconds=settings.stop_timeout_seconds,
+        compose_state_dir=settings.compose_state_dir,
+    )
     web.run_app(create_app(ops, settings), host=settings.bind, port=settings.port)
 
 

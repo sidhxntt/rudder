@@ -78,5 +78,9 @@ def docker_error(reason: str, details: dict[str, Any] | None = None) -> AgentErr
     return AgentError(502, "docker_error", f"Docker rejected the operation: {reason}", details)
 
 
+def compose_error(reason: str) -> AgentError:
+    return AgentError(502, "compose_error", f"Docker Compose failed: {reason}")
+
+
 def invalid_request(message: str, details: dict[str, Any] | None = None) -> AgentError:
     return AgentError(400, "invalid_request", message, details)

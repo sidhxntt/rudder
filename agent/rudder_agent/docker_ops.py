@@ -11,8 +11,11 @@ reports what it observes.
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TypeVar
 
 import aiohttp
@@ -23,6 +26,8 @@ from docker.types import EndpointConfig
 
 from . import errors
 from .schemas import (
+    ComposeResult,
+    ComposeServiceState,
     ContainerSpec,
     ContainerState,
     DeleteResult,
@@ -32,6 +37,7 @@ from .schemas import (
 )
 
 T = TypeVar("T")
+ComposeRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
 _NANO_CPUS_PER_CORE = 1_000_000_000
 
@@ -100,9 +106,18 @@ class DockerOps:
     """Thin, concrete wrapper over the Docker SDK. No runtime abstraction —
     this is Docker, and only Docker (PRD "Working Agreement", rule 3)."""
 
-    def __init__(self, client: DockerClient, stop_timeout_seconds: int = 10) -> None:
+    def __init__(
+        self,
+        client: DockerClient,
+        stop_timeout_seconds: int = 10,
+        *,
+        compose_state_dir: str = "/var/lib/rudder-agent/compose",
+        compose_runner: ComposeRunner | None = None,
+    ) -> None:
         self._client = client
         self._stop_timeout = stop_timeout_seconds
+        self._compose_state_dir = Path(compose_state_dir).resolve()
+        self._compose_runner = compose_runner or _run_compose_subprocess
         # Container ids currently inside their drain window. Lets GET report
         # `draining` truthfully while DELETE is in flight.
         self._draining: set[str] = set()
@@ -123,6 +138,62 @@ class DockerOps:
             raise _translate_api_error(exc) from exc
         except docker.errors.DockerException as exc:
             raise errors.docker_unavailable(str(exc)) from exc
+
+    # --------------------------------------------------------------- compose
+
+    async def compose_up(self, project_name: str, manifest: str) -> ComposeResult:
+        """Persist one manifest and start its project through fixed arguments."""
+        manifest_path = await self._write_manifest(project_name, manifest)
+        return await self._run_compose(
+            project_name, manifest_path, ["up", "--detach", "--remove-orphans"]
+        )
+
+    async def compose_down(self, project_name: str) -> ComposeResult:
+        manifest_path = self._manifest_path(project_name)
+        if not manifest_path.is_file():
+            raise errors.invalid_request("No stored Compose manifest for this project.")
+        return await self._run_compose(
+            project_name, manifest_path, ["down", "--volumes", "--remove-orphans"]
+        )
+
+    async def compose_ps(self, project_name: str) -> list[ComposeServiceState]:
+        manifest_path = self._manifest_path(project_name)
+        if not manifest_path.is_file():
+            raise errors.invalid_request("No stored Compose manifest for this project.")
+        result = await self._run_compose(project_name, manifest_path, ["ps", "--format", "json"])
+        return _compose_states(result.log)
+
+    async def _write_manifest(self, project_name: str, manifest: str) -> Path:
+        path = self._manifest_path(project_name)
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(path.write_text, manifest, encoding="utf-8")
+        return path
+
+    def _manifest_path(self, project_name: str) -> Path:
+        path = (self._compose_state_dir / project_name / "compose.yaml").resolve()
+        if self._compose_state_dir not in path.parents:
+            # The request schema constrains project_name too; this is a second
+            # guard around the file-system capability.
+            raise errors.invalid_request("Invalid Compose project name.")
+        return path
+
+    async def _run_compose(
+        self, project_name: str, manifest_path: Path, operation: list[str]
+    ) -> ComposeResult:
+        command = [
+            "docker",
+            "compose",
+            "--project-name",
+            project_name,
+            "--file",
+            str(manifest_path),
+            *operation,
+        ]
+        completed = await self._off_loop(self._compose_runner, command)
+        log = f"{completed.stdout}{completed.stderr}"
+        if completed.returncode != 0:
+            raise errors.compose_error(log[-4000:] or f"docker compose exited {completed.returncode}")
+        return ComposeResult(project_name=project_name, log=log)
 
     # ------------------------------------------------------------------ create
 
@@ -353,3 +424,37 @@ def _translate_api_error(exc: docker.errors.APIError) -> errors.AgentError:
     """Any Docker API rejection we have not special-cased is an upstream
     failure, not a client error: 502 with the daemon's own status attached."""
     return errors.docker_error(str(exc), {"docker_status": _status_code(exc)})
+
+
+def _run_compose_subprocess(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """The only subprocess boundary in the agent's Compose lifecycle."""
+    return subprocess.run(command, capture_output=True, text=True, check=False, timeout=300)
+
+
+def _compose_states(log: str) -> list[ComposeServiceState]:
+    if not log.strip():
+        return []
+    try:
+        payload = json.loads(log)
+    except ValueError as exc:
+        raise errors.compose_error("docker compose ps returned invalid JSON") from exc
+    rows = payload if isinstance(payload, list) else [payload]
+    states: list[ComposeServiceState] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise errors.compose_error("docker compose ps returned an invalid row")
+        service = row.get("Service") or row.get("service")
+        status = row.get("State") or row.get("state") or row.get("Status") or row.get("status")
+        if not isinstance(service, str) or not isinstance(status, str):
+            raise errors.compose_error("docker compose ps omitted service state")
+        exit_code = row.get("ExitCode") or row.get("exit_code")
+        states.append(
+            ComposeServiceState(
+                service=service,
+                container_id=row.get("ID") or row.get("id"),
+                status=status,
+                health=row.get("Health") or row.get("health"),
+                exit_code=int(exit_code) if exit_code is not None else None,
+            )
+        )
+    return states

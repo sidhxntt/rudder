@@ -41,6 +41,21 @@ class ProbeResult:
     reason: str | None
 
 
+@dataclass(frozen=True)
+class ComposeResult:
+    project_name: str
+    log: str
+
+
+@dataclass(frozen=True)
+class ComposeServiceState:
+    service: str
+    container_id: str | None
+    status: str
+    health: str | None
+    exit_code: int | None
+
+
 class AgentClient:
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
         self._base_url = base_url.rstrip("/")
@@ -117,6 +132,31 @@ class AgentClient:
             timeout=self._timeout + drain_seconds,
         )
 
+    async def compose_up(self, *, project_name: str, manifest: str) -> ComposeResult:
+        payload = await self._request(
+            "POST", "/compose/up", json={"project_name": project_name, "manifest": manifest}
+        )
+        return ComposeResult(project_name=str(payload["project_name"]), log=str(payload["log"]))
+
+    async def compose_down(self, *, project_name: str) -> ComposeResult:
+        payload = await self._request("POST", "/compose/down", json={"project_name": project_name})
+        return ComposeResult(project_name=str(payload["project_name"]), log=str(payload["log"]))
+
+    async def compose_ps(self, *, project_name: str) -> list[ComposeServiceState]:
+        payload = await self._request("GET", f"/compose/{project_name}/ps")
+        if not isinstance(payload, list):
+            raise AgentError("Node agent returned an invalid Compose state response.")
+        return [
+            ComposeServiceState(
+                service=str(row["service"]),
+                container_id=row.get("container_id"),
+                status=str(row["status"]),
+                health=row.get("health"),
+                exit_code=row.get("exit_code"),
+            )
+            for row in payload
+        ]
+
     # ASYNC109: this is httpx's own request timeout, passed straight through,
     # not a cancellation scope the caller should be opening instead.
     async def _request(
@@ -127,7 +167,7 @@ class AgentClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
-    ) -> dict[str, Any]:
+    ) -> Any:
         url = f"{self._base_url}{path}"
         try:
             async with httpx.AsyncClient(timeout=timeout or self._timeout) as client:

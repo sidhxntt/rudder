@@ -106,3 +106,37 @@ class HealthProbeResult(BaseModel):
     reason: str | None = None
     latency_ms: float
     probed_url: str | None = None
+
+
+ComposeProjectName = Annotated[
+    str,
+    Field(pattern=r"^[a-z][a-z0-9-]{0,62}$", description="Rudder-owned Compose namespace"),
+]
+
+
+class ComposeUpRequest(BaseModel):
+    """One validated manifest to write below the agent-owned state directory."""
+
+    model_config = {"extra": "forbid"}
+
+    project_name: ComposeProjectName
+    manifest: str = Field(min_length=1, max_length=64 * 1024)
+
+
+class ComposeProjectRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    project_name: ComposeProjectName
+
+
+class ComposeResult(BaseModel):
+    project_name: str
+    log: str
+
+
+class ComposeServiceState(BaseModel):
+    service: str
+    container_id: str | None = None
+    status: str
+    health: str | None = None
+    exit_code: int | None = None
