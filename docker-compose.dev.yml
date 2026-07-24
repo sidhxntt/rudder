@@ -90,7 +90,11 @@ services:
       - ./infra/traefik/dynamic:/traefik/dynamic
       - buildlogs:/var/log/rudder/builds
       - ${RUDDER_GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/rudder-github-app.pem:ro
-    command: uvicorn rudder_cp.main:app --host 0.0.0.0 --port 8000 --reload
+    # Keep the local API schema aligned with the mounted development source.
+    # This prevents new import endpoints from running against an older database
+    # after `docker compose up` or a branch change.
+    command: >-
+      sh -c "alembic upgrade head && exec uvicorn rudder_cp.main:app --host 0.0.0.0 --port 8000 --reload"
     networks: [rudder]
 
   agent:
