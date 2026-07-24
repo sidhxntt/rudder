@@ -13,6 +13,8 @@ export type ServiceNodeData = {
   name: string;
   kind: ServiceKind;
   url: string | null;
+  /** Compose dependencies share the application release and its lifecycle. */
+  managedByServiceId?: string;
 };
 
 const KIND_LABEL: Record<ServiceKind, string> = {
@@ -28,8 +30,9 @@ const KIND_LABEL: Record<ServiceKind, string> = {
  */
 export function ServiceNode(props: NodeProps) {
   const data = props.data as ServiceNodeData;
-  const deployments = useDeployments(data.serviceId);
-  const instances = useInstances(data.serviceId);
+  const lifecycleServiceId = data.managedByServiceId ?? data.serviceId;
+  const deployments = useDeployments(lifecycleServiceId);
+  const instances = useInstances(lifecycleServiceId);
 
   const status = deriveServiceStatus(deployments.data ?? [], instances.data ?? []);
   const latest = latestDeployment(deployments.data ?? []);
@@ -52,6 +55,9 @@ export function ServiceNode(props: NodeProps) {
       <div className="flex items-start justify-between gap-sm px-md py-sm">
         <div className="min-w-0">
           <StatusDot status={status} />
+          {data.managedByServiceId ? (
+            <p className="pt-xxs text-micro text-ink-mute">managed by Compose</p>
+          ) : null}
           {failedWhileServing ? (
             <p className="pt-xxs text-micro text-status-failed">latest deploy failed</p>
           ) : null}

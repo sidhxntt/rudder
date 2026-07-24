@@ -69,6 +69,13 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
 
   const serviceList = useMemo(() => services.data ?? [], [services.data]);
   const domainList = useMemo(() => domains.data ?? [], [domains.data]);
+  const composeAppServiceId = useMemo(
+    () =>
+      serviceList.find(
+        (service) => typeof service.build_config.compose_service === "string",
+      )?.id,
+    [serviceList],
+  );
 
   // Rebuild nodes when the service set changes. Positions already on screen are
   // kept: a drag in flight must not be yanked back by a poll. Layout is UI
@@ -83,6 +90,11 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
           name: service.name,
           kind: service.kind,
           url: serviceUrl(service, domainList),
+          managedByServiceId:
+            service.id !== composeAppServiceId &&
+            typeof service.build_config.managed_image === "string"
+              ? composeAppServiceId
+              : undefined,
         };
         return {
           id: service.id,
@@ -170,6 +182,12 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
         <DetailPanel
           service={selectedService}
           url={serviceUrl(selectedService, domainList)}
+          managedByServiceId={
+            selectedService.id !== composeAppServiceId &&
+            typeof selectedService.build_config.managed_image === "string"
+              ? composeAppServiceId
+              : undefined
+          }
           onClose={() => setSelectedServiceId(null)}
         />
       ) : null}
