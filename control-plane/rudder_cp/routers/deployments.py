@@ -74,6 +74,16 @@ async def create_deployment(
             status_code=404,
             detail={"code": "not_found", "message": "No such service", "details": {}},
         )
+    managed_by_service_id = service.build_config.get("managed_by_service_id")
+    if isinstance(managed_by_service_id, str):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "managed_by_compose",
+                "message": "This service is managed by its owning Compose release.",
+                "details": {"release_service_id": managed_by_service_id},
+            },
+        )
     if not service.source_repo:
         raise HTTPException(
             status_code=422,

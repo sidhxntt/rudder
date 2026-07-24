@@ -134,6 +134,23 @@ def test_deploying_a_service_with_no_repo_is_a_readable_422(
     assert response.json()["code"] == "no_source_repo"
 
 
+def test_deploying_a_compose_child_points_to_its_owning_release(
+    client: TestClient, engine: Engine, seed: dict[str, str]
+) -> None:
+    with Session(engine) as session:
+        child = session.get(Service, UUID(seed["no_repo"]))
+        assert child is not None
+        child.build_config = {"managed_by_service_id": seed["service"]}
+        session.add(child)
+        session.commit()
+
+    response = client.post(f"/services/{seed['no_repo']}/deploy", json={})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "managed_by_compose"
+    assert response.json()["details"]["release_service_id"] == seed["service"]
+
+
 def test_deploying_an_unknown_service_is_404(client: TestClient) -> None:
     response = client.post(f"/services/{uuid4()}/deploy", json={})
     assert response.status_code == 404
