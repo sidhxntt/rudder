@@ -75,7 +75,7 @@ class GitHubAppClient:
         if not self.configured:
             raise GitHubAppError("GitHub App credentials are not configured.")
         now = int(time.time())
-        key = self._settings.github_app_private_key.replace("\\n", "\n")
+        key = self._settings.resolved_github_app_private_key.replace("\\n", "\n")
         app_jwt = jwt.encode(
             {"iat": now - 60, "exp": now + 540, "iss": self._settings.github_app_id},
             key,
