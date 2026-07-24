@@ -26,6 +26,7 @@ import type {
   GitHubImportPreview,
   GitHubInstallation,
   GitHubRepository,
+  StarterTemplate,
   Environment,
   Instance,
   Project,
@@ -208,6 +209,11 @@ export function previewGitHubImport(args: {
       branch: args.branch,
     },
   });
+}
+
+/** `GET /github/import/templates` → reviewed starter templates. */
+export function listGitHubImportTemplates(): Promise<StarterTemplate[]> {
+  return requestJson<StarterTemplate[]>("/github/import/templates");
 }
 
 export function confirmGitHubImport(args: {

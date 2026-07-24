@@ -162,6 +162,13 @@ export interface GitHubInstallation {
   repository_selection: string;
 }
 
+export interface StarterTemplate {
+  id: string;
+  name: string;
+  description: string;
+  addons: string[];
+}
+
 export interface GitHubImportPreview {
   is_node_app: boolean;
   addons: string[];

@@ -67,6 +67,22 @@ def test_github_import_status_reports_setup_required_when_app_is_unconfigured(
     }
 
 
+def test_github_import_templates_are_reviewable_catalog_presets() -> None:
+    app = FastAPI()
+    app.include_router(imports_router.router)
+
+    response = TestClient(app).get("/github/import/templates")
+
+    assert response.status_code == 200
+    assert {template["id"] for template in response.json()} == {
+        "node-web",
+        "node-postgres-redis",
+        "web-worker-redis",
+        "node-observability",
+        "empty-compose",
+    }
+
+
 @pytest.fixture
 def import_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("RUDDER_SECRET_KEYS", Fernet.generate_key().decode())
@@ -116,6 +132,24 @@ def test_confirm_import_creates_a_pollable_app_graph(import_client: TestClient) 
         "Application",
     ]
     assert all(step["status"] == "queued" for step in progress.json()["steps"])
+
+
+def test_confirm_import_rejects_public_services_without_declared_ports(
+    import_client: TestClient,
+) -> None:
+    response = import_client.post(
+        "/github/imports",
+        json={
+            "installation_id": 42,
+            "repository": "acme/store-api",
+            "branch": "main",
+            "addons": ["postgres", "redis"],
+            "public_services": ["worker"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Public services must be selected" in response.json()["detail"]
 
 
 def test_import_preview_returns_the_resolved_compose_plan(import_client: TestClient) -> None:

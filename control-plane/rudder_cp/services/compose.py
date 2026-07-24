@@ -146,6 +146,43 @@ class ComposePlan:
     services: dict[str, ComposeService]
 
 
+@dataclass(frozen=True, slots=True)
+class StarterTemplate:
+    id: str
+    name: str
+    description: str
+    addons: tuple[str, ...]
+
+
+_STARTER_TEMPLATES = (
+    StarterTemplate("node-web", "Node web service", "One public Node application.", ()),
+    StarterTemplate(
+        "node-postgres-redis",
+        "Node + PostgreSQL + Redis",
+        "A web application with private relational data and cache.",
+        ("postgres", "redis"),
+    ),
+    StarterTemplate(
+        "web-worker-redis",
+        "Web + worker + Redis",
+        "A repository-defined web/worker process pair with a private queue.",
+        ("redis",),
+    ),
+    StarterTemplate(
+        "node-observability",
+        "Node + observability",
+        "A web application with private Prometheus and Grafana services.",
+        ("prometheus", "grafana"),
+    ),
+    StarterTemplate(
+        "empty-compose",
+        "Empty Compose project",
+        "Start from a reviewed empty topology.",
+        (),
+    ),
+)
+
+
 class RepositoryFileReader(Protocol):
     async def file_at_ref(
         self, installation_id: int, repo: str, branch: str, path: str
@@ -274,6 +311,11 @@ def generated_compose_plan(selected_addons: set[str]) -> ComposePlan:
 def supported_generated_addons() -> frozenset[str]:
     """Return the explicit names that Rudder can safely template."""
     return frozenset(_CATALOG)
+
+
+def starter_templates() -> tuple[StarterTemplate, ...]:
+    """Return immutable catalog presets shown in the import dashboard."""
+    return _STARTER_TEMPLATES
 
 
 def generated_addon_metadata(name: str) -> dict[str, Any]:

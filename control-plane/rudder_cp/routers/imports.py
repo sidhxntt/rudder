@@ -9,7 +9,11 @@ from sqlmodel import Session, select
 
 from rudder_cp.db import get_session
 from rudder_cp.models import Environment, GitHubImport
-from rudder_cp.services.compose import ComposeValidationError, resolve_compose_plan
+from rudder_cp.services.compose import (
+    ComposeValidationError,
+    resolve_compose_plan,
+    starter_templates,
+)
 from rudder_cp.services.github_app import GitHubAppError
 from rudder_cp.services.imports import (
     detect_node_addons,
@@ -26,6 +30,13 @@ class GitHubImportStatus(BaseModel):
     configured: bool
     install_url: str | None
     message: str
+
+
+class StarterTemplateRead(BaseModel):
+    id: str
+    name: str
+    description: str
+    addons: list[str]
 
 
 class GitHubRepositoryRead(BaseModel):
@@ -110,6 +121,19 @@ async def github_import_status(request: Request) -> GitHubImportStatus:
         install_url=f"https://github.com/apps/{settings.github_app_slug}/installations/new",
         message="Connect GitHub to choose a repository.",
     )
+
+
+@router.get("/github/import/templates", response_model=list[StarterTemplateRead])
+async def github_import_templates() -> list[StarterTemplateRead]:
+    return [
+        StarterTemplateRead(
+            id=template.id,
+            name=template.name,
+            description=template.description,
+            addons=list(template.addons),
+        )
+        for template in starter_templates()
+    ]
 
 
 @router.get("/github/import/repositories", response_model=list[GitHubRepositoryRead])

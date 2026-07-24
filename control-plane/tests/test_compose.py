@@ -7,6 +7,7 @@ from rudder_cp.services.compose import (
     generated_compose_plan,
     parse_repository_compose,
     resolve_compose_plan,
+    starter_templates,
 )
 
 
@@ -147,3 +148,17 @@ async def test_resolution_generates_compose_when_repository_has_none() -> None:
 
     assert plan.source == "generated"
     assert set(plan.services) == {"app", "redis"}
+
+
+def test_starter_templates_reference_only_supported_catalog_addons() -> None:
+    assert {template.id for template in starter_templates()} == {
+        "node-web",
+        "node-postgres-redis",
+        "web-worker-redis",
+        "node-observability",
+        "empty-compose",
+    }
+    assert all(
+        set(template.addons) <= {"postgres", "redis", "prometheus", "grafana"}
+        for template in starter_templates()
+    )

@@ -9,6 +9,7 @@ import {
   useGitHubImport,
   useGitHubImportPreview,
   useGitHubImportStatus,
+  useGitHubImportTemplates,
   useGitHubInstallations,
   useGitHubRepositories,
 } from "@/lib/queries";
@@ -51,10 +52,12 @@ export function GitHubImportDialog({
   const [repository, setRepository] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
   const [selectedAddons, setSelectedAddons] = useState<Addon[]>([]);
+  const [templateId, setTemplateId] = useState<string | null>(null);
   const [importId, setImportId] = useState<string | null>(null);
   const [stage, setStage] = useState<"source" | "review">("source");
 
   const status = useGitHubImportStatus();
+  const templates = useGitHubImportTemplates();
   const installations = useGitHubInstallations(open && Boolean(status.data?.configured));
   const repositories = useGitHubRepositories(open && status.data?.configured ? installationId : null);
   const branches = useGitHubBranches(open && status.data?.configured ? installationId : null, repository);
@@ -110,8 +113,14 @@ export function GitHubImportDialog({
   }, [branch, branches.data, repositories.data, repository]);
 
   useEffect(() => {
-    setSelectedAddons(preview.data?.compose_source === "generated" ? preview.data.addons : []);
-  }, [preview.data]);
+    if (preview.data?.compose_source !== "generated") {
+      setSelectedAddons([]);
+      return;
+    }
+    const template = templates.data?.find((entry) => entry.id === templateId);
+    const suggested = template?.addons ?? preview.data.addons;
+    setSelectedAddons(suggested.filter((addon) => preview.data?.addons.includes(addon)));
+  }, [preview.data, templateId, templates.data]);
 
   const canConfirm = Boolean(
     installationId && repository && branch && preview.data && !confirm.isPending,
@@ -121,6 +130,7 @@ export function GitHubImportDialog({
     setRepository(null);
     setBranch(null);
     setSelectedAddons([]);
+    setTemplateId(null);
     setImportId(null);
     setStage("source");
     confirm.reset();
@@ -190,6 +200,24 @@ export function GitHubImportDialog({
                 ) : null}
                 {status.data?.configured ? (
                   <>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {(templates.data ?? []).map((template) => (
+                        <button
+                          key={template.id}
+                          type="button"
+                          onClick={() => setTemplateId(template.id)}
+                          className={[
+                            "rounded border p-3 text-left transition-colors",
+                            templateId === template.id
+                              ? "border-accent bg-accent/10"
+                              : "border-hairline hover:border-hairline-strong",
+                          ].join(" ")}
+                        >
+                          <span className="block text-caption font-medium text-ink">{template.name}</span>
+                          <span className="mt-1 block text-micro text-ink-mute">{template.description}</span>
+                        </button>
+                      ))}
+                    </div>
                     {installations.isLoading ? <p className="text-caption text-ink-mute">Finding your GitHub App connection…</p> : null}
                     {installations.isError ? <p className="text-caption text-status-failed">Could not load GitHub App installations.</p> : null}
                     {installations.data?.length === 0 ? <p className="text-caption text-ink-mute">Redirecting to GitHub to connect your repositories…</p> : null}
