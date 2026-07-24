@@ -347,29 +347,59 @@ async def provision_import(
 
 
 def import_progress(session: Session, record: GitHubImport) -> list[dict[str, str | None]]:
-    """Return actual deployment state in the order the import was provisioned."""
+    """Return one release-state row for every service in the Compose graph.
+
+    A Compose child deliberately has no independent Deployment row.  Returning
+    the owner's deployment id means every service card can link to the same
+    build log while accurately showing queued/building/live/failed state.
+    """
+    mappings = list(
+        session.exec(
+            select(GitHubImportService)
+            .where(GitHubImportService.github_import_id == record.id)
+            .order_by(GitHubImportService.created_at)  # type: ignore[attr-defined]
+        ).all()
+    )
+    mapping_by_service_id = {mapping.service_id: mapping for mapping in mappings}
+    ordered_ids = [
+        service_id
+        for service_id in (
+            record.postgres_service_id,
+            record.redis_service_id,
+            record.app_service_id,
+        )
+        if service_id is not None and service_id in mapping_by_service_id
+    ]
+    ordered_ids.extend(
+        mapping.service_id for mapping in mappings if mapping.service_id not in ordered_ids
+    )
+    owner_deployment = session.exec(
+        select(Deployment)
+        .where(Deployment.service_id == record.app_service_id)
+        .order_by(Deployment.created_at.desc())  # type: ignore[attr-defined]
+    ).first()
+
     rows: list[dict[str, str | None]] = []
-    for label, service_id in (
-        ("Postgres", record.postgres_service_id),
-        ("Redis", record.redis_service_id),
-        ("Application", record.app_service_id),
-    ):
-        if service_id is None:
-            continue
+    for service_id in ordered_ids:
+        mapping = mapping_by_service_id[service_id]
         service = session.get(Service, service_id)
-        deployment = session.exec(
-            select(Deployment)
-            .where(Deployment.service_id == service_id)
-            .order_by(Deployment.created_at.desc())  # type: ignore[attr-defined]
-        ).first()
+        label = (
+            "Postgres"
+            if service_id == record.postgres_service_id
+            else "Redis"
+            if service_id == record.redis_service_id
+            else "Application"
+            if service_id == record.app_service_id
+            else mapping.compose_service.replace("-", " ").title()
+        )
         rows.append(
             {
                 "label": label,
                 "service_id": str(service_id),
                 "service_name": service.name if service else None,
-                "deployment_id": str(deployment.id) if deployment else None,
-                "status": deployment.status.value if deployment else "queued",
-                "error_message": deployment.error_message if deployment else None,
+                "deployment_id": str(owner_deployment.id) if owner_deployment else None,
+                "status": owner_deployment.status.value if owner_deployment else "queued",
+                "error_message": owner_deployment.error_message if owner_deployment else None,
             }
         )
     return rows

@@ -224,6 +224,7 @@ export function confirmGitHubImport(args: {
   branch: string;
   addons: string[];
   templateId?: string | null;
+  publicServices?: string[];
 }): Promise<GitHubImportConfirmation> {
   return requestJson<GitHubImportConfirmation>("/github/imports", {
     method: "POST",
@@ -233,6 +234,7 @@ export function confirmGitHubImport(args: {
       branch: args.branch,
       addons: args.addons,
       template_id: args.templateId ?? null,
+      public_services: args.publicServices ?? null,
     },
   });
 }

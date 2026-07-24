@@ -173,6 +173,12 @@ async def test_generated_worker_is_private_and_receives_app_addon_references(
         session.exec(select(Variable).where(Variable.service_id == worker.id)).all()
     )
     assert {variable.key for variable in variables_for_worker} == {"REDIS_URL"}
+    record = session.get(GitHubImport, result.import_id)
+    assert record is not None
+    steps_by_name = {step["service_name"]: step for step in import_progress(session, record)}
+    assert set(steps_by_name) == {"jobs-api", "redis", "worker"}
+    assert steps_by_name["worker"]["status"] == "queued"
+    assert steps_by_name["worker"]["deployment_id"] == steps_by_name["jobs-api"]["deployment_id"]
 
 
 async def test_repository_compose_creates_private_worker_and_observability_services(

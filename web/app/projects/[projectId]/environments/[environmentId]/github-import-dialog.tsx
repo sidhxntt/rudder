@@ -52,6 +52,7 @@ export function GitHubImportDialog({
   const [repository, setRepository] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
   const [selectedAddons, setSelectedAddons] = useState<Addon[]>([]);
+  const [selectedPublicServices, setSelectedPublicServices] = useState<string[]>([]);
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [importId, setImportId] = useState<string | null>(null);
   const [stage, setStage] = useState<"source" | "review">("source");
@@ -123,14 +124,28 @@ export function GitHubImportDialog({
     setSelectedAddons(suggested.filter((addon) => preview.data?.addons.includes(addon)));
   }, [preview.data, templateId, templates.data]);
 
+  useEffect(() => {
+    setSelectedPublicServices(
+      (preview.data?.services ?? [])
+        .filter((service) => service.is_public)
+        .map((service) => service.name),
+    );
+  }, [preview.data]);
+
   const canConfirm = Boolean(
-    installationId && repository && branch && preview.data && !confirm.isPending,
+    installationId &&
+      repository &&
+      branch &&
+      preview.data &&
+      selectedPublicServices.length > 0 &&
+      !confirm.isPending,
   );
 
   function reset() {
     setRepository(null);
     setBranch(null);
     setSelectedAddons([]);
+    setSelectedPublicServices([]);
     setTemplateId(null);
     setImportId(null);
     setStage("source");
@@ -143,6 +158,12 @@ export function GitHubImportDialog({
     );
   }
 
+  function togglePublicService(name: string) {
+    setSelectedPublicServices((current) =>
+      current.includes(name) ? current.filter((entry) => entry !== name) : [...current, name],
+    );
+  }
+
   async function startImport() {
     if (!installationId || !repository || !branch) return;
     const created = await confirm.mutateAsync({
@@ -151,6 +172,7 @@ export function GitHubImportDialog({
       branch,
       addons: selectedAddons,
       templateId,
+      publicServices: selectedPublicServices,
     });
     setImportId(created.import_id);
   }
@@ -257,7 +279,18 @@ export function GitHubImportDialog({
                           {preview.data.services.map((service) => (
                             <li key={service.name} className="flex items-center justify-between gap-3 py-2">
                               <span className="font-medium text-ink">{service.name}</span>
-                              <span className={service.public_port ? "text-accent" : "text-ink-mute"}>{service.public_port ? `${service.role} · public · :${service.public_port}` : `${service.role} · private`}</span>
+                              {service.is_public ? (
+                                <label className="flex items-center gap-2 text-accent">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedPublicServices.includes(service.name)}
+                                    onChange={() => togglePublicService(service.name)}
+                                  />
+                                  {service.role} · public · :{service.public_port}
+                                </label>
+                              ) : (
+                                <span className="text-ink-mute">{service.role} · private</span>
+                              )}
                             </li>
                           ))}
                         </ul>
