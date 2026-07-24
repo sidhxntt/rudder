@@ -29,7 +29,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["github_import_id"], ["github_import.id"]),
         sa.ForeignKeyConstraint(["service_id"], ["service.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("github_import_id", "compose_service", name="uq_import_compose_service"),
+        sa.UniqueConstraint(
+            "github_import_id", "compose_service", name="uq_import_compose_service"
+        ),
         sa.UniqueConstraint("service_id", name="uq_import_service"),
     )
     op.create_index(

@@ -7,8 +7,8 @@
 - Node agent: `uv run pytest tests -q` — 54 passed.
 - Node agent lint: `uv run ruff check rudder_agent tests` — passed.
 - Web: `npm run typecheck` and `npm run build` — passed.
-- Alembic offline SQL was generated through revision `0004`; the Compose metadata
-  backfill is rendered with a non-null literal manifest.
+- Alembic offline SQL was generated through revision `0005`; the Compose metadata
+  backfill and the Compose child-service graph are rendered without parameters.
 
 ## Manual verification before release
 
@@ -20,11 +20,24 @@ Run these checks against a fresh local Rudder stack after applying migrations.
 - [ ] Changing a repository reloads its branches; changing a branch reloads its
   plan.
 - [ ] A repository `compose.yml` appears as **Repository Compose detected**,
-  shows its public/private services, and exposes its resolved manifest.
+  shows every public/private service, its role, and its resolved manifest.
 - [ ] A plain Express repository appears as **Rudder-generated Compose** and
-  can provision selected PostgreSQL and Redis add-ons privately.
+  can provision any selected catalog add-on privately: PostgreSQL, MySQL,
+  MariaDB, MongoDB, Redis, Memcached, RabbitMQ, NATS, Meilisearch, Typesense,
+  MinIO, Qdrant, Prometheus, or Grafana.
+- [ ] A repository with a `Procfile` or recognized npm scripts shows web,
+  worker, scheduler, and realtime candidates. The generated release starts
+  private process containers from the same immutable app image.
+- [ ] Select a starter template and verify its catalog services appear in the
+  reviewed Compose manifest. A template-selected service remains explicit and
+  can be unchecked before confirmation.
+- [ ] A repository Compose file with multiple published services requires an
+  explicit public-service selection; only selected services receive domains.
 - [ ] A successful import creates one versioned Docker Compose project; the
-  app service gets the public URL and add-ons do not get routes.
+  selected public services get URLs, while workers and add-ons do not get routes.
+- [ ] Select a private worker, database, broker, or observability service in
+  the canvas. It must show **Managed by Compose**, share the owner release’s
+  deployment history and build logs, and have no standalone Deploy action.
 - [ ] A deliberately broken candidate marks its deployment failed while the
   old public URL still answers from the prior live release.
 - [ ] Build/deployment logs show the Compose lifecycle output.
