@@ -29,6 +29,7 @@ import type {
   StarterTemplate,
   Environment,
   Instance,
+  Node,
   Project,
   Service,
   ServiceUpdate,
@@ -300,9 +301,26 @@ export function createDeployment(serviceId: string): Promise<Deployment> {
   });
 }
 
+/**
+ * POST /deployments/{deployment_id}/rollback → instantly retargets traffic to
+ * that healthy immutable release. No image build, pull, or container restart
+ * is performed.
+ */
+export function rollbackDeployment(deploymentId: string): Promise<Deployment> {
+  return requestJson<Deployment>(`/deployments/${id(deploymentId)}/rollback`, {
+    method: "POST",
+    body: {},
+  });
+}
+
 /** GET /services/{service_id}/variables — values are never in the response. */
 export function listVariables(serviceId: string): Promise<Variable[]> {
   return requestJson<Variable[]>(`/services/${id(serviceId)}/variables`);
+}
+
+/** GET /nodes — list all nodes with their instances. */
+export function listNodes(): Promise<Node[]> {
+  return requestJson<Node[]>(`/nodes`);
 }
 
 /** PUT /services/{service_id}/variables/{key} — idempotent, value write-only. */

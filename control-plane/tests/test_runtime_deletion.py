@@ -16,6 +16,8 @@ from rudder_cp.models import (
     Domain,
     DomainTargetType,
     Environment,
+    GitHubImport,
+    GitHubImportService,
     Instance,
     InstanceStatus,
     Node,
@@ -307,6 +309,52 @@ async def test_deleting_a_live_project_removes_its_containers_and_routes(engine,
         assert session.get(Service, api.id) is None
         assert session.get(Service, other_api.id) is not None
         assert len(await asyncio.to_thread(_route_files, settings)) == 1
+
+
+async def test_deleting_imported_project_removes_import_metadata(engine, settings):
+    """An import must not leave foreign-key rows behind after project deletion."""
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="imported", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        node = Node(hostname="localhost", ip_address="127.0.0.1")
+        session.add(user)
+        session.add(project)
+        session.add(environment)
+        session.add(node)
+        session.commit()
+
+        app = _live_service(session, environment, node, "app")
+        imported = GitHubImport(
+            installation_id=1,
+            repository="acme/imported",
+            branch="main",
+            compose_source="generated",
+            compose_manifest="services: {}\n",
+            compose_project_name="rudder-imported",
+            project_id=project.id,
+            app_service_id=app.id,
+        )
+        session.add(imported)
+        session.flush()
+        session.add(
+            GitHubImportService(
+                github_import_id=imported.id,
+                service_id=app.id,
+                compose_service="app",
+                role="web",
+                is_public=True,
+            )
+        )
+        session.commit()
+
+        await projects.delete_project(
+            session, project.id, agent=RecordingAgent(), settings=settings
+        )
+
+        assert session.get(Project, project.id) is None
+        assert session.get(GitHubImport, imported.id) is None
+        assert session.exec(select(GitHubImportService)).all() == []
 
 
 async def test_failed_project_runtime_cleanup_keeps_database_and_route(engine, settings):

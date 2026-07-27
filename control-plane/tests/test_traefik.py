@@ -119,12 +119,14 @@ def make_instance(
     node: Node,
     container_id: str | None,
     status: InstanceStatus = InstanceStatus.HEALTHY,
+    compose_service: str | None = None,
 ) -> Instance:
     instance = Instance(
         deployment_id=deployment.id,
         node_id=node.id,
         container_id=container_id,
         status=status,
+        compose_service=compose_service,
     )
     session.add(instance)
     session.commit()
@@ -259,6 +261,183 @@ async def test_public_compose_child_routes_to_its_own_container(
     await traefik.render_all(session, settings_for(tmp_path))
 
     assert server_urls(load(tmp_path, domain)) == [f"http://{'g' * 12}:3000/"]
+
+
+async def test_compose_app_domain_routes_only_to_its_app_container(
+    session: Session, tmp_path: Path
+) -> None:
+    """The app domain must never round-robin through Compose add-ons."""
+    app = make_service(session, "api")
+    postgres = Service(
+        environment_id=app.environment_id,
+        name="postgres",
+        container_port=5432,
+        build_config={"managed_by_service_id": str(app.id), "compose_service": "postgres"},
+    )
+    redis = Service(
+        environment_id=app.environment_id,
+        name="redis",
+        container_port=6379,
+        build_config={"managed_by_service_id": str(app.id), "compose_service": "redis"},
+    )
+    session.add_all([postgres, redis])
+    session.commit()
+
+    imported = GitHubImport(
+        installation_id=42,
+        repository="acme/api",
+        branch="main",
+        compose_source="repository",
+        compose_manifest="services: {}",
+        compose_project_name="rudder-api",
+        project_id=session.get(Environment, app.environment_id).project_id,
+        app_service_id=app.id,
+    )
+    session.add(imported)
+    session.commit()
+    session.add_all(
+        [
+            GitHubImportService(
+                github_import_id=imported.id,
+                service_id=app.id,
+                compose_service="app",
+                role="application",
+                is_public=True,
+                container_id="a" * 64,
+            ),
+            GitHubImportService(
+                github_import_id=imported.id,
+                service_id=postgres.id,
+                compose_service="postgres",
+                role="database",
+                is_public=False,
+                container_id="p" * 64,
+            ),
+            GitHubImportService(
+                github_import_id=imported.id,
+                service_id=redis.id,
+                compose_service="redis",
+                role="cache",
+                is_public=False,
+                container_id="r" * 64,
+            ),
+        ]
+    )
+    session.commit()
+    node = make_node(session)
+    live = make_deployment(session, app)
+    make_instance(session, live, node, "a" * 64)
+    make_instance(session, live, node, "p" * 64)
+    make_instance(session, live, node, "r" * 64)
+    domain = make_domain(session, app.environment_id, "api.prod.localhost", service=app)
+
+    await traefik.render_all(session, settings_for(tmp_path))
+
+    assert server_urls(load(tmp_path, domain)) == [f"http://{'a' * 12}:{CONTAINER_PORT}/"]
+
+
+async def test_pinned_compose_app_domain_routes_only_to_its_app_container(
+    session: Session, tmp_path: Path
+) -> None:
+    """Rollback domains must retain the same add-on isolation as live domains."""
+    app = make_service(session, "api")
+    postgres = Service(
+        environment_id=app.environment_id,
+        name="postgres",
+        container_port=5432,
+        build_config={"managed_by_service_id": str(app.id), "compose_service": "postgres"},
+    )
+    session.add(postgres)
+    session.commit()
+    imported = GitHubImport(
+        installation_id=42,
+        repository="acme/api",
+        branch="main",
+        compose_source="repository",
+        compose_manifest="services: {}",
+        compose_project_name="rudder-api",
+        project_id=session.get(Environment, app.environment_id).project_id,
+        app_service_id=app.id,
+    )
+    session.add(imported)
+    session.commit()
+    session.add_all(
+        [
+            GitHubImportService(
+                github_import_id=imported.id,
+                service_id=app.id,
+                compose_service="app",
+                role="application",
+                is_public=True,
+                container_id="a" * 64,
+            ),
+            GitHubImportService(
+                github_import_id=imported.id,
+                service_id=postgres.id,
+                compose_service="postgres",
+                role="database",
+                is_public=False,
+                container_id="p" * 64,
+            ),
+        ]
+    )
+    session.commit()
+    node = make_node(session)
+    deployment = make_deployment(session, app)
+    make_instance(session, deployment, node, "a" * 64)
+    make_instance(session, deployment, node, "p" * 64)
+    domain = make_domain(
+        session,
+        app.environment_id,
+        "rollback-api.prod.localhost",
+        deployment=deployment,
+    )
+
+    await traefik.render_all(session, settings_for(tmp_path))
+
+    assert server_urls(load(tmp_path, domain)) == [f"http://{'a' * 12}:{CONTAINER_PORT}/"]
+
+
+async def test_restored_compose_release_uses_its_own_historical_app_container(
+    session: Session, tmp_path: Path
+) -> None:
+    """A restore must not route an old release through the newer app container."""
+    app = make_service(session, "api")
+    imported = GitHubImport(
+        installation_id=42,
+        repository="acme/api",
+        branch="main",
+        compose_source="repository",
+        compose_manifest="services: {}",
+        compose_project_name="rudder-api",
+        project_id=session.get(Environment, app.environment_id).project_id,
+        app_service_id=app.id,
+    )
+    session.add(imported)
+    session.commit()
+    # This mutable projection points at the newer release, as it does after a
+    # normal deployment. Historical routing must use Instance.compose_service.
+    session.add(
+        GitHubImportService(
+            github_import_id=imported.id,
+            service_id=app.id,
+            compose_service="app",
+            role="application",
+            is_public=True,
+            container_id="n" * 64,
+        )
+    )
+    session.commit()
+    node = make_node(session)
+    restored = make_deployment(session, app)
+    newer = make_deployment(session, app, status=DeploymentStatus.SUPERSEDED)
+    make_instance(session, restored, node, "o" * 64, compose_service="app")
+    make_instance(session, newer, node, "n" * 64, compose_service="app")
+    domain = make_domain(session, app.environment_id, "api.prod.localhost", service=app)
+
+    await traefik.render_all(session, settings_for(tmp_path))
+
+    assert server_urls(load(tmp_path, domain)) == [f"http://{'o' * 12}:{CONTAINER_PORT}/"]
 
 
 async def test_service_domain_follows_a_newer_live_deployment(

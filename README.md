@@ -88,6 +88,24 @@ cd agent && pytest -q
 
 The `web/` tree has been type-checked and passes a production Next.js build.
 
+## Phase 2 — private multi-host runtime
+
+Phase 2 runs a control plane on one private GCP VM and node agents on worker
+VMs. Nodes heartbeat with capacity and observed containers; the scheduler
+chooses a healthy node with sufficient CPU/memory and the lowest allocated
+memory ratio. The workspace page shows registered nodes and their instances.
+
+The complete Git-source path has been verified on the lab: Git checkout →
+generated Dockerfile → BuildKit → private registry → remote worker pull →
+health check → `live` deployment. Stopping an agent marks its node unreachable
+and reschedules an eligible stateless service to the surviving node.
+
+This is deliberately a private lab runtime, not production ingress: services
+have no public cross-host URL yet. Persistent-volume services are not
+automatically duplicated after node loss; see
+[ADR 0003](docs/decisions/0003-phase-2-split-brain-policy.md). The production
+runtime path is [Phase 2.5 Kubernetes](docs/phases/PHASE-2.5-kubernetes-runtime.md).
+
 ## Notes on the dev stack
 
 `buildkitd` runs with `network_mode: service:registry`. That is deliberate:

@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Iterator
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -122,7 +123,7 @@ def _sign(body: bytes, secret: str = SECRET) -> str:
 
 def test_deploy_queues_and_returns_202(client: TestClient, seed: dict[str, str]) -> None:
     response = client.post(f"/services/{seed['service']}/deploy", json={})
-    assert response.status_code == 202
+    assert response.status_code == 200
     assert response.json()["status"] == "queued"
 
 
@@ -173,6 +174,55 @@ def test_deployments_are_listed_newest_first(client: TestClient, seed: dict[str,
     second = client.post(f"/services/{seed['service']}/deploy", json={}).json()["id"]
     listed = [d["id"] for d in client.get(f"/services/{seed['service']}/deployments").json()]
     assert listed[0] == second and first in listed
+
+
+def test_rollback_repoints_to_a_healthy_immutable_release_without_creating_a_deploy(
+    client: TestClient, engine: Engine, seed: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore changes the live pointer; it never queues a build."""
+    render = AsyncMock()
+    monkeypatch.setattr(deployments_router.traefik, "render_all", render)
+    with Session(engine) as session:
+        source = Deployment(
+            service_id=UUID(seed["service"]),
+            status=DeploymentStatus.SUPERSEDED,
+            image_tag="registry.local/shop-api:immutable-sha",
+            commit_sha="c" * 40,
+        )
+        session.add(source)
+        current = Deployment(
+            service_id=UUID(seed["service"]),
+            status=DeploymentStatus.LIVE,
+            image_tag="registry.local/shop-api:newer-sha",
+        )
+        session.add(current)
+        session.commit()
+        source_id = source.id
+        current_id = current.id
+        session.add(
+            Instance(
+                deployment_id=source.id,
+                node_id=UUID(seed["node"]),
+                container_id="source-container",
+                status=InstanceStatus.HEALTHY,
+            )
+        )
+        session.commit()
+
+    response = client.post(f"/deployments/{source_id}/rollback", json={})
+
+    assert response.status_code == 202
+    restored = response.json()
+    assert restored["id"] == str(source_id)
+    assert restored["service_id"] == seed["service"]
+    assert restored["status"] == "live"
+    assert restored["image_tag"] == "registry.local/shop-api:immutable-sha"
+    assert restored["commit_sha"] == "c" * 40
+    render.assert_awaited_once()
+    with Session(engine) as session:
+        assert session.get(Deployment, source_id).status is DeploymentStatus.LIVE
+        assert session.get(Deployment, current_id).status is DeploymentStatus.SUPERSEDED
+        assert len(session.exec(select(Deployment)).all()) == 2
 
 
 def test_a_compose_child_lists_its_owner_release_history(
@@ -307,6 +357,27 @@ def test_a_valid_push_queues_a_deployment(
         deployment = session.exec(select(Deployment)).one()
         assert deployment.commit_sha == "a" * 40
         assert deployment.status is DeploymentStatus.QUEUED
+
+
+def test_redelivered_push_for_the_same_commit_does_not_queue_a_second_deployment(
+    client: TestClient, engine: Engine, seed: dict[str, str]
+) -> None:
+    """GitHub may retry a 202 delivery; one commit must produce one release."""
+    body = _push(sha="b" * 40)
+    headers = {"X-Hub-Signature-256": _sign(body), "X-GitHub-Event": "push"}
+
+    first = client.post("/webhooks/github", content=body, headers=headers)
+    second = client.post("/webhooks/github", content=body, headers=headers)
+
+    assert first.status_code == 202
+    assert len(first.json()["queued"]) == 1
+    assert second.status_code == 202
+    assert second.json()["queued"] == []
+    assert second.json()["skipped"] == ["already queued for this commit"]
+    with Session(engine) as session:
+        deployments = session.exec(select(Deployment)).all()
+        assert len(deployments) == 1
+        assert deployments[0].commit_sha == "b" * 40
 
 
 def test_an_unsigned_push_is_refused(client: TestClient, engine: Engine) -> None:

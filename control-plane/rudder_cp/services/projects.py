@@ -15,7 +15,7 @@ from typing import Final
 from sqlmodel import Session, select
 
 from rudder_cp.config import Settings
-from rudder_cp.models import Project, Service, User
+from rudder_cp.models import GitHubImport, GitHubImportService, Project, Service, User
 from rudder_cp.schemas.common import ConflictError, NotFoundError
 from rudder_cp.schemas.environment import EnvironmentCreate
 from rudder_cp.schemas.project import ProjectCreate, ProjectReplace, ProjectUpdate
@@ -107,6 +107,26 @@ async def delete_project(
     await services.remove_runtime_containers(
         session, service_ids=service_ids, agent=agent, settings=settings
     )
+    # Import metadata points at both the project and the service graph. It is
+    # not runtime state, but it must be removed before the graph itself or an
+    # imported project leaves stale records (and PostgreSQL rejects the delete
+    # through the service foreign keys).
+    imports = session.exec(
+        select(GitHubImport).where(GitHubImport.project_id == project.id)
+    ).all()
+    mappings = session.exec(
+        select(GitHubImportService).where(
+            GitHubImportService.github_import_id.in_([imported.id for imported in imports])
+        )
+    ).all() if imports else []
+    for mapping in mappings:
+        session.delete(mapping)
+    # These tables have no ORM relationship/cascade declaration, so flush the
+    # child deletes explicitly before deleting their parent import rows.
+    session.flush()
+    for imported in imports:
+        session.delete(imported)
+    session.flush()
     for environment in environment_rows:
         await environments.purge_environment(session, environment)
     session.delete(project)

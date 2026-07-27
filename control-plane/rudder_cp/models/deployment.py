@@ -63,6 +63,11 @@ class Instance(SQLModel, table=True):
     )
     node_id: uuid.UUID = Field(foreign_key="node.id", sa_type=sa.Uuid, nullable=False)
     container_id: str | None = Field(default=None, max_length=64)
+    # Compose releases have one Instance per graph member. This immutable
+    # per-release name identifies the app/worker/add-on after a historical
+    # release is restored; the import graph's current container id changes on
+    # every successful release.
+    compose_service: str | None = Field(default=None, max_length=63)
 
     status: InstanceStatus = Field(
         default=InstanceStatus.STARTING,

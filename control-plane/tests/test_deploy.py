@@ -13,7 +13,7 @@ Postgres path works. Re-run this file against Postgres once a database is up.
 import asyncio
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -27,6 +27,8 @@ from rudder_cp.models import (
     GitHubImportService,
     Instance,
     InstanceStatus,
+    Node,
+    NodeStatus,
     Project,
     Service,
     User,
@@ -57,7 +59,18 @@ def engine(tmp_path):
     # than one session and they must see each other's writes.
     engine = create_engine(f"sqlite:///{tmp_path/'test.db'}")
     SQLModel.metadata.create_all(engine)
-    return engine
+    with Session(engine) as session:
+        node = Node(
+            hostname="test-node",
+            ip_address="127.0.0.1",
+            status=NodeStatus.HEALTHY,
+            cpu_total=4.0,
+            memory_total_mb=8192,
+        )
+        session.add(node)
+        session.commit()
+    yield engine
+    SQLModel.metadata.drop_all(engine)
 
 
 @pytest.fixture
@@ -126,6 +139,10 @@ class FakeAgent:
         self.last_create_kwargs = _kw
         self.last_image = image
         return ContainerState(id=f"container-{name}", status="starting", docker_status="running")
+
+    def for_node(self, ip_address: str, *, port: int = 9000) -> "FakeAgent":
+        self.selected_nodes = getattr(self, "selected_nodes", []) + [f"{ip_address}:{port}"]
+        return self
 
     async def inspect(self, container_id: str) -> ContainerState:
         if self._probe_count and not self.alive_after_health:
@@ -228,6 +245,28 @@ async def test_successful_deploy_goes_live(engine, service, settings):
         assert [i.status for i in instances] == [InstanceStatus.HEALTHY]
 
 
+async def test_rollback_reuses_the_immutable_image_without_rebuilding(engine, service, settings):
+    """A rollback is a new candidate run of a known-good image, not a rebuild."""
+    with Session(engine) as session:
+        deployment = Deployment(
+            service_id=service.id,
+            image_tag="registry/api:known-good",
+            commit_sha="known-good",
+            status=DeploymentStatus.QUEUED,
+        )
+        session.add(deployment)
+        session.commit()
+        deployment_id = deployment.id
+
+    outcome = await _run(engine, deployment_id, FakeAgent(), settings, _failing_builder)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    with Session(engine) as session:
+        deployed = session.get(Deployment, deployment_id)
+        assert deployed is not None
+        assert deployed.image_tag == "registry/api:known-good"
+
+
 async def test_health_check_probes_health_port_not_container_port(engine, service, settings):
     """container_port routes traffic, health_check_port is probed. D1."""
     agent = FakeAgent()
@@ -318,6 +357,78 @@ async def test_imported_compose_failure_keeps_the_previous_release_live(
             select(Instance).where(Instance.deployment_id == first.deployment_id)
         ).one()
         assert healthy.status is InstanceStatus.HEALTHY
+
+
+async def test_imported_compose_start_failure_releases_its_node_reservation(
+    engine, service, settings
+):
+    """A failed remote Compose start must not leave the node artificially full."""
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        session.add(app)
+        session.add(
+            GitHubImport(
+                installation_id=7,
+                repository="acme/reservation-test",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services:\n  app:\n    image: nginx:alpine\n",
+                compose_project_name="rudder-reservation-test",
+                project_id=environment.project_id,
+                app_service_id=app.id,
+            )
+        )
+        session.commit()
+
+    outcome = await _run(
+        engine, _queue(engine, service.id), FakeAgent(compose_fails=True), settings, _ok_builder
+    )
+
+    assert outcome.status is DeploymentStatus.FAILED
+    with Session(engine) as session:
+        node = session.exec(select(Node)).one()
+        assert node.cpu_allocated == 0
+        assert node.memory_allocated_mb == 0
+
+
+async def test_imported_compose_redeployment_keeps_capacity_for_restore_targets(
+    engine, service, settings
+):
+    """Both immutable Compose releases remain scheduled for instant restore."""
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        session.add(app)
+        session.add(
+            GitHubImport(
+                installation_id=7,
+                repository="acme/capacity-test",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services:\n  app:\n    build: .\n    expose: ['8080']\n",
+                compose_project_name="rudder-capacity-test",
+                project_id=environment.project_id,
+                app_service_id=app.id,
+            )
+        )
+        session.commit()
+
+    first = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+    second = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+    assert first.status is DeploymentStatus.LIVE
+    assert second.status is DeploymentStatus.LIVE
+
+    with Session(engine) as session:
+        node = session.exec(select(Node)).one()
+        assert node.cpu_allocated == 2.0
+        assert node.memory_allocated_mb == 1024
 
 
 async def test_imported_compose_records_every_graph_container_after_release_is_live(
@@ -435,7 +546,9 @@ async def test_agent_failure_is_a_readable_error_not_a_traceback(engine, service
 # ------------------------------------------------------------------ rolling deploy
 
 
-async def test_second_deploy_drains_the_first(engine, service, settings):
+async def test_second_deploy_keeps_the_first_as_an_immutable_restore_target(
+    engine, service, settings
+):
     first = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
     agent = FakeAgent()
     second = await _run(engine, _queue(engine, service.id), agent, settings, _ok_builder)
@@ -443,18 +556,20 @@ async def test_second_deploy_drains_the_first(engine, service, settings):
     assert second.status is DeploymentStatus.LIVE
     with Session(engine) as session:
         instances = {i.deployment_id: i for i in session.exec(select(Instance)).all()}
-        assert instances[first.deployment_id].status is InstanceStatus.STOPPED
-        assert instances[first.deployment_id].stopped_at is not None
+        assert instances[first.deployment_id].status is InstanceStatus.HEALTHY
+        assert instances[first.deployment_id].stopped_at is None
         assert instances[second.deployment_id].status is InstanceStatus.HEALTHY
         # Exactly one Deployment is `live` afterwards.
         assert session.get(Deployment, first.deployment_id).status is DeploymentStatus.SUPERSEDED
-    assert len(agent.removed) == 1
+    assert agent.removed == []
 
 
 # ------------------------------------------------------------------ D14: concurrency
 
 
-async def test_concurrent_deploys_produce_exactly_one_live_instance(engine, service, settings):
+async def test_concurrent_deploys_produce_one_live_release_and_keep_restore_targets(
+    engine, service, settings
+):
     """Two deploys launched together. D11/D14.
 
     The lock is try-acquire, so the loser stays queued rather than blocking a
@@ -485,9 +600,9 @@ async def test_concurrent_deploys_produce_exactly_one_live_instance(engine, serv
         healthy = session.exec(
             select(Instance).where(Instance.status == InstanceStatus.HEALTHY)
         ).all()
-        assert len(healthy) == 1, "exactly one live instance"
-        assert healthy[0].deployment_id == loser_id
-        # The newer push wins in the end, and only one Deployment is `live`.
+        assert len(healthy) == 2, "both successful releases remain restore targets"
+        assert {instance.deployment_id for instance in healthy} == {winner_id, loser_id}
+        # The newer push wins in the end, and exactly one Deployment receives traffic.
         assert session.get(Deployment, winner_id).status is DeploymentStatus.SUPERSEDED
         live = session.exec(
             select(Deployment).where(Deployment.status == DeploymentStatus.LIVE)
@@ -535,6 +650,119 @@ async def test_a_non_queued_deployment_is_not_run_twice(engine, service, setting
 
     assert again.detail == "not queued"
     assert builder.started == 0
+
+
+async def test_interrupted_deploying_release_resumes_from_its_built_image(
+    engine, service, settings
+):
+    """A control-plane restart must not strand a running candidate forever.
+
+    The image has already been pushed when the interruption occurs. Recovery
+    must reuse that immutable artifact, finish the normal health/traffic path,
+    and never invoke the source builder a second time.
+    """
+    with Session(engine) as session:
+        deployment = Deployment(
+            service_id=service.id,
+            image_tag="registry/api:already-built",
+            status=DeploymentStatus.DEPLOYING,
+        )
+        session.add(deployment)
+        session.commit()
+        deployment_id = deployment.id
+
+    async def should_not_build(*_args, **_kwargs):
+        raise AssertionError("an interrupted release must reuse its built image")
+
+    outcome = await _run(engine, deployment_id, FakeAgent(), settings, should_not_build)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    with Session(engine) as session:
+        assert session.get(Deployment, deployment_id).status is DeploymentStatus.LIVE
+
+
+async def test_interrupted_compose_release_adopts_its_running_candidate(
+    engine, service, settings
+):
+    """Recovery must not require a fresh scheduler heartbeat after compose up.
+
+    A control-plane restart may occur in the gap between the agent starting a
+    Compose project and the control plane recording its Instance rows.  The
+    node may still look stale at that instant, but the project itself is the
+    source of truth and must be adopted rather than failed for capacity.
+    """
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        session.add(app)
+        session.add(
+            GitHubImport(
+                installation_id=7,
+                repository="acme/recoverable-compose",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services:\n  app:\n    build: .\n    expose: ['8080']\n",
+                compose_project_name="rudder-recoverable-compose",
+                project_id=environment.project_id,
+                app_service_id=app.id,
+            )
+        )
+        deployment = Deployment(
+            service_id=app.id,
+            image_tag="registry/app:already-built",
+            status=DeploymentStatus.DEPLOYING,
+        )
+        session.add(deployment)
+        session.commit()
+        deployment_id = deployment.id
+
+    agent = FakeAgent()
+
+    async def should_not_build(*_args, **_kwargs):
+        raise AssertionError("an interrupted Compose release must reuse its image")
+
+    outcome = await _run(engine, deployment_id, agent, settings, should_not_build)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    assert agent.compose_projects == [], "existing candidate must not be started twice"
+    with Session(engine) as session:
+        assert session.get(Deployment, deployment_id).status is DeploymentStatus.LIVE
+
+
+async def test_worker_recovers_only_the_newest_interrupted_release(engine, service, settings):
+    """A restart must not revive stale work behind the interrupted release."""
+    from rudder_cp.logs.store import BuildLogStore
+    from rudder_cp.services.worker import recover_interrupted_deployments
+
+    with Session(engine) as session:
+        stale = Deployment(
+            service_id=service.id,
+            status=DeploymentStatus.BUILDING,
+            created_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
+        current = Deployment(
+            service_id=service.id,
+            image_tag="registry/api:already-built",
+            status=DeploymentStatus.DEPLOYING,
+        )
+        session.add_all([stale, current])
+        session.commit()
+        stale_id, current_id = stale.id, current.id
+
+    recovered = await recover_interrupted_deployments(
+        engine=engine,
+        settings=settings,
+        store=BuildLogStore(settings.build_log_dir),
+        agent=FakeAgent(),  # type: ignore[arg-type]
+    )
+
+    assert recovered == 1
+    with Session(engine) as session:
+        assert session.get(Deployment, stale_id).status is DeploymentStatus.FAILED
+        assert session.get(Deployment, current_id).status is DeploymentStatus.LIVE
 
 
 async def test_managed_addon_uses_an_image_volume_alias_and_tcp_readiness(

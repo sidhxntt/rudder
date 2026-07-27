@@ -41,7 +41,10 @@ def ops(docker_client: FakeDockerClient, tmp_path) -> DockerOps:
 
 @pytest.fixture
 async def client(ops: DockerOps, settings: AgentSettings) -> AsyncIterator[TestClient]:
-    test_client = TestClient(TestServer(create_app(ops, settings)))
+    test_client = TestClient(
+        TestServer(create_app(ops, settings)),
+        headers={"X-Rudder-Agent-Secret": settings.shared_secret},
+    )
     await test_client.start_server()
     try:
         yield test_client

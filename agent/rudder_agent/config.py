@@ -10,6 +10,13 @@ class AgentSettings(BaseSettings):
     bind: str = "0.0.0.0"
     port: int = 9000
 
+    control_plane_url: str = "http://localhost:8000"
+    shared_secret: str = "secret"  # Replace with a real secret in production
+    node_hostname: str = "localhost"
+    # Reachable address the control plane uses for command requests. This must
+    # be the node's private IP in a multi-host deployment, not a Docker IP.
+    advertise_address: str = "127.0.0.1"
+
     # D10: drain window default. The control plane normally passes an explicit
     # value per request; this is only the fallback.
     drain_seconds: float = 10.0

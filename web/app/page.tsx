@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect } from "react";
 
-import { useProjects } from "@/lib/queries";
+import { useNodes, useProjects } from "@/lib/queries";
+import { shortAgo } from "@/lib/status";
 
 import { GitHubImportDialog } from "./projects/[projectId]/environments/[environmentId]/github-import-dialog";
 
@@ -33,6 +34,7 @@ export default function IndexPage() {
   const router = useRouter();
   const search = useSearchParams();
   const projects = useProjects();
+  const nodes = useNodes();
 
   useEffect(() => {
     const installationId = search.get("installation_id");
@@ -138,6 +140,88 @@ export default function IndexPage() {
                     <span>{project.name}</span>
                     <ArrowUpRight />
                   </Link>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+
+        <section className="mt-huge">
+          <div className="flex items-end justify-between gap-lg border-b border-hairline pb-md">
+            <div>
+              <h2 className="text-heading-lg text-ink">Nodes</h2>
+              <p className="mt-xxs text-caption text-ink-mute">The hosts running your applications.</p>
+            </div>
+            {nodes.data?.length ? <span className="text-micro text-ink-faint">{nodes.data.length} total</span> : null}
+          </div>
+
+          {nodes.isPending ? (
+            <div className="py-xxl text-caption text-ink-mute">Loading nodes…</div>
+          ) : null}
+
+          {nodes.isError ? (
+            <div className="flex flex-col gap-md py-xxl sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-caption text-status-failed">Could not load nodes. Check the control plane, then try again.</p>
+              <button
+                type="button"
+                onClick={() => void nodes.refetch()}
+                className="w-fit rounded-sm border border-hairline-strong px-md py-sm text-caption text-ink hover:border-accent hover:text-accent"
+              >
+                Try again
+              </button>
+            </div>
+          ) : null}
+
+          {nodes.isSuccess && nodes.data.length === 0 ? (
+            <div className="py-xxl">
+              <p className="text-caption text-ink-secondary">No nodes yet.</p>
+              <p className="mt-xs max-w-lg text-caption text-ink-mute">
+                Once an agent registers, it will appear here.
+              </p>
+            </div>
+          ) : null}
+
+          {nodes.isSuccess && nodes.data.length > 0 ? (
+            <ul className="divide-y divide-hairline">
+              {nodes.data.map((node) => (
+                <li key={node.id}>
+                  <div className="flex flex-col gap-sm py-lg">
+                    <div className="flex items-center justify-between">
+                      <span className="text-caption text-ink">{node.hostname} ({node.ip_address})</span>
+                      <span
+                        className={`inline-flex items-center gap-xs text-micro ${
+                          node.status === "healthy" ? "text-status-success" : "text-status-failed"
+                        }`}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            node.status === "healthy" ? "bg-status-success" : "bg-status-failed"
+                          }`}
+                        />
+                        {node.status === "healthy" ? "healthy" : node.status}
+                      </span>
+                    </div>
+                    <p className="text-micro text-ink-mute">
+                      {node.last_heartbeat_at
+                        ? `Last heartbeat ${shortAgo(node.last_heartbeat_at)}`
+                        : "Awaiting first heartbeat"}
+                      {node.instances.length > 0
+                        ? ` · ${node.instances.filter((instance) => instance.status === "healthy").length}/${node.instances.length} instances healthy`
+                        : " · No managed instances"}
+                    </p>
+                    {node.instances.length > 0 ? (
+                      <ul className="ml-md text-micro text-ink-mute">
+                        {node.instances.map((instance) => (
+                          <li key={instance.id}>
+                            Instance: {instance.container_id || instance.id} - Status: {instance.status}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="ml-md text-micro text-ink-faint">No instances running</p>
+                    )}
+                  </div>
                 </li>
               ))}
             </ul>

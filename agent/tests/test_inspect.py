@@ -76,6 +76,22 @@ async def test_inspect_reports_observed_fields(
     assert body["started_at"] == "2026-07-23T10:00:00.000000000Z"
 
 
+async def test_list_containers_reports_actual_states(
+    ops, docker_client: FakeDockerClient
+) -> None:
+    docker_client.containers.add(FakeContainer("running", "api", make_attrs(status="running")))
+    docker_client.containers.add(FakeContainer("stopped", "worker", make_attrs(status="exited")))
+
+    states = await ops.list_containers()
+
+    observed = {state.id: state.status.value for state in states}
+    assert {container_id: observed[container_id] for container_id in ("running", "stopped")} == {
+        "running": "starting",
+        "stopped": "stopped",
+    }
+    assert "containers.list" in docker_client.calls
+
+
 async def test_inspect_unknown_container_is_404(client: TestClient) -> None:
     resp = await client.get("/containers/nope")
     assert resp.status == 404

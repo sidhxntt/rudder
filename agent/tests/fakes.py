@@ -99,6 +99,10 @@ class _FakeContainerCollection:
         except KeyError as exc:
             raise docker.errors.NotFound(f"no such container: {container_id}") from exc
 
+    def list(self, all: bool = False) -> list[FakeContainer]:
+        self._client.record("containers.list")
+        return list(self._store.values())
+
     def create(self, **kwargs: Any) -> FakeContainer:
         self._client.record("containers.create")
         self._client.create_kwargs = kwargs

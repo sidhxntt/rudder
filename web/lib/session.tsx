@@ -24,6 +24,12 @@ import {
 import * as api from "./api";
 import type { User } from "./types";
 
+/**
+ * The Next development proxy can be unavailable briefly while it recompiles.
+ * A session check must never turn that into a permanently blank application.
+ */
+export const SESSION_CHECK_TIMEOUT_MS = 8_000;
+
 export type SessionState =
   | { status: "loading" }
   | { status: "anonymous" }
@@ -43,19 +49,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      if (!cancelled) setState({ status: "anonymous" });
+    }, SESSION_CHECK_TIMEOUT_MS);
+
     api
       .me()
       .then((user) => {
-        if (!cancelled) setState({ status: "authenticated", user });
+        if (!cancelled) {
+          window.clearTimeout(timeout);
+          setState({ status: "authenticated", user });
+        }
       })
       .catch(() => {
         // 401 is the ordinary case (no cookie yet). A network failure lands
         // here too, and showing the login screen is the right thing then as
         // well — nothing can be done until the control plane answers.
-        if (!cancelled) setState({ status: "anonymous" });
+        if (!cancelled) {
+          window.clearTimeout(timeout);
+          setState({ status: "anonymous" });
+        }
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(timeout);
     };
   }, []);
 

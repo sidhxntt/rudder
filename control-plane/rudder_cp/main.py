@@ -22,6 +22,7 @@ from rudder_cp.routers import (
     environments,
     imports,
     logs,
+    nodes,
     projects,
     services,
     variables,
@@ -31,6 +32,7 @@ from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.auth import seed_admin_user
 from rudder_cp.services.github_app import GitHubAppClient
+from rudder_cp.services.reconciler import run_reconciler
 from rudder_cp.services.variables import verify_secret_keys
 from rudder_cp.services.worker import run_worker
 
@@ -61,14 +63,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         name="deploy-worker",
     )
     log.info("deploy worker started")
+
+    reconciler = asyncio.create_task(
+        run_reconciler(engine=engine, stop_event=stop, agent_client=app.state.agent),
+        name="reconciler",
+    )
+
     try:
         yield
     finally:
         stop.set()
         worker.cancel()
+        reconciler.cancel()
         # Shutdown must not hang on a build in flight.
-        await asyncio.gather(worker, return_exceptions=True)
-        log.info("deploy worker stopped")
+        await asyncio.gather(worker, reconciler, return_exceptions=True)
+        log.info("deploy worker and reconciler stopped")
 
 
 def create_app() -> FastAPI:
@@ -82,7 +91,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Rudder Control Plane", version="0.1.0", lifespan=lifespan)
     settings = get_settings()
     app.state.settings = settings
-    app.state.agent = AgentClient(settings.agent_url)
+    app.state.agent = AgentClient(
+        settings.agent_url, shared_secret=settings.agent_shared_secret
+    )
     app.state.github = GitHubAppClient(settings)
 
     # Both are needed: install_error_handlers flattens FastAPI's `detail`
@@ -103,6 +114,7 @@ def create_app() -> FastAPI:
     # with an HMAC over the request body instead — a GitHub push has no user.
     app.include_router(auth_router.router)
     app.include_router(webhooks.router)
+    app.include_router(nodes.router)
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:

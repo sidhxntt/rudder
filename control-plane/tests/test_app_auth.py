@@ -26,6 +26,8 @@ PUBLIC = {
     ("POST", "/auth/token"),  # issues the token; cannot require one
     ("DELETE", "/auth/token"),  # logout must work with an expired token
     ("POST", "/webhooks/github"),  # authenticated by HMAC over the body
+    ("POST", "/nodes/register"),  # authenticated by shared secret
+    ("POST", "/nodes/heartbeat"),  # authenticated by shared secret
     ("GET", "/healthz"),  # liveness probe
     ("GET", "/docs"),
     ("GET", "/redoc"),
