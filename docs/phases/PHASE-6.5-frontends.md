@@ -1,4 +1,4 @@
-# Phase 5.5 — Frontends
+# Phase 6.5 — Frontends
 
 **Target:** 1 week
 
@@ -95,7 +95,7 @@ Branch slug must pass the D9 hostname regex — slugify and truncate.
 
 Branch deleted → drop the Domain, drain the Instances.
 
-**Different from Phase 4 PR environments.** A branch preview deploys new code
+**Different from Phase 5 PR environments.** A branch preview deploys new code
 against the environment's *existing* backing services. A PR environment clones
 everything including the database. Both are legitimate; let the project choose
 per-service. This step builds the first one.
@@ -203,4 +203,4 @@ curl -I <url>/assets/main.<hash>.js # → immutable, long max-age
 - [ ] Build-time env vars are injected at build and documented as such in the UI
 - [ ] Cache headers correct — `index.html` uncached, hashed assets immutable
 - [ ] No serverless function code exists anywhere in the repo
-- [ ] `README.md` Phase 5.5 section
+- [ ] `README.md` Phase 6.5 section

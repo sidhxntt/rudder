@@ -15,11 +15,13 @@ path below.
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
 import yaml
+from kubernetes_asyncio.client import ApiException
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -33,9 +35,13 @@ from rudder_cp.models import (
     Instance,
     InstanceStatus,
     Node,
+    NodeStatus,
     Service,
     Volume,
 )
+from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, KubernetesRuntime, RuntimeSettings
+from rudder_cp.runtime.models import ComposeService as KubernetesComposeService
+from rudder_cp.runtime.models import KubernetesRelease, dns_label
 from rudder_cp.services import scheduler, traefik, variables
 from rudder_cp.services.agent_client import AgentClient, AgentError
 from rudder_cp.services.builder import BuildFailed, BuildRequest, build_image
@@ -192,6 +198,15 @@ async def _deploy_locked(
         select(GitHubImport).where(GitHubImport.app_service_id == service.id)
     ).first()
     if imported is not None:
+        if settings.runtime == "kubernetes":
+            return await _deploy_imported_kubernetes(
+                deployment,
+                service,
+                imported,
+                session=session,
+                store=store,
+                settings=settings,
+            )
         return await _deploy_imported_compose(
             deployment,
             service,
@@ -543,6 +558,150 @@ async def _deploy_imported_compose(
     return DeployOutcome(deployment.id, DeploymentStatus.LIVE)
 
 
+async def _deploy_imported_kubernetes(
+    deployment: Deployment,
+    service: Service,
+    imported: GitHubImport,
+    *,
+    session: Session,
+    store: BuildLogStore,
+    settings: Settings,
+) -> DeployOutcome:
+    """Release an imported Compose graph through the Kubernetes runtime.
+
+    Kubernetes owns pod placement and readiness.  The existing Rudder node is
+    retained as an accounting anchor for the current ``Instance`` schema and
+    host health UI; it is not used to schedule individual pods.
+    """
+    deployment.status = DeploymentStatus.DEPLOYING
+    session.add(deployment)
+    _supersede_older(session, deployment)
+    session.commit()
+
+    anchor_node = session.exec(
+        select(Node).where(Node.status == NodeStatus.HEALTHY).order_by(Node.hostname)
+    ).first()
+    if anchor_node is None:
+        return _fail(
+            session,
+            deployment,
+            "No healthy Rudder node is available to account for this Kubernetes release.",
+        )
+    api: AsyncKubernetesApi | None = None
+    try:
+        app_env = await variables.resolve_service_env(session, service.id)
+        manifest = await _compose_runtime_manifest(
+            session,
+            imported=imported,
+            app_service=service,
+            image=deployment.image_tag or "",
+            app_env=app_env,
+            docker_network=settings.docker_network,
+        )
+        document = yaml.safe_load(manifest)
+        if not isinstance(document, dict) or not isinstance(document.get("services"), dict):
+            raise ValueError("stored manifest has no services mapping")
+        services_document = document["services"]
+        mappings = session.exec(
+            select(GitHubImportService).where(GitHubImportService.github_import_id == imported.id)
+        ).all()
+        if not mappings:
+            raise ValueError("the imported application has no service graph")
+        members: list[KubernetesComposeService] = []
+        for mapping in mappings:
+            raw = services_document.get(mapping.compose_service)
+            member_service = session.get(Service, mapping.service_id)
+            if not isinstance(raw, dict) or member_service is None:
+                raise ValueError(f"stored manifest is missing {mapping.compose_service!r}")
+            image = raw.get("image")
+            if not isinstance(image, str) or not image:
+                raise ValueError(f"Kubernetes release has no image for {mapping.compose_service!r}")
+            command = _compose_command(raw.get("command"))
+            volume = session.exec(
+                select(Volume).where(Volume.service_id == member_service.id)
+            ).first()
+            port = member_service.container_port or _compose_exposed_port(raw)
+            member_environment = _merge_compose_environment(
+                raw.get("environment"),
+                await variables.resolve_service_env(session, member_service.id),
+            )
+            members.append(
+                KubernetesComposeService(
+                    name=mapping.compose_service,
+                    image=image,
+                    port=port,
+                    command=command,
+                    environment=member_environment,
+                    public=mapping.is_public,
+                    stateful=mapping.role
+                    in {"database", "cache", "broker", "search", "storage"},
+                    volume_mount_path=volume.mount_path if volume is not None else None,
+                )
+            )
+        namespace = dns_label(
+            f"{settings.kubernetes_namespace_prefix}-{service.environment_id.hex[:12]}"
+        )
+        runtime_settings = RuntimeSettings(
+            local_domain=settings.kubernetes_local_domain,
+            ingress_class=settings.kubernetes_ingress_class,
+            readiness_timeout_seconds=settings.kubernetes_readiness_timeout_seconds,
+        )
+        api = await AsyncKubernetesApi.from_kubeconfig(
+            runtime_settings,
+            kubeconfig_path=settings.kubernetes_kubeconfig,
+        )
+        runtime = KubernetesRuntime(api, runtime_settings)
+        await _append_release_log(
+            store,
+            deployment.id,
+            f"applying Kubernetes release in namespace {namespace}\n",
+        )
+        result = await runtime.apply(
+            KubernetesRelease(
+                namespace=namespace,
+                release_id=str(deployment.id),
+                services=tuple(members),
+            ),
+            project_id=str(imported.project_id),
+            environment_id=str(service.environment_id),
+            on_progress=lambda text: _append_release_log(store, deployment.id, text),
+        )
+    except (ApiException, OSError, ValueError, yaml.YAMLError, RuntimeError) as exc:
+        return _fail(session, deployment, f"Could not apply Kubernetes release. {exc}")
+    finally:
+        if api is not None:
+            # The async Kubernetes client owns a network session. A deployment
+            # failure must not leak it and eventually starve later releases.
+            with suppress(Exception):
+                await api.close()
+
+    for mapping in mappings:
+        pod_id = result.pod_ids[mapping.compose_service]
+        mapping.container_id = pod_id
+        session.add(mapping)
+        session.add(
+            Instance(
+                deployment_id=deployment.id,
+                node_id=anchor_node.id,
+                container_id=pod_id,
+                compose_service=mapping.compose_service,
+                status=InstanceStatus.HEALTHY,
+                started_at=datetime.now(UTC),
+            )
+        )
+    deployment.status = DeploymentStatus.LIVE
+    deployment.became_live_at = datetime.now(UTC)
+    session.add(deployment)
+    _supersede_previously_live(session, deployment)
+    session.commit()
+    await _append_release_log(
+        store,
+        deployment.id,
+        "Kubernetes release is ready; public routes were promoted after readiness.\n",
+    )
+    return DeployOutcome(deployment.id, DeploymentStatus.LIVE)
+
+
 # --------------------------------------------------------------------- helpers
 
 
@@ -727,7 +886,7 @@ async def _compose_runtime_manifest(
         raise ValueError("stored manifest does not contain the imported application service")
     app.pop("build", None)
     app["image"] = image
-    app["environment"] = app_env
+    app["environment"] = _merge_compose_environment(app.get("environment"), app_env)
 
     # Generated workers/schedulers and repository Compose services that share
     # the app build must use the one immutable image BuildKit produced for this
@@ -747,7 +906,10 @@ async def _compose_runtime_manifest(
         sibling = services.get(mapping.compose_service)
         service = session.get(Service, mapping.service_id)
         if isinstance(sibling, dict) and service is not None:
-            sibling["environment"] = await variables.resolve_service_env(session, service.id)
+            sibling["environment"] = _merge_compose_environment(
+                sibling.get("environment"),
+                await variables.resolve_service_env(session, service.id),
+            )
 
     document["networks"] = {
         "rudder": {"external": True, "name": docker_network},
@@ -757,6 +919,56 @@ async def _compose_runtime_manifest(
             continue
         raw_service["networks"] = ["default", "rudder"]
     return yaml.safe_dump(document, sort_keys=False)
+
+
+def _compose_command(value: object) -> tuple[str, ...] | None:
+    if isinstance(value, str):
+        # Kubernetes ``command`` does not run a shell implicitly. Keep the
+        # Compose string semantics rather than splitting quoted arguments.
+        return ("/bin/sh", "-c", value)
+    if isinstance(value, list) and all(isinstance(item, (str, int, float)) for item in value):
+        return tuple(str(item) for item in value)
+    return None
+
+
+def _merge_compose_environment(
+    raw_environment: object, overrides: dict[str, str]
+) -> dict[str, str]:
+    """Keep reviewed Compose defaults while Rudder variables take precedence.
+
+    A repository's Compose manifest is part of the approved release contract.
+    Replacing its ``environment`` block with an empty Rudder-variable mapping
+    silently breaks common images such as Postgres.  Rudder-managed variables
+    remain authoritative so secrets and references can still override defaults.
+    """
+    environment: dict[str, str] = {}
+    if isinstance(raw_environment, dict):
+        environment = {
+            str(key): str(value)
+            for key, value in raw_environment.items()
+            if isinstance(key, str) and value is not None
+        }
+    elif isinstance(raw_environment, list):
+        for item in raw_environment:
+            if not isinstance(item, str) or "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            if key:
+                environment[key] = value
+    environment.update(overrides)
+    return environment
+
+
+def _compose_exposed_port(raw_service: dict[object, object]) -> int | None:
+    expose = raw_service.get("expose")
+    values = [expose] if isinstance(expose, (str, int)) else expose
+    if not isinstance(values, list) or not values:
+        return None
+    try:
+        port = int(str(values[0]).split("/", 1)[0])
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 65535 else None
 
 
 def _compose_release_name(imported: GitHubImport, deployment: Deployment) -> str:

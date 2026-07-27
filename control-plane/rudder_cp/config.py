@@ -70,6 +70,18 @@ class Settings(BaseSettings):
     buildkit_addr: str = "tcp://registry:1234"
     docker_network: str = "rudder"
 
+    # Phase 3 — the control plane keeps its deployment model while swapping
+    # the execution backend from a Docker agent to Kubernetes.
+    runtime: Literal["docker", "kubernetes"] = "docker"
+    kubernetes_kubeconfig: str = ""
+    kubernetes_namespace_prefix: str = "rudder"
+    kubernetes_ingress_class: str = "nginx"
+    # Kept separate from ``base_domain`` so a local Kind ingress can use
+    # ``localhost`` while a production control plane serves its own UI/API
+    # from a different public domain.
+    kubernetes_local_domain: str = "localhost"
+    kubernetes_readiness_timeout_seconds: int = 180
+
     # D3(b) — the control plane never touches Docker directly, it calls the agent.
     agent_url: str = "http://agent:9000"
     agent_shared_secret: str = "secret"

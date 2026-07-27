@@ -34,6 +34,7 @@ from rudder_cp.models import (
     User,
     Volume,
 )
+from rudder_cp.services import deploy as deploy_service
 from rudder_cp.services import locks
 from rudder_cp.services.agent_client import (
     AgentError,
@@ -229,6 +230,136 @@ async def _run(engine, deployment_id, agent, settings, builder, store=None):
         )
 
 
+class FakeKubernetesApi:
+    """Records the real imported-deploy dispatch without requiring a cluster."""
+
+    def __init__(self, *, fail_service: str | None = None) -> None:
+        self.fail_service = fail_service
+        self.calls: list[tuple[str, str]] = []
+        self.public_routes: dict[str, str] = {}
+        self.workloads: dict[str, object] = {}
+        self.closed = False
+
+    async def ensure_namespace(self, namespace: str, _labels: dict[str, str]) -> None:
+        self.calls.append(("namespace", namespace))
+
+    async def ensure_guardrails(self, namespace: str, _labels: dict[str, str]) -> None:
+        self.calls.append(("guardrails", namespace))
+
+    async def apply_service(self, namespace: str, spec) -> None:
+        self.calls.append(("service", spec.name))
+
+    async def apply_workload(self, namespace: str, spec) -> None:
+        self.calls.append(("workload", spec.name))
+        self.workloads[spec.service_name] = spec
+
+    async def wait_ready(self, namespace: str, spec, **_kwargs) -> str:
+        self.calls.append(("ready", spec.name))
+        if spec.service_name == self.fail_service:
+            raise RuntimeError(f"{spec.service_name} image pull failed")
+        return f"pod-{spec.name}"
+
+    async def promote_public_service(self, namespace: str, spec) -> None:
+        self.calls.append(("ingress", spec.name))
+        self.public_routes[spec.name] = spec.backend_service_name
+
+    async def delete_release(self, namespace: str, release_id: str) -> None:
+        self.calls.append(("cleanup", release_id))
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _configure_kubernetes_import(engine, service: Service) -> None:
+    """Create the same persisted graph an approved GitHub import produces."""
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        postgres = Service(
+            environment_id=environment.id,
+            name="postgres",
+            container_port=5432,
+            build_config={"compose_service": "postgres"},
+        )
+        redis = Service(
+            environment_id=environment.id,
+            name="redis",
+            container_port=6379,
+            build_config={"compose_service": "redis"},
+        )
+        session.add_all([app, postgres, redis])
+        session.commit()
+        session.refresh(postgres)
+        session.refresh(redis)
+        session.add_all(
+            [
+                Volume(service_id=postgres.id, mount_path="/var/lib/postgresql/data"),
+                Volume(service_id=redis.id, mount_path="/data"),
+            ]
+        )
+        imported = GitHubImport(
+            installation_id=7,
+            repository="acme/kubernetes-import",
+            branch="main",
+            compose_source="generated",
+            compose_manifest=(
+                "services:\n"
+                "  app:\n    build: .\n    expose: ['8080']\n"
+                "  postgres:\n    image: postgres:16-alpine\n    expose: ['5432']\n"
+                "    environment:\n      POSTGRES_PASSWORD: rudder\n"
+                "  redis:\n    image: redis:7-alpine\n    expose: ['6379']\n"
+            ),
+            compose_project_name="rudder-kubernetes-import",
+            project_id=environment.project_id,
+            app_service_id=app.id,
+            postgres_service_id=postgres.id,
+            redis_service_id=redis.id,
+        )
+        session.add(imported)
+        session.commit()
+        session.add_all(
+            [
+                GitHubImportService(
+                    github_import_id=imported.id,
+                    service_id=app.id,
+                    compose_service="app",
+                    role="web",
+                    is_public=True,
+                ),
+                GitHubImportService(
+                    github_import_id=imported.id,
+                    service_id=postgres.id,
+                    compose_service="postgres",
+                    role="database",
+                ),
+                GitHubImportService(
+                    github_import_id=imported.id,
+                    service_id=redis.id,
+                    compose_service="redis",
+                    role="cache",
+                ),
+            ]
+        )
+        session.commit()
+
+
+def _use_kubernetes_api(monkeypatch, *apis: FakeKubernetesApi) -> None:
+    pending = list(apis)
+
+    async def from_kubeconfig(_cls, _settings, *, kubeconfig_path: str = ""):
+        assert kubeconfig_path == ""
+        return pending.pop(0)
+
+    monkeypatch.setattr(
+        deploy_service.AsyncKubernetesApi,
+        "from_kubeconfig",
+        classmethod(from_kubeconfig),
+    )
+
+
 # ------------------------------------------------------------------ happy path
 
 
@@ -357,6 +488,96 @@ async def test_imported_compose_failure_keeps_the_previous_release_live(
             select(Instance).where(Instance.deployment_id == first.deployment_id)
         ).one()
         assert healthy.status is InstanceStatus.HEALTHY
+
+
+async def test_imported_kubernetes_release_waits_for_every_member_before_public_promotion(
+    engine, service, settings, monkeypatch
+):
+    """The selected runtime must drive the persisted import graph, not a side path."""
+    _configure_kubernetes_import(engine, service)
+    settings.runtime = "kubernetes"
+    settings.kubernetes_local_domain = "kind.local"
+    api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, api)
+
+    outcome = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    assert api.closed is True
+    assert [name for name, _ in api.calls].count("ready") == 3
+    assert [name for name, _ in api.calls].index("ingress") > max(
+        index for index, (name, _) in enumerate(api.calls) if name == "ready"
+    )
+    app_workload = next(
+        value for name, value in api.calls if name == "workload" and value.startswith("app-")
+    )
+    assert api.public_routes == {"route-app": app_workload}
+    assert api.workloads["postgres"].environment == {"POSTGRES_PASSWORD": "rudder"}
+    with Session(engine) as session:
+        instances = list(
+            session.exec(
+                select(Instance).where(Instance.deployment_id == outcome.deployment_id)
+            ).all()
+        )
+        assert {instance.compose_service for instance in instances} == {"app", "postgres", "redis"}
+        assert {instance.status for instance in instances} == {InstanceStatus.HEALTHY}
+    from rudder_cp.logs.store import BuildLogStore
+
+    contents = BuildLogStore(settings.build_log_dir).path_for(outcome.deployment_id).read_text()
+    assert "kubernetes: applying StatefulSet for postgres" in contents
+    assert "kubernetes: postgres is ready" in contents
+    assert "kubernetes: promoted public route for app" in contents
+
+
+async def test_imported_kubernetes_failure_keeps_previous_live_route_unchanged(
+    engine, service, settings, monkeypatch
+):
+    """A failed candidate may be cleaned up, but cannot alter the live route."""
+    _configure_kubernetes_import(engine, service)
+    settings.runtime = "kubernetes"
+    first_api = FakeKubernetesApi()
+    failed_api = FakeKubernetesApi(fail_service="postgres")
+    _use_kubernetes_api(monkeypatch, first_api, failed_api)
+
+    first = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+    previous_route = dict(first_api.public_routes)
+    failed = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert first.status is DeploymentStatus.LIVE
+    assert failed.status is DeploymentStatus.FAILED
+    assert failed_api.public_routes == {}, "candidate must not promote a partial route"
+    assert previous_route == first_api.public_routes
+    assert any(name == "cleanup" for name, _ in failed_api.calls)
+    with Session(engine) as session:
+        prior = session.get(Deployment, first.deployment_id)
+        assert prior is not None
+        assert prior.status is DeploymentStatus.LIVE
+
+
+async def test_imported_kubernetes_restore_reuses_the_recorded_image_without_a_builder(
+    engine, service, settings, monkeypatch
+):
+    _configure_kubernetes_import(engine, service)
+    settings.runtime = "kubernetes"
+    api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, api)
+    with Session(engine) as session:
+        rollback = Deployment(
+            service_id=service.id,
+            image_tag="registry/acme/api@sha256:known-good",
+            commit_sha="known-good",
+            status=DeploymentStatus.QUEUED,
+        )
+        session.add(rollback)
+        session.commit()
+        rollback_id = rollback.id
+
+    outcome = await _run(engine, rollback_id, FakeAgent(), settings, _failing_builder)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    assert any(
+        name == "workload" and value.startswith("app-") for name, value in api.calls
+    )
 
 
 async def test_imported_compose_start_failure_releases_its_node_reservation(

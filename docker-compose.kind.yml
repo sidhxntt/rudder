@@ -1,0 +1,13 @@
+# Optional override for `make kind-control-plane`. It is deliberately separate
+# from docker-compose.dev.yml so normal Docker-runtime development does not
+# require a local Kubernetes credential.
+services:
+  control-plane:
+    environment:
+      RUDDER_RUNTIME: kubernetes
+      RUDDER_REGISTRY: kind-registry:5000
+      RUDDER_KUBERNETES_KUBECONFIG: /kube/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./infra/kind/kubeconfig:/kube/config:ro

@@ -1,0 +1,46 @@
+"""Runtime-neutral, immutable values used by Kubernetes releases."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+
+_DNS_LABEL = re.compile(r"[^a-z0-9-]+")
+_DASHES = re.compile(r"-+")
+
+
+def dns_label(value: str, *, max_length: int = 63) -> str:
+    """Return a non-empty Kubernetes DNS label without guessing ownership."""
+    normalized = _DASHES.sub("-", _DNS_LABEL.sub("-", value.lower())).strip("-")
+    if not normalized:
+        raise ValueError("Kubernetes resource name has no DNS-safe characters.")
+    return normalized[:max_length].rstrip("-")
+
+
+@dataclass(frozen=True, slots=True)
+class ComposeService:
+    """One reviewed Compose member after image and variables are resolved."""
+
+    name: str
+    image: str
+    port: int | None = None
+    command: tuple[str, ...] | None = None
+    environment: Mapping[str, str] = field(default_factory=dict)
+    public: bool = False
+    stateful: bool = False
+    volume_mount_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class KubernetesRelease:
+    """The immutable candidate Kubernetes release for one Rudder deployment."""
+
+    namespace: str
+    release_id: str
+    services: tuple[ComposeService, ...]
+
+    def resource_name(self, service_name: str) -> str:
+        suffix = dns_label(self.release_id)[:8]
+        prefix_limit = 63 - len(suffix) - 1
+        return f"{dns_label(service_name, max_length=prefix_limit)}-{suffix}"

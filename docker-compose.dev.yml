@@ -34,7 +34,9 @@ services:
       - "1234:1234" # buildkitd shares this network namespace, see below
     volumes:
       - registrydata:/var/lib/registry
-    networks: [rudder]
+    networks:
+      rudder:
+        aliases: [kind-registry]
 
   buildkitd:
     image: moby/buildkit:rootless

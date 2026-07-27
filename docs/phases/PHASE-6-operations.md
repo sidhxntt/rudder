@@ -1,4 +1,4 @@
-# Phase 5 — Operations
+# Phase 6 — Operations
 
 **Target:** 2–3 weeks
 
@@ -12,7 +12,7 @@ This is the phase that makes it usable day to day rather than just demoable.
 ## Prerequisites
 
 - [ ] Phase 2 verified (volumes need the scheduler)
-- [ ] Phase 3 verified (database templates need the mesh)
+- [ ] Phase 4 verified (database templates need the mesh)
 - [ ] D15 landed in Phase 1 — rollback depends on the `Domain` table
 
 ---
@@ -44,7 +44,7 @@ the variables it exposes for other services to reference.
 Credentials are generated at create time and stored encrypted like any other
 Variable. Never a default password, never a fixed one.
 
-`kind=database`, so per Phase 3 they get no Domain and no Traefik router.
+`kind=database`, so per Phase 4 they get no Domain and no Traefik router.
 
 ### 3. Logs
 
@@ -163,4 +163,4 @@ curl <url>                         # → serving the old version
 - [ ] A log flood does not take down the control plane
 - [ ] Metrics downsample and the table does not grow unbounded
 - [ ] Rollback is sub-second and does not rebuild
-- [ ] `README.md` Phase 5 section
+- [ ] `README.md` Phase 6 section

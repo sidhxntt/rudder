@@ -1,6 +1,10 @@
-# Phase 2.5 — Kubernetes runtime
+# Phase 3 — Kubernetes runtime
 
 **Target:** 3–5 weeks
+
+**Execution order:** Step 1 proves the adapter locally on Kind. Step 2 moves
+the *same manifests and control-plane contract* to a GKE Standard cluster;
+Kind is never presented as the production target.
 
 **Demo:** import a Compose-backed GitHub repository; Rudder builds an immutable
 image, deploys its public app and private dependencies into an isolated
@@ -32,7 +36,30 @@ history, domains, and the user-facing service graph.
 - Stream Kubernetes events and container logs into Rudder's existing deployment
   and service views.
 
-## Production decisions required before implementation
+## Step 1 — local Kind acceptance target
+
+- Bootstrap a disposable Kind cluster, local registry bridge, and ingress-nginx
+  with `make kind-up`.
+- Run the control plane with `RUDDER_RUNTIME=kubernetes` and a generated
+  Docker-reachable kubeconfig via `make kind-control-plane`.
+- Verify the normal persisted import/deployment path creates one disposable
+  project/environment namespace with `web + worker + PostgreSQL + Redis`.
+- Verify a broken immutable candidate is deleted before route promotion and
+  leaves the prior public URL serving.
+
+This is the required first delivery for Phase 3. It verifies resource
+translation, readiness gating, private discovery, ingress, instance recording,
+and failure cleanup without treating a laptop cluster as production.
+
+## Step 2 — GKE Standard production target
+
+Move the proven adapter to a regional GKE Standard cluster with private nodes,
+Cloud DNS, a private Artifact Registry, workload identity, managed ingress,
+and durable observability. The control plane stays outside tenant namespaces;
+the runtime continues to create one constrained namespace per Rudder
+environment.
+
+## Production decisions required before GKE
 
 - Select a cloud and managed Kubernetes service (for example DOKS, EKS, or
   GKE), region, private registry, DNS provider, and object storage.
@@ -57,12 +84,12 @@ history, domains, and the user-facing service graph.
 6. Resource-quota and network-policy tests prove one tenant cannot exhaust or
    access another tenant's resources.
 
-## Relationship to Phase 3
+## Relationship to Phase 4
 
 For the Kubernetes production track, this phase replaces the Docker-host
-networking portion of Phase 3: Kubernetes Services, namespaces, and NetworkPolicies
+networking portion of Phase 4: Kubernetes Services, namespaces, and NetworkPolicies
 provide private service discovery and isolation instead of a WireGuard mesh.
-Phase 3 remains the correct path for the non-Kubernetes, multi-Docker-host
+Phase 4 remains the alternative path for the non-Kubernetes, multi-Docker-host
 runtime.
 
 ## Done when
