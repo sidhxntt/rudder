@@ -6,6 +6,14 @@ containerdConfigPatches:
       endpoint = ["http://kind-registry:5000"]
 nodes:
   - role: control-plane
+    # The local control plane runs in Docker and reaches Kind through Docker's
+    # host gateway.  Include that stable hostname in fresh cluster API certs.
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          certSANs:
+            - host.docker.internal
     extraPortMappings:
       # Docker's normal Rudder/Traefik dev stack owns :80. Keep Kind isolated
       # on :8081; ingress routes still use *.localhost hostnames.

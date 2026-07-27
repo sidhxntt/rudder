@@ -28,11 +28,18 @@ if ! docker inspect "$registry_id" \
 fi
 
 kubectl config use-context "kind-$cluster_name" >/dev/null
-# The control plane usually runs inside Docker during development; its
-# loopback address is not the host loopback in Kind's generated kubeconfig.
-# Write a disposable Docker-reachable copy for docker-compose.kind.yml.
+# The control plane runs inside Docker in local development, so Kind's host
+# loopback address is not reachable from it. Write a disposable
+# Docker-reachable kubeconfig copy for docker-compose.kind.yml. Existing Kind
+# clusters created before the host gateway SAN was added cannot verify that
+# host name; this dedicated *local-only* copy intentionally skips verification
+# until the developer recreates Kind. The host's normal kubeconfig is untouched.
 kubectl config view --raw --minify \
-  | sed 's#https://127.0.0.1:#https://host.docker.internal:#' \
+  | awk '
+      /certificate-authority-data:/ { next }
+      /- cluster:/ { print; print "    insecure-skip-tls-verify: true"; next }
+      { gsub("https://127.0.0.1:", "https://host.docker.internal:"); print }
+    ' \
   > "$root_dir/infra/kind/kubeconfig"
 # The upstream ingress-nginx Kind manifest intentionally schedules only on a
 # node explicitly marked ingress-ready.  A single-node local cluster must add
