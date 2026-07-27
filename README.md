@@ -122,6 +122,14 @@ make kind-control-plane
 make verify-kind
 ```
 
+During local UI development, the first confirmed GitHub import now performs
+those first two setup steps automatically: it creates or reuses `rudder-kind`,
+switches the local control plane to the Kubernetes runtime, and waits until
+`/healthz` reports `runtime: "kubernetes"` before creating the release. Later
+imports reuse the existing cluster and do not restart the control plane. Set
+`RUDDER_LOCAL_KUBERNETES_AUTO_BOOTSTRAP=false` to use the manual commands
+instead.
+
 `make verify-kind` creates a disposable `web + worker + PostgreSQL + Redis`
 release, proves ingress reaches only `web`, deliberately fails a new candidate
 without disrupting the live route, then removes its temporary namespace.

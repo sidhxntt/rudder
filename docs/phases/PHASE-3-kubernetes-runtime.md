@@ -39,9 +39,12 @@ history, domains, and the user-facing service graph.
 ## Step 1 — local Kind acceptance target
 
 - Bootstrap a disposable Kind cluster, local registry bridge, and ingress-nginx
-  with `make kind-up`.
+  with `make kind-up`. In development, the first confirmed UI import invokes
+  this idempotently on the local host.
 - Run the control plane with `RUDDER_RUNTIME=kubernetes` and a generated
-  Docker-reachable kubeconfig via `make kind-control-plane`.
+  Docker-reachable kubeconfig via `make kind-control-plane`. The UI waits for
+  `/healthz` to report `runtime: kubernetes` before it submits the release;
+  later imports reuse the ready cluster without restarting the control plane.
 - Verify the normal persisted import/deployment path creates one disposable
   project/environment namespace with `web + worker + PostgreSQL + Redis`.
 - Verify a broken immutable candidate is deleted before route promotion and

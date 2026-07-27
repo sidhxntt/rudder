@@ -118,7 +118,11 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:
-        return {"status": "ok", "tls_mode": settings.tls_mode}
+        return {
+            "status": "ok",
+            "tls_mode": settings.tls_mode,
+            "runtime": settings.runtime,
+        }
 
     return app
 

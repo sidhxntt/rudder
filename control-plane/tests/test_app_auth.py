@@ -120,6 +120,13 @@ def test_public_routes_stay_public(client: TestClient) -> None:
     assert client.post("/auth/token", json={"email": "a@b.c", "password": "x"}).status_code == 401
 
 
+def test_healthz_reports_the_selected_runtime(client: TestClient) -> None:
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json()["runtime"] == "docker"
+
+
 def test_github_oauth_start_redirects_to_github(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
