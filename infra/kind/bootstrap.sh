@@ -38,12 +38,32 @@ kubectl config view --raw --minify \
 # node explicitly marked ingress-ready.  A single-node local cluster must add
 # that marker itself or the controller remains Pending while its admission
 # webhook starts accepting requests too early.
+for _ in $(seq 1 45); do
+  kubectl get node "$cluster_name-control-plane" >/dev/null 2>&1 && break
+  sleep 2
+done
+kubectl get node "$cluster_name-control-plane" >/dev/null 2>&1 \
+  || { echo "Kind control-plane node did not become discoverable" >&2; exit 1; }
 kubectl label node "$cluster_name-control-plane" ingress-ready=true --overwrite >/dev/null
-if ! kubectl get namespace ingress-nginx >/dev/null 2>&1; then
+if ! kubectl get deployment -n ingress-nginx ingress-nginx-controller >/dev/null 2>&1; then
   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.1/deploy/static/provider/kind/deploy.yaml
 fi
+for _ in $(seq 1 45); do
+  kubectl get deployment -n ingress-nginx ingress-nginx-controller >/dev/null 2>&1 && break
+  sleep 2
+done
+kubectl get deployment -n ingress-nginx ingress-nginx-controller >/dev/null 2>&1 \
+  || { echo "ingress controller deployment did not become discoverable" >&2; exit 1; }
 kubectl wait --namespace ingress-nginx \
   --for=condition=Available deployment/ingress-nginx-controller --timeout=180s
+for _ in $(seq 1 45); do
+  controller_pods="$(kubectl -n ingress-nginx get pods \
+    -l app.kubernetes.io/component=controller -o name 2>/dev/null || true)"
+  [ -n "$controller_pods" ] && break
+  sleep 2
+done
+[ -n "${controller_pods:-}" ] \
+  || { echo "ingress controller pod did not become discoverable" >&2; exit 1; }
 kubectl wait --namespace ingress-nginx \
   --for=condition=Ready pod -l app.kubernetes.io/component=controller --timeout=180s
 # The Ingress admission webhook is served by the controller pod. Waiting for
