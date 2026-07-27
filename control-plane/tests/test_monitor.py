@@ -25,7 +25,10 @@ from rudder_cp.models import (
     User,
 )
 from rudder_cp.services.agent_client import AgentError, ContainerState
-from rudder_cp.services.monitor import reconcile_instances
+from rudder_cp.services.monitor import (
+    reconcile_instances,
+    recover_kubernetes_instance_projection,
+)
 
 
 @pytest.fixture
@@ -183,6 +186,32 @@ async def test_kubernetes_import_pods_are_not_inspected_as_docker_containers(
     assert agent.calls == 0
     with Session(engine) as session:
         assert session.get(Instance, live["instance_id"]).status is InstanceStatus.HEALTHY
+
+
+def test_kubernetes_startup_repairs_only_stale_live_pod_projections(engine, settings, live):
+    settings.runtime = "kubernetes"
+    with Session(engine) as session:
+        session.add(
+            GitHubImport(
+                installation_id=1,
+                repository="acme/example",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services: {}\n",
+                compose_project_name="monitor-kubernetes-repair",
+                project_id=uuid4(),
+                app_service_id=live["service_id"],
+            )
+        )
+        instance = session.get(Instance, live["instance_id"])
+        assert instance is not None
+        instance.status = InstanceStatus.STOPPED
+        session.add(instance)
+        session.commit()
+
+        assert recover_kubernetes_instance_projection(session, settings) == 1
+        session.refresh(instance)
+        assert instance.status is InstanceStatus.HEALTHY
 
 
 def _dir(settings: Settings):

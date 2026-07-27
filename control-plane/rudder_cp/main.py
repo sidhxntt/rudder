@@ -32,6 +32,7 @@ from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.auth import seed_admin_user
 from rudder_cp.services.github_app import GitHubAppClient
+from rudder_cp.services.monitor import recover_kubernetes_instance_projection
 from rudder_cp.services.reconciler import run_reconciler
 from rudder_cp.services.variables import verify_secret_keys
 from rudder_cp.services.worker import run_worker
@@ -50,6 +51,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = get_engine()
     with Session(engine) as session:
         await seed_admin_user(session)
+        repaired = recover_kubernetes_instance_projection(session, settings)
+        if repaired:
+            log.info("recovered %s stale Kubernetes instance projections", repaired)
 
     stop = asyncio.Event()
     worker = asyncio.create_task(

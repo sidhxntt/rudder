@@ -89,6 +89,41 @@ async def reconcile_instances(
     return changed
 
 
+def recover_kubernetes_instance_projection(session: Session, settings: Settings) -> int:
+    """Repair pod records corrupted by the pre-Phase-3 Docker monitor.
+
+    Before Kubernetes releases were excluded above, their pod IDs were queried
+    as Docker container IDs.  The resulting ``container_not_found`` responses
+    were persisted as ``stopped`` despite the Kubernetes release having passed
+    readiness and been promoted.  This startup-only compatibility repair
+    restores those known-good, live-release records.  Ongoing Kubernetes
+    health is deliberately not inferred from a Docker agent.
+    """
+    if settings.runtime != "kubernetes":
+        return 0
+    kubernetes_release_owners = select(GitHubImport.app_service_id)
+    stale = list(
+        session.exec(
+            select(Instance)
+            .join(Deployment, Deployment.id == Instance.deployment_id)  # type: ignore[arg-type]
+            .where(
+                Deployment.status == DeploymentStatus.LIVE,
+                Deployment.service_id.in_(kubernetes_release_owners),
+                Instance.status.in_(  # type: ignore[attr-defined]
+                    [InstanceStatus.STOPPED, InstanceStatus.UNREACHABLE]
+                ),
+            )
+        ).all()
+    )
+    for instance in stale:
+        instance.status = InstanceStatus.HEALTHY
+        instance.stopped_at = None
+        session.add(instance)
+    if stale:
+        session.commit()
+    return len(stale)
+
+
 def _live_instances(session: Session, settings: Settings) -> list[Instance]:
     """Return Docker-owned instances that are safe to inspect through an agent.
 
