@@ -1,0 +1,89 @@
+# Phase 2 control-plane stack. Run only on rudder-control.
+#
+# It intentionally does not publish user application traffic: public ingress
+# across multiple Docker hosts belongs to the Phase 3 mesh/Kubernetes layer.
+# The API is reached through IAP tunnelling during the Phase 2 verification.
+name: rudder-control
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rudder}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-rudder}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rudder} -d ${POSTGRES_DB:-rudder}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [control]
+
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    ports:
+      # Private-VPC only. Every agent pulls immutable release images here.
+      - "5000:5000"
+      - "1234:1234"
+    volumes:
+      - registry-data:/var/lib/registry
+    networks: [control]
+
+  buildkitd:
+    # Ubuntu GCP images restrict unprivileged user namespaces, so the rootless
+    # image cannot start there. This daemon is isolated on the private control
+    # VM and is never published to the internet.
+    image: moby/buildkit:v0.16.0
+    restart: unless-stopped
+    network_mode: "service:registry"
+    depends_on: [registry]
+    privileged: true
+    security_opt:
+      - seccomp=unconfined
+    command:
+      - --addr
+      - tcp://0.0.0.0:1234
+    volumes:
+      - buildkit-data:/home/user/.local/share/buildkit
+
+  control-plane:
+    build:
+      context: ../../control-plane
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      RUDDER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rudder}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rudder}
+      RUDDER_BUILDKIT_ADDR: tcp://registry:1234
+      RUDDER_REGISTRY: ${RUDDER_REGISTRY:?set the private registry address}
+      RUDDER_AGENT_SHARED_SECRET: ${RUDDER_AGENT_SHARED_SECRET:?set a unique shared secret}
+      # This default client is only retained for local compatibility. Phase 2
+      # placement derives a per-node client from each registered node address.
+      RUDDER_AGENT_URL: http://127.0.0.1:9000
+      RUDDER_TRAEFIK_DYNAMIC_DIR: /traefik/dynamic
+      RUDDER_BUILD_LOG_DIR: /var/log/rudder/builds
+    ports:
+      - "8000:8000"
+    volumes:
+      - build-logs:/var/log/rudder/builds
+      - traefik-dynamic:/traefik/dynamic
+    command: >-
+      sh -c "alembic upgrade head && exec uvicorn rudder_cp.main:app --host 0.0.0.0 --port 8000"
+    networks: [control]
+
+networks:
+  control:
+
+volumes:
+  postgres-data:
+  registry-data:
+  buildkit-data:
+  build-logs:
+  traefik-dynamic:

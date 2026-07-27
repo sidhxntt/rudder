@@ -95,6 +95,13 @@ services:
     # after `docker compose up` or a branch change.
     command: >-
       sh -c "alembic upgrade head && exec uvicorn rudder_cp.main:app --host 0.0.0.0 --port 8000 --reload"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     networks: [rudder]
 
   agent:
@@ -102,10 +109,20 @@ services:
     # Docker daemon. Phase 2 changes where it runs, not what it is.
     build:
       context: ./agent
+    # Registration is required before the scheduler can accept a deployment.
+    # Waiting for the API health check prevents a new dev stack from briefly
+    # reporting the only local node as unreachable.
+    depends_on:
+      control-plane:
+        condition: service_healthy
     env_file: [.env]
     environment:
       RUDDER_AGENT_BIND: 0.0.0.0
       RUDDER_AGENT_PORT: "9000"
+      RUDDER_AGENT_CONTROL_PLANE_URL: http://control-plane:8000
+      # The control plane is another container, so 127.0.0.1 would point
+      # back to itself. Docker's service DNS makes this agent reachable.
+      RUDDER_AGENT_ADVERTISE_ADDRESS: agent
       RUDDER_DOCKER_NETWORK: rudder
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

@@ -69,6 +69,7 @@ async def github_push(
         return {"queued": [], "detail": "branch deleted"}
 
     queued: list[str] = []
+    skipped: list[str] = []
     with Session(get_engine()) as session:
         services = session.exec(
             select(Service).where(
@@ -77,6 +78,20 @@ async def github_push(
             )
         ).all()
         for service in services:
+            # GitHub retries deliveries when it did not observe our 202. A
+            # commit is immutable, so creating a second deployment for this
+            # service + SHA would rebuild identical code and can race traffic
+            # changes. Users can still explicitly redeploy from the UI if a
+            # failed commit needs another attempt.
+            existing = session.exec(
+                select(Deployment.id).where(
+                    Deployment.service_id == service.id,
+                    Deployment.commit_sha == str(sha),
+                )
+            ).first()
+            if existing is not None:
+                skipped.append("already queued for this commit")
+                continue
             deployment = Deployment(
                 service_id=service.id,
                 commit_sha=str(sha),
@@ -87,8 +102,14 @@ async def github_push(
             session.refresh(deployment)
             queued.append(str(deployment.id))
 
-    log.info("push %s@%s -> queued %d deployment(s)", repo, branch, len(queued))
-    return {"queued": queued, "repo": repo, "branch": branch}
+    log.info(
+        "push %s@%s -> queued %d deployment(s), skipped %d duplicate(s)",
+        repo,
+        branch,
+        len(queued),
+        len(skipped),
+    )
+    return {"queued": queued, "skipped": skipped, "repo": repo, "branch": branch}
 
 
 def _signature_ok(body: bytes, header: str | None, secret: str) -> bool:

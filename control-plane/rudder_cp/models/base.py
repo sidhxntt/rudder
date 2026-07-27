@@ -92,6 +92,7 @@ class InstanceStatus(StrEnum):
     STARTING = "starting"
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
+    UNREACHABLE = "unreachable"
     DRAINING = "draining"
     STOPPED = "stopped"
 

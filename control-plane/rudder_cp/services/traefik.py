@@ -148,6 +148,30 @@ def _healthy_instances(session: Session, deployment_id: uuid.UUID) -> tuple[Inst
     return tuple(sorted(rows, key=lambda i: str(i.id)))
 
 
+def _compose_service_instances(
+    session: Session, deployment: Deployment, mapping: GitHubImportService
+) -> tuple[Instance, ...]:
+    """Resolve one graph member from one immutable Compose release.
+
+    ``GitHubImportService.container_id`` is a convenience projection for the
+    current release and changes with every deployment. ``Instance`` preserves
+    the Compose service name for its own release, which lets a restored
+    historical deployment route to its original app or add-on container.
+    The id fallback keeps releases created before the migration routable.
+    """
+    healthy = _healthy_instances(session, deployment.id)
+    named = tuple(
+        instance for instance in healthy if instance.compose_service == mapping.compose_service
+    )
+    if named:
+        return named
+    if mapping.container_id:
+        return tuple(
+            instance for instance in healthy if instance.container_id == mapping.container_id
+        )
+    return ()
+
+
 def _compose_child_target(session: Session, service: Service) -> Target | None:
     """Resolve a public Compose child through its owner's live release.
 
@@ -165,13 +189,39 @@ def _compose_child_target(session: Session, service: Service) -> Target | None:
     if imported is None or imported.app_service_id == service.id:
         return None
     deployment = _live_deployment(session, imported.app_service_id)
-    if deployment is None or not mapping.container_id:
+    if deployment is None:
         return Target(service=service, deployment=deployment, instances=())
-    instances = tuple(
-        instance
-        for instance in _healthy_instances(session, deployment.id)
-        if instance.container_id == mapping.container_id
-    )
+    instances = _compose_service_instances(session, deployment, mapping)
+    return Target(service=service, deployment=deployment, instances=instances)
+
+
+def _compose_app_target(
+    session: Session,
+    service: Service,
+    deployment: Deployment | None = None,
+) -> Target | None:
+    """Resolve an imported Compose application's domain to its app container.
+
+    A Compose release has one owning app deployment and one instance row per
+    Compose container.  The generic service resolver cannot route every
+    healthy instance from that deployment: databases and caches share the
+    release but are not HTTP backends for the app's public domain.
+    """
+    imported = session.exec(
+        select(GitHubImport).where(GitHubImport.app_service_id == service.id)
+    ).first()
+    if imported is None:
+        return None
+    deployment = deployment or _live_deployment(session, service.id)
+    mapping = session.exec(
+        select(GitHubImportService).where(
+            GitHubImportService.github_import_id == imported.id,
+            GitHubImportService.service_id == service.id,
+        )
+    ).first()
+    if deployment is None or mapping is None:
+        return Target(service=service, deployment=deployment, instances=())
+    instances = _compose_service_instances(session, deployment, mapping)
     return Target(service=service, deployment=deployment, instances=instances)
 
 
@@ -194,6 +244,10 @@ def resolve_target(session: Session, domain: Domain) -> Target:
         if deployment is None:
             return Target(service=None, deployment=None, instances=())
         service = session.get(Service, deployment.service_id)
+        if service is not None:
+            compose_app = _compose_app_target(session, service, deployment)
+            if compose_app is not None:
+                return compose_app
         return Target(
             service=service,
             deployment=deployment,
@@ -208,6 +262,9 @@ def resolve_target(session: Session, domain: Domain) -> Target:
     compose_child = _compose_child_target(session, service)
     if compose_child is not None:
         return compose_child
+    compose_app = _compose_app_target(session, service)
+    if compose_app is not None:
+        return compose_app
     deployment = _live_deployment(session, service.id)
     if deployment is None:
         # The service exists and the domain is real; there is just nothing live

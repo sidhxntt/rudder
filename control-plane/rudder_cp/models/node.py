@@ -46,3 +46,4 @@ class Node(SQLModel, table=True):
     )
     last_heartbeat_at: datetime | None = optional_timestamp()
     created_at: datetime = created_at_column()
+    reported_state: dict | None = Field(default=None, sa_column=sa.Column(sa.JSON))

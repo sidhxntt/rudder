@@ -99,6 +99,10 @@ def state_from_container(container: Container, draining: bool = False) -> Contai
         started_at=state.get("StartedAt"),
         ip_address=_network_ip(attrs, None),
         image=(attrs.get("Config", {}) or {}).get("Image"),
+        labels={
+            str(key): str(value)
+            for key, value in ((attrs.get("Config", {}) or {}).get("Labels") or {}).items()
+        },
     )
 
 
@@ -283,6 +287,16 @@ class DockerOps:
     async def inspect(self, container_id: str) -> ContainerState:
         container = await self._get(container_id)
         return state_from_container(container, draining=container.id in self._draining)
+
+    async def list_containers(self) -> list[ContainerState]:
+        """Return the actual state of every local container for heartbeats."""
+        try:
+            containers = await self._off_loop(self._client.containers.list, all=True)
+        except docker.errors.APIError as exc:
+            raise _translate_api_error(exc) from exc
+        except docker.errors.DockerException as exc:
+            raise errors.docker_unavailable(str(exc)) from exc
+        return [state_from_container(container, draining=container.id in self._draining) for container in containers]
 
     # ------------------------------------------------------------------ delete
 

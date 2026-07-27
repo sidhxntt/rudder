@@ -66,6 +66,7 @@ class ContainerState(BaseModel):
     started_at: str | None = None
     ip_address: str | None = Field(default=None, description="IP on the attached docker network")
     image: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class DeleteResult(BaseModel):

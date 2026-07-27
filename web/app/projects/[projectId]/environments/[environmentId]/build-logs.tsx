@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { isNotFound, streamBuildLog } from "@/lib/api";
+import { ApiError, isNotFound, streamBuildLog } from "@/lib/api";
 import type { Deployment } from "@/lib/types";
 
 type Stream =
@@ -80,6 +80,18 @@ export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
         setStream({ phase: "missing" });
         return;
       }
+      // During a control-plane restart a healthy deployment can briefly see a
+      // 5xx (or a browser-level network error) before its log endpoint comes
+      // back. Treat that exactly like a not-yet-created log while the release
+      // is non-terminal. Otherwise the panel gets permanently stuck on
+      // "stream failed" even though Docker and the control plane recover.
+      if (isTransientLogError(cause) && !TERMINAL.has(statusRef.current ?? "failed")) {
+        if (logAttempt < MAX_LOG_RETRIES) {
+          setStream({ phase: "waiting" });
+          retryTimer = window.setTimeout(() => setLogAttempt((attempt) => attempt + 1), LOG_RETRY_MS);
+          return;
+        }
+      }
       setStream({
         phase: "error",
         message: cause instanceof Error ? cause.message : "the log stream failed",
@@ -155,6 +167,13 @@ export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
         <div ref={endRef} />
       </div>
     </div>
+  );
+}
+
+function isTransientLogError(cause: unknown): boolean {
+  return (
+    cause instanceof TypeError ||
+    (cause instanceof ApiError && cause.status >= 500 && cause.status <= 599)
   );
 }
 

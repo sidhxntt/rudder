@@ -72,6 +72,7 @@ class Settings(BaseSettings):
 
     # D3(b) — the control plane never touches Docker directly, it calls the agent.
     agent_url: str = "http://agent:9000"
+    agent_shared_secret: str = "secret"
 
     traefik_dynamic_dir: str = "/traefik/dynamic"
     build_log_dir: str = "/var/log/rudder/builds"

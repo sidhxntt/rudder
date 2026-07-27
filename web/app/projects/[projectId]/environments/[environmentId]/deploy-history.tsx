@@ -16,10 +16,14 @@ export function DeployHistory({
   deployments,
   selectedId,
   onSelect,
+  onRollback,
+  rollbackPending = false,
 }: {
   deployments: readonly Deployment[];
   selectedId: string | null;
   onSelect: (deploymentId: string) => void;
+  onRollback?: (deploymentId: string) => void;
+  rollbackPending?: boolean;
 }) {
   if (deployments.length === 0) {
     return <p className="px-lg py-md text-micro text-ink-faint">no deployments yet</p>;
@@ -29,7 +33,11 @@ export function DeployHistory({
     <div className="rd-scroll min-h-0 flex-1 overflow-auto">
       <table className="w-full border-collapse">
         <tbody>
-          {deployments.map((deployment) => (
+          {deployments.map((deployment) => {
+            const canRollback =
+              Boolean(deployment.image_tag) &&
+              deployment.status === "superseded";
+            return (
             <tr
               key={deployment.id}
               onClick={() => onSelect(deployment.id)}
@@ -54,12 +62,28 @@ export function DeployHistory({
                 <span className="text-micro text-ink-mute">{shortAgo(deployment.created_at)}</span>
               </td>
               <td className="px-lg py-sm text-right">
-                <span className="text-micro text-ink-faint">
-                  {deployment.became_live_at ? `live ${shortAgo(deployment.became_live_at)}` : "—"}
-                </span>
+                <div className="flex items-center justify-end gap-sm">
+                  <span className="text-micro text-ink-faint">
+                    {deployment.became_live_at ? `live ${shortAgo(deployment.became_live_at)}` : "—"}
+                  </span>
+                  {canRollback && onRollback ? (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRollback(deployment.id);
+                      }}
+                      disabled={rollbackPending}
+                      className="rounded-xs border border-hairline-strong px-sm py-xxs text-micro text-ink-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Restore
+                    </button>
+                  ) : null}
+                </div>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
       <p className="px-lg py-md text-micro text-ink-faint">

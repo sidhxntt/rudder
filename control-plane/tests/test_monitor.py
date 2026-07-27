@@ -84,6 +84,10 @@ class FakeAgent:
         self.error = error
         self.calls = 0
 
+    def for_node(self, ip_address: str) -> "FakeAgent":
+        del ip_address
+        return self
+
     async def inspect(self, container_id: str) -> ContainerState:
         self.calls += 1
         if self.error:

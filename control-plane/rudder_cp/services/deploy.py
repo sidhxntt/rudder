@@ -12,6 +12,7 @@ perspective. The previously live container keeps serving through every failure
 path below.
 """
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ from rudder_cp.models import (
     Service,
     Volume,
 )
-from rudder_cp.services import traefik, variables
+from rudder_cp.services import scheduler, traefik, variables
 from rudder_cp.services.agent_client import AgentClient, AgentError
 from rudder_cp.services.builder import BuildFailed, BuildRequest, build_image
 from rudder_cp.services.github_app import GitHubAppClient, GitHubAppError
@@ -69,8 +70,12 @@ async def run_deployment(
     deployment = session.get(Deployment, deployment_id)
     if deployment is None:
         raise ValueError(f"No such deployment: {deployment_id}")
-    if deployment.status is not DeploymentStatus.QUEUED:
-        # The worker polls, so the same row can be picked up twice.
+    recovering = deployment.status in {
+        DeploymentStatus.BUILDING,
+        DeploymentStatus.DEPLOYING,
+    }
+    if deployment.status is not DeploymentStatus.QUEUED and not recovering:
+        # The worker polls, so a terminal row can be seen again.
         return DeployOutcome(deployment_id, deployment.status, "not queued")
 
     service = session.get(Service, deployment.service_id)
@@ -82,7 +87,20 @@ async def run_deployment(
             # Another deploy for this service holds the lock. Leave this one
             # queued; the worker will pick it up again once that one finishes.
             return DeployOutcome(deployment_id, DeploymentStatus.QUEUED, "service busy")
-        await _open_deployment_log(store, deployment, service)
+        if recovering:
+            # A deploy worker can be interrupted after the image or Compose
+            # project exists but before the database receives its final state.
+            # Preserve its existing log and continue the same immutable release
+            # rather than leaving a forever-open SSE stream in the UI.
+            if store.exists(deployment.id):
+                await store.append(
+                    deployment.id,
+                    "resuming interrupted deployment from its existing artifact\n",
+                )
+            else:
+                await _open_deployment_log(store, deployment, service)
+        else:
+            await _open_deployment_log(store, deployment, service)
         outcome = await _deploy_locked(
             deployment,
             service,
@@ -91,6 +109,7 @@ async def run_deployment(
             store=store,
             settings=settings,
             builder=builder,
+            recovering=recovering,
         )
         await _close_deployment_log(store, outcome)
         return outcome
@@ -105,6 +124,7 @@ async def _deploy_locked(
     store: BuildLogStore,
     settings: Settings,
     builder: Builder,
+    recovering: bool = False,
 ) -> DeployOutcome:
     # ---------------------------------------------------------------- build
     deployment.status = DeploymentStatus.BUILDING
@@ -112,8 +132,9 @@ async def _deploy_locked(
     session.commit()
 
     managed_image = service.build_config.get("managed_image")
+    rollback_image = deployment.image_tag
     git_token: str | None = None
-    if not isinstance(managed_image, str):
+    if not isinstance(managed_image, str) and not isinstance(rollback_image, str):
         imported = session.exec(
             select(GitHubImport).where(GitHubImport.app_service_id == service.id)
         ).first()
@@ -140,7 +161,23 @@ async def _deploy_locked(
         start_command=service.start_command,
         git_token=git_token,
     )
-    if isinstance(managed_image, str):
+    if isinstance(rollback_image, str):
+        # A rollback row is intentionally queued with its image already set.
+        # Recovery gets the same efficient, safe path: the image was already
+        # pushed before the control-plane interruption, so rebuilding it would
+        # create a needless second candidate.
+        await store.append(
+            deployment.id,
+            (
+                f"resuming with immutable image {rollback_image}\n"
+                if recovering
+                else f"reusing immutable image {rollback_image} for rollback\n"
+            ),
+        )
+        result = type(
+            "RollbackImage", (), {"image_tag": rollback_image, "commit_sha": deployment.commit_sha}
+        )()
+    elif isinstance(managed_image, str):
         result = type("ManagedImage", (), {"image_tag": managed_image, "commit_sha": None})()
     else:
         try:
@@ -163,6 +200,7 @@ async def _deploy_locked(
             agent=agent,
             store=store,
             settings=settings,
+            recovering=recovering,
         )
 
     # ------------------------------------------------------------- deploying
@@ -175,11 +213,20 @@ async def _deploy_locked(
 
     try:
         env = await variables.resolve_service_env(session, service.id)
+        node = scheduler.select_node_for_service(session, service)
+        # Reserve capacity while the scheduler's row locks are held, then
+        # commit before making a remote agent call.  Holding a database
+        # transaction open across Docker/image-pull I/O blocks the selected
+        # node's heartbeat and can make a healthy node look unavailable.
+        node.cpu_allocated += service.cpu_limit
+        node.memory_allocated_mb += service.memory_limit_mb
+        session.add(node)
+        session.commit()
     except Exception as exc:
         # Reference resolution errors are written for the user to read.
         return _fail(session, deployment, str(exc))
 
-    node = _phase1_node(session, settings)
+    node_agent = agent.for_node(node.ip_address)
     container_name = f"rudder-{service.name}-{str(deployment.id)[:8]}"
 
     try:
@@ -187,7 +234,7 @@ async def _deploy_locked(
             f"rudder-volume-{volume.id}": {"bind": volume.mount_path, "mode": "rw"}
             for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all()
         }
-        state = await agent.create_container(
+        state = await node_agent.create_container(
             image=deployment.image_tag or "",
             name=container_name,
             env=env,
@@ -204,6 +251,7 @@ async def _deploy_locked(
             command=service.build_config.get("command") if isinstance(managed_image, str) else None,
         )
     except AgentError as exc:
+        _release_node_capacity(session, node.id, service)
         return _fail(session, deployment, f"Could not start the container. {exc}")
 
     instance = Instance(
@@ -218,7 +266,7 @@ async def _deploy_locked(
 
     # ------------------------------------------------------------- health
     outcome = await wait_until_healthy(
-        agent,
+        node_agent,
         state.id,
         path=service.health_check_path,
         port=service.health_check_port or service.container_port,
@@ -227,13 +275,15 @@ async def _deploy_locked(
     )
     if not outcome.healthy:
         await _discard(agent, session, instance, drain_seconds=0)
+        _release_node_capacity(session, node.id, service)
         return _fail(session, deployment, outcome.reason or "Health check failed.")
 
     # The container answered 200 at some point in the last few seconds. That is
     # not the same as it being alive right now, and the traffic shift is about
     # to happen. Check again at the moment of the shift.
-    if not await is_still_alive(agent, state.id):
+    if not await is_still_alive(node_agent, state.id):
         await _discard(agent, session, instance, drain_seconds=0)
+        _release_node_capacity(session, node.id, service)
         return _fail(
             session,
             deployment,
@@ -250,16 +300,30 @@ async def _deploy_locked(
     _supersede_previously_live(session, deployment)
     session.commit()
 
-    # Domains resolve through the live Deployment, so routing must be regenerated
+    # A successful release stays running as an immutable restore target. A
+    # rollback changes the live pointer and Traefik configuration instead of
+    # rebuilding or restarting that historical release.
+    # Domains resolve through the live Deployment, so routing is regenerated
     # after the status flip, never before it.
     await traefik.render_all(session, settings)
 
-    await _drain_previous(
-        agent, session, service.id, keep_deployment_id=deployment.id, settings=settings
-    )
-    await traefik.render_all(session, settings)
-
     return DeployOutcome(deployment.id, DeploymentStatus.LIVE)
+
+
+def _release_node_capacity(session: Session, node_id: UUID, service: Service) -> None:
+    """Undo a reservation made before an unsuccessful container start.
+
+    Reservations are committed before network I/O so heartbeats remain
+    independent of long pulls.  Every failure before the deployment becomes
+    live must therefore return that capacity deterministically.
+    """
+    node = session.get(Node, node_id)
+    if node is None:
+        return
+    node.cpu_allocated = max(0.0, node.cpu_allocated - service.cpu_limit)
+    node.memory_allocated_mb = max(0, node.memory_allocated_mb - service.memory_limit_mb)
+    session.add(node)
+    session.commit()
 
 
 async def _deploy_imported_compose(
@@ -271,6 +335,7 @@ async def _deploy_imported_compose(
     agent: AgentClient,
     store: BuildLogStore,
     settings: Settings,
+    recovering: bool = False,
 ) -> DeployOutcome:
     """Start an imported application as an isolated candidate Compose project.
 
@@ -296,28 +361,91 @@ async def _deploy_imported_compose(
         return _fail(session, deployment, f"Could not prepare the Compose release. {exc}")
 
     project_name = _compose_release_name(imported, deployment)
-    try:
-        compose_result = await agent.compose_up(project_name=project_name, manifest=manifest)
-        await store.append(deployment.id, compose_result.log)
-        states = await agent.compose_ps(project_name=project_name)
-    except AgentError as exc:
-        return _fail(session, deployment, f"Could not start the Compose project. {exc}")
+
+    # A restart can happen after ``compose up`` succeeds but before the
+    # control plane creates Instance rows.  Do not reject that real candidate
+    # merely because its node has not sent its first post-restart heartbeat
+    # yet.  First find the already-running project on every registered agent;
+    # only a brand-new release needs a fresh scheduling decision.
+    node: Node | None = None
+    node_agent: AgentClient | None = None
+    states = []
+    # ``select_node_for_service`` locks its chosen Node row.  That lock must
+    # only cover placement + reservation, never the Docker/Compose request:
+    # an agent heartbeat updates the same Node and otherwise waits behind a
+    # potentially slow image pull.  Apart from making a healthy node appear
+    # unreachable, that can strand the deployment in ``deploying``.
+    capacity_reserved = False
+    if recovering:
+        for candidate in session.exec(select(Node).order_by(Node.hostname)).all():
+            candidate_agent = agent.for_node(candidate.ip_address)
+            try:
+                candidate_states = await candidate_agent.compose_ps(project_name=project_name)
+            except AgentError:
+                continue
+            if candidate_states:
+                node = candidate
+                node_agent = candidate_agent
+                states = candidate_states
+                await _append_release_log(
+                    store,
+                    deployment.id,
+                    f"found existing Compose candidate on {candidate.hostname}; resuming release\n",
+                )
+                break
+
+    if node is None or node_agent is None:
+        try:
+            # Placement is a precondition for creating a candidate stack.
+            # Starting Compose first can orphan live containers when capacity
+            # is unavailable.
+            node = scheduler.select_node_for_service(session, service)
+        except ValueError as exc:
+            return _fail(session, deployment, str(exc))
+        node_agent = agent.for_node(node.ip_address)
+        try:
+            # Persist the reservation before contacting the remote agent.  It
+            # closes the scheduler transaction and prevents a second release
+            # from overbooking this node while Compose is starting.
+            node.cpu_allocated += service.cpu_limit
+            node.memory_allocated_mb += service.memory_limit_mb
+            session.add(node)
+            session.commit()
+            capacity_reserved = True
+            compose_result = await node_agent.compose_up(
+                project_name=project_name,
+                manifest=manifest,
+            )
+            # Logging must never hold a real release hostage. In particular, a
+            # browser can have several stale SSE readers attached during local
+            # development; if a filesystem executor stalls, continue the
+            # Compose lifecycle and surface a warning in the control-plane log
+            # instead.
+            await _append_release_log(store, deployment.id, compose_result.log)
+            states = await node_agent.compose_ps(project_name=project_name)
+        except AgentError as exc:
+            if capacity_reserved:
+                _release_node_capacity(session, node.id, service)
+            return _fail(session, deployment, f"Could not start the Compose project. {exc}")
 
     compose_service = service.build_config.get("compose_service", "app")
     if not isinstance(compose_service, str):
-        await _compose_down_safely(agent, project_name)
+        await _compose_down_safely(node_agent, project_name)
+        if capacity_reserved:
+            _release_node_capacity(session, node.id, service)
         return _fail(session, deployment, "The imported application has no Compose service name.")
     state_by_service = {state.service: state for state in states if state.container_id}
     app_state = state_by_service.get(compose_service)
     if app_state is None:
-        await _compose_down_safely(agent, project_name)
+        await _compose_down_safely(node_agent, project_name)
+        if capacity_reserved:
+            _release_node_capacity(session, node.id, service)
         return _fail(
             session,
             deployment,
             f"Compose did not report a running container for {compose_service!r}.",
         )
 
-    node = _phase1_node(session, settings)
     graph = session.exec(
         select(GitHubImportService).where(GitHubImportService.github_import_id == imported.id)
     )
@@ -328,7 +456,9 @@ async def _deploy_imported_compose(
         if mapping.compose_service not in state_by_service
     )
     if missing:
-        await _compose_down_safely(agent, project_name)
+        await _compose_down_safely(node_agent, project_name)
+        if capacity_reserved:
+            _release_node_capacity(session, node.id, service)
         return _fail(
             session,
             deployment,
@@ -342,6 +472,7 @@ async def _deploy_imported_compose(
             deployment_id=deployment.id,
             node_id=node.id,
             container_id=state_by_service[compose_name].container_id,
+            compose_service=compose_name,
             status=InstanceStatus.STARTING,
             started_at=datetime.now(UTC),
         )
@@ -349,10 +480,19 @@ async def _deploy_imported_compose(
     }
     for instance in instances_by_service.values():
         session.add(instance)
+
+    # Recovery may have found a candidate started by a process that exited
+    # before reserving capacity. Fresh candidates were reserved above, before
+    # the remote call, so never charge them twice.
+    if not capacity_reserved:
+        node.cpu_allocated += service.cpu_limit
+        node.memory_allocated_mb += service.memory_limit_mb
+        session.add(node)
+
     session.commit()
 
     outcome = await wait_until_healthy(
-        agent,
+        node_agent,
         app_state.container_id,
         path=service.health_check_path,
         port=service.health_check_port or service.container_port,
@@ -361,7 +501,12 @@ async def _deploy_imported_compose(
     if not outcome.healthy:
         for instance in instances_by_service.values():
             await _discard(agent, session, instance, drain_seconds=0)
-        await _compose_down_safely(agent, project_name)
+        await _compose_down_safely(node_agent, project_name)
+        # Compose candidates reserve the main service's capacity immediately
+        # before health checks. A rejected candidate must release that single
+        # reservation; otherwise repeated failed imports eventually make an
+        # otherwise idle node look full.
+        _release_node_capacity(session, node.id, service)
         return _fail(
             session, deployment, outcome.reason or "Compose application health check failed."
         )
@@ -369,12 +514,13 @@ async def _deploy_imported_compose(
         compose_name
         for compose_name, state in state_by_service.items()
         if compose_name in instances_by_service
-        and not await is_still_alive(agent, state.container_id)
+        and not await is_still_alive(node_agent, state.container_id)
     ]
     if stopped:
         for instance in instances_by_service.values():
             await _discard(agent, session, instance, drain_seconds=0)
-        await _compose_down_safely(agent, project_name)
+        await _compose_down_safely(node_agent, project_name)
+        _release_node_capacity(session, node.id, service)
         return _fail(
             session,
             deployment,
@@ -391,15 +537,8 @@ async def _deploy_imported_compose(
     deployment.became_live_at = datetime.now(UTC)
     session.add(deployment)
     _supersede_previously_live(session, deployment)
+    # Keep each Compose candidate alive as an immutable rollback target.
     session.commit()
-    await traefik.render_all(session, settings)
-
-    await _drain_previous(
-        agent, session, service.id, keep_deployment_id=deployment.id, settings=settings
-    )
-    await _down_previous_compose_releases(
-        agent, session, imported, keep_deployment_id=deployment.id
-    )
     await traefik.render_all(session, settings)
     return DeployOutcome(deployment.id, DeploymentStatus.LIVE)
 
@@ -413,7 +552,12 @@ async def _open_deployment_log(
     """Every deployment gets a readable lifecycle log, including add-ons."""
     await store.open_log(deployment.id)
     managed_image = service.build_config.get("managed_image")
-    if isinstance(managed_image, str):
+    if deployment.image_tag:
+        await store.append(
+            deployment.id,
+            f"starting rollback from immutable image {deployment.image_tag}\n",
+        )
+    elif isinstance(managed_image, str):
         await store.append(
             deployment.id,
             f"using managed image {managed_image}; no source build is required\n"
@@ -435,6 +579,14 @@ async def _close_deployment_log(store: BuildLogStore, outcome: DeployOutcome) ->
     reason = outcome.detail or "deployment did not reach live"
     await store.append(outcome.deployment_id, f"DEPLOYMENT FAILED: {reason}\n")
     await store.close_log(outcome.deployment_id, "failed")
+
+
+async def _append_release_log(store: BuildLogStore, deployment_id: UUID, text: str) -> None:
+    """Append Compose output without allowing an I/O stall to freeze deployment."""
+    try:
+        await asyncio.wait_for(store.append(deployment_id, text), timeout=2)
+    except TimeoutError:
+        log.warning("timed out appending Compose output for deployment %s", deployment_id)
 
 
 def _supersede_older(session: Session, current: Deployment) -> None:
@@ -524,6 +676,12 @@ async def _drain_previous(
 
     for instance in previous:
         await _discard(agent, session, instance, drain_seconds=settings.drain_seconds)
+        # Exactly one instance per prior deployment belongs to this service.
+        # Its reservation was made when that deployment became a candidate, so
+        # return it only after the old container has been drained.
+        service = session.get(Service, service_id)
+        if service is not None:
+            _release_node_capacity(session, instance.node_id, service)
 
 
 async def _discard(
@@ -535,7 +693,12 @@ async def _discard(
 ) -> None:
     if instance.container_id:
         try:
-            await agent.remove(instance.container_id, drain_seconds=drain_seconds)
+            node = session.get(Node, instance.node_id)
+            if node is None:
+                raise AgentError(f"node {instance.node_id} no longer exists")
+            await agent.for_node(node.ip_address).remove(
+                instance.container_id, drain_seconds=drain_seconds
+            )
         except AgentError as exc:
             log.warning("could not remove container %s: %s", instance.container_id, exc)
     instance.status = InstanceStatus.STOPPED
@@ -622,7 +785,16 @@ async def _down_previous_compose_releases(
         )
     ).all()
     for deployment in previous:
-        await _compose_down_safely(agent, _compose_release_name(imported, deployment))
+        instance = session.exec(
+            select(Instance).where(Instance.deployment_id == deployment.id)
+        ).first()
+        if instance is None:
+            continue
+        node = session.get(Node, instance.node_id)
+        if node is not None:
+            await _compose_down_safely(
+                agent.for_node(node.ip_address), _compose_release_name(imported, deployment)
+            )
 
 
 def _fail(session: Session, deployment: Deployment, reason: str) -> DeployOutcome:
@@ -631,18 +803,3 @@ def _fail(session: Session, deployment: Deployment, reason: str) -> DeployOutcom
     session.add(deployment)
     session.commit()
     return DeployOutcome(deployment.id, DeploymentStatus.FAILED, reason)
-
-
-def _phase1_node(session: Session, settings: Settings) -> Node:
-    """Phase 1 runs everything on one node. Phase 2 replaces this with a scheduler.
-
-    The row exists so Instance.node_id has a real target from day one, which is
-    what keeps the Phase 2 change confined to placement.
-    """
-    node = session.exec(select(Node).where(Node.hostname == "localhost")).first()
-    if node is None:
-        node = Node(hostname="localhost", ip_address="127.0.0.1")
-        session.add(node)
-        session.commit()
-        session.refresh(node)
-    return node

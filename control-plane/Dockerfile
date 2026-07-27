@@ -5,8 +5,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # buildctl only — buildkitd itself runs as its own compose service.
-# TARGETARCH is set by BuildKit; default covers a plain `docker build`.
-ARG TARGETARCH=arm64
+# Docker injects TARGETARCH for both ordinary Docker builds and BuildKit builds.
+# Declaring it without a fallback avoids embedding an ARM binary when the image
+# is built on an AMD64 control-plane VM.
+ARG TARGETARCH
 ARG BUILDKIT_VERSION=0.16.0
 # No --strip-components: the tarball already contains bin/buildctl, so stripping
 # the leading component lands the binary in /usr/local/ instead of /usr/local/bin/,

@@ -18,6 +18,7 @@ Errors are uniform `{code, message, details}` per the PRD API design rules.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -28,6 +29,7 @@ from pydantic import ValidationError
 
 from . import errors
 from .config import AgentSettings
+from .control_plane_client import ControlPlaneClient
 from .docker_ops import DockerOps
 from .schemas import ComposeProjectRequest, ComposeUpRequest, ContainerSpec, HealthProbeRequest
 
@@ -35,6 +37,8 @@ log = logging.getLogger("rudder_agent")
 
 OPS_KEY = web.AppKey("ops", DockerOps)
 SETTINGS_KEY = web.AppKey("settings", AgentSettings)
+CLIENT_KEY = web.AppKey("client", ControlPlaneClient)
+HEARTBEAT_TASK_KEY = web.AppKey("heartbeat_task", "Task[None]")
 
 
 def _error_response(err: errors.AgentError) -> web.Response:
@@ -64,6 +68,18 @@ async def error_middleware(request: web.Request, handler: Any) -> web.StreamResp
         return _error_response(
             errors.AgentError(500, "internal_error", f"{type(exc).__name__}: {exc}")
         )
+
+
+@web.middleware
+async def control_plane_auth_middleware(
+    request: web.Request, handler: Any
+) -> web.StreamResponse:
+    """Require the shared secret for control-plane commands, not liveness."""
+    if request.path != "/healthz":
+        settings = request.app[SETTINGS_KEY]
+        if request.headers.get("X-Rudder-Agent-Secret") != settings.shared_secret:
+            return _error_response(errors.AgentError(401, "unauthorized", "Invalid agent secret"))
+    return await handler(request)
 
 
 def _http_code(status: int) -> str:
@@ -159,12 +175,55 @@ async def compose_ps(request: web.Request) -> web.Response:
 # ------------------------------------------------------------------ app factory
 
 
+async def heartbeat_background_task(app: web.Application) -> None:
+    """Background task that sends heartbeats to the control plane."""
+    client = app[CLIENT_KEY]
+    while True:
+        try:
+            await client.heartbeat()
+        except Exception:
+            log.exception("unhandled exception in heartbeat")
+        await asyncio.sleep(5)
+
+
+async def on_startup(app: web.Application) -> None:
+    """Register with the control plane and start the heartbeat task."""
+    client = app[CLIENT_KEY]
+    try:
+        await client.register()
+    except Exception:
+        # If we can't register, there's no point in starting the agent.
+        log.exception("failed to register with control plane, shutting down")
+        # This is a bit of a hack to shut down the app from a startup signal.
+        # It's not clean, but it's effective.
+        asyncio.create_task(app.shutdown())
+        return
+
+    app[HEARTBEAT_TASK_KEY] = asyncio.create_task(heartbeat_background_task(app))
+
+
+async def on_cleanup(app: web.Application) -> None:
+    """Cancel the heartbeat task and close the client session."""
+    if HEARTBEAT_TASK_KEY in app:
+        app[HEARTBEAT_TASK_KEY].cancel()
+        try:
+            await app[HEARTBEAT_TASK_KEY]
+        except asyncio.CancelledError:
+            pass
+    await app[CLIENT_KEY].close()
+
+
 def create_app(ops: DockerOps, settings: AgentSettings | None = None) -> web.Application:
     """Build the agent app around an injected DockerOps. Tests pass a fake
     Docker client through the constructor; nothing is monkeypatched."""
-    app = web.Application(middlewares=[error_middleware])
+    app = web.Application(middlewares=[error_middleware, control_plane_auth_middleware])
     app[OPS_KEY] = ops
     app[SETTINGS_KEY] = settings or AgentSettings()
+    app[CLIENT_KEY] = ControlPlaneClient(app[SETTINGS_KEY], app[OPS_KEY])
+
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+
     app.add_routes(
         [
             web.get("/healthz", healthz),

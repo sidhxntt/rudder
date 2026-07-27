@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { useDeploy, useDeployments, useInstances } from "@/lib/queries";
+import { useDeploy, useDeployments, useInstances, useRollbackDeployment } from "@/lib/queries";
 import { deriveServiceStatus, latestDeployment } from "@/lib/status";
 import type { Service } from "@/lib/types";
 
@@ -35,6 +35,7 @@ export function DetailPanel({
   const deployments = useDeployments(lifecycleServiceId);
   const instances = useInstances(lifecycleServiceId);
   const deploy = useDeploy(service.id);
+  const rollback = useRollbackDeployment(lifecycleServiceId);
 
   const [tab, setTab] = useState<Tab>("logs");
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
@@ -184,12 +185,19 @@ export function DetailPanel({
             setSelectedDeploymentId(deploymentId);
             setTab("logs");
           }}
+          onRollback={(deploymentId) => rollback.mutate(deploymentId)}
+          rollbackPending={rollback.isPending || status === "building"}
         />
       ) : null}
 
       {!isComposeManaged && deploy.isError ? (
         <p className="border-t border-hairline px-lg py-sm text-micro text-status-failed">
           deploy request failed
+        </p>
+      ) : null}
+      {rollback.isError ? (
+        <p className="border-t border-hairline px-lg py-sm text-micro text-status-failed">
+          rollback request failed
         </p>
       ) : null}
     </aside>

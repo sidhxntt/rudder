@@ -21,7 +21,7 @@ import logging
 from sqlmodel import Session, select
 
 from rudder_cp.config import Settings
-from rudder_cp.models import Deployment, DeploymentStatus, Instance, InstanceStatus
+from rudder_cp.models import Deployment, DeploymentStatus, Instance, InstanceStatus, Node
 from rudder_cp.services import traefik
 from rudder_cp.services.agent_client import AgentClient, AgentError
 
@@ -53,7 +53,15 @@ async def reconcile_instances(
     for instance in instances:
         if instance.container_id is None:
             continue
-        observed = await _observe(agent, instance.container_id)
+        node = session.get(Node, instance.node_id)
+        if node is None:
+            log.warning(
+                "could not inspect %s: owning node %s is missing",
+                instance.id,
+                instance.node_id,
+            )
+            continue
+        observed = await _observe(agent.for_node(node.ip_address), instance.container_id)
         if observed is None or observed is instance.status:
             continue
         log.info(

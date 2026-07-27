@@ -32,7 +32,13 @@ export type InstanceStatus =
   | "healthy"
   | "unhealthy"
   | "draining"
-  | "stopped";
+  | "stopped"
+  | "unreachable";
+
+export type NodeStatus =
+  | "healthy"
+  | "unreachable"
+  | "draining";
 
 export type DomainTargetType = "service" | "deployment";
 
@@ -57,6 +63,22 @@ export interface Project {
   name: string;
   owner_id: string;
   created_at: string;
+}
+
+/** `GET /nodes` → NodeReadWithInstances. */
+export interface Node {
+  id: string;
+  hostname: string;
+  ip_address: string;
+  status: NodeStatus;
+  cpu_total: number;
+  memory_total_mb: number;
+  cpu_allocated: number;
+  memory_allocated_mb: number;
+  last_heartbeat_at: string | null;
+  created_at: string;
+  reported_state: Record<string, unknown> | null;
+  instances: Instance[];
 }
 
 export interface Environment {

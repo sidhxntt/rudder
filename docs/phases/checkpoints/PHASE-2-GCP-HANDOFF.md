@@ -1,11 +1,12 @@
 # Phase 2 GCP handoff
 
-**Updated:** 2026-07-24  
+**Updated:** 2026-07-27
 **Current branch:** `phase-1`  
 **Merged implementation:** PR [#1](https://github.com/sidhxntt/rudder/pull/1), merge commit `979ae25`  
-**Status:** Phase 1 plus the GitHub/Compose import extension is merged. GCP
-infrastructure for Phase 2 has been created by the operator; Phase 2 scheduler,
-node registration, and reconciliation code are not implemented yet.
+**Status:** Phase 2 multi-host runtime is implemented and verified end to end
+on the three-VM GCP lab. The GCP packaging uses Docker Compose on the control
+VM and on each worker VM; it is deliberately not yet a public-production
+Kubernetes runtime.
 
 This document is the context handoff for the next session. It intentionally
 contains no passwords, private keys, OAuth secrets, private IP addresses, or
@@ -45,6 +46,30 @@ state.** This remains true on GCP and later under Kubernetes.
   This fixes the earlier failure where the import API code was ahead of the
   local database schema.
 
+### Phase 2 multi-host runtime
+
+- Nodes register with an authenticated control-plane endpoint and send a
+  five-second heartbeat with host capacity and observed containers.
+- The scheduler admits only healthy nodes with sufficient reserved CPU and
+  memory, locks candidates transactionally, and chooses the lowest allocated
+  memory ratio.
+- Deploys use the selected node's private agent endpoint, never a localhost
+  agent address. Capacity is committed before remote Docker I/O, so a slow
+  image pull cannot hold a node heartbeat transaction open.
+- Agents authenticate every mutating control-plane command with a shared
+  secret. They join the private `rudder` Docker network so health probes reach
+  workload containers without publishing their ports.
+- The reconciler marks stale nodes and their instances unreachable, queues one
+  replacement for an otherwise unserved live service, and the scheduler places
+  that replacement on another healthy node.
+- The monitor and heartbeat paths preserve an application instance that the
+  deployment health check already marked healthy; Docker's absence of a native
+  `HEALTHCHECK` no longer downgrades the UI to `starting`.
+- `deploy/gcp/control-plane.compose.yml` packages Postgres, a private registry,
+  BuildKit, and the control plane. `deploy/gcp/agent.compose.yml` packages one
+  node agent per worker. Both use host-local protected environment files and
+  an agent shared-secret file, never Git-tracked credentials.
+
 ### GitHub import and Compose extension
 
 - GitHub OAuth sign-in and a GitHub App repository picker.
@@ -67,10 +92,16 @@ state.** This remains true on GCP and later under Kubernetes.
 
 - The repository remains a single-tenant learning build; it is **not** ready to
   execute arbitrary untrusted customer repositories in production.
-- Phase 2's registered-node model is not yet implemented. Current agent config
-  only knows host-local settings (`RUDDER_AGENT_BIND`, `RUDDER_AGENT_PORT`,
-  Compose state directory); it does not register or heartbeat to the control
-  plane yet.
+- Phase 2 has no public multi-host user ingress. Application containers are
+  verified through their node agent and private Docker network. TLS, public
+  domains, cross-host service networking, and durable production ingress are
+  deferred to the Kubernetes runtime/Phase 2.5 work.
+- The lab's BuildKit daemon is rootful because the Ubuntu GCP image blocks the
+  user namespaces required by rootless BuildKit. It is VPC-private only; this
+  is not an acceptable unreviewed multi-tenant build isolation boundary.
+- GitHub App import on the remote control plane still needs an operator-supplied
+  GitHub App PEM. The original referenced local PEM path contained no PEM file,
+  so no key was copied to GCP.
 - Do not expose Docker port `2375`, Postgres, Redis, or agent port `9000` to
   the public internet.
 
@@ -162,7 +193,7 @@ GitHub OAuth and GitHub App are different:
 one node is lost; an eligible instance is rescheduled to the survivor within
 60 seconds. See [Phase 2 — Multi-host](../PHASE-2-multi-host.md).
 
-### Build sequence
+### Implementation sequence (completed)
 
 1. Add `Node`, heartbeat, and observed-instance persistence to the control
    plane, plus authenticated node registration.
@@ -175,10 +206,38 @@ one node is lost; an eligible instance is rescheduled to the survivor within
    seconds. It must act on an intent/generation, not stale raw counts.
 6. Add unreachable-node handling at 30 seconds and write an ADR for the
    split-brain policy. Stateful workloads must not be blindly duplicated.
-7. Package and deploy the agent as a systemd-managed service on both GCP nodes.
+7. Package and deploy the agent as a Compose-managed service on both GCP nodes.
 8. Add UI/CLI: node list, health/capacity, and instance-to-node mapping.
 
-### Required tests and live proof
+### Verified live proof — 2026-07-25
+
+- `rudder-node-a` and `rudder-node-b` registered with their private agent
+  addresses and maintained five-second heartbeats.
+- An authenticated API request created a project, production environment, and
+  managed `nginx:alpine` service. The scheduler placed it on node B; the
+  control plane performed private health probes and marked the deployment and
+  instance `live` / `healthy`.
+- A subsequent deployment landed on node A, demonstrating placement changes
+  as node allocation changes.
+- Stopping only node B's agent made node B `unreachable`. The reconciler
+  superseded its prior live release, queued one replacement, and the scheduler
+  started a live healthy instance on node A. Node B's agent was then restored.
+- Full local verification passed after the runtime corrections: control plane
+  `328 passed, 2 skipped`; agent `57 passed`; and the web typecheck plus
+  production Next.js build both succeeded.
+- A public GitHub Node.js repository was deployed through the real source path:
+  Git checkout, generated Dockerfile, BuildKit, private registry, remote worker
+  pull, deployment health check, and `live` state. The validated immutable
+  image reference used the control VM's private registry address, not
+  `localhost`.
+- The worker registry pull required both Docker's configured insecure-registry
+  entry and an internal VPC firewall rule allowing worker-subnet TCP 5000 to
+  the control VM. Both are now documented in `deploy/gcp/README.md`.
+- Auto-recovery is stateless-only. Services with persistent Volume records are
+  intentionally not duplicated after a node loss; see
+  [ADR 0003](../../decisions/0003-phase-2-split-brain-policy.md).
+
+### Required tests before production exposure
 
 - Concurrent placements with capacity for one instance: exactly one succeeds.
 - Stale heartbeat reports: reconciler converges without create/stop thrashing.

@@ -8,6 +8,24 @@ from aiohttp.test_utils import TestClient
 from .fakes import FakeDockerClient, SpecBuilder
 
 
+async def test_control_plane_commands_require_the_shared_secret(
+    ops, settings, spec_body: SpecBuilder
+) -> None:
+    """A node must not expose its Docker socket through an unauthenticated API."""
+    from aiohttp.test_utils import TestServer
+
+    from rudder_agent.main import create_app
+
+    unauthenticated = TestClient(TestServer(create_app(ops, settings)))
+    await unauthenticated.start_server()
+    try:
+        response = await unauthenticated.post("/containers", json=spec_body())
+        assert response.status == 401
+        assert (await response.json())["code"] == "unauthorized"
+    finally:
+        await unauthenticated.close()
+
+
 async def test_create_returns_container_id(
     client: TestClient, docker_client: FakeDockerClient, spec_body: SpecBuilder
 ) -> None:
@@ -26,7 +44,12 @@ async def test_create_pulls_missing_image_then_starts(
 ) -> None:
     resp = await client.post("/containers", json=spec_body())
     assert resp.status == 201
-    assert docker_client.calls[:4] == [
+    create_flow = [
+        call
+        for call in docker_client.calls
+        if call in {"images.get", "images.pull", "containers.create", "container.start"}
+    ]
+    assert create_flow == [
         "images.get",
         "images.pull",
         "containers.create",

@@ -57,9 +57,30 @@ class ComposeServiceState:
 
 
 class AgentClient:
-    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+    # Pulling a newly-built image from the private registry can legitimately
+    # take longer than the short timeout used by ordinary inspect/probe calls.
+    # Keep this bounded, but do not mistake a slow first pull for a dead node.
+    _CREATE_TIMEOUT_SECONDS = 300.0
+
+    def __init__(
+        self, base_url: str, timeout: float = 30.0, *, shared_secret: str = ""
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._shared_secret = shared_secret
+
+    @property
+    def base_url(self) -> str:
+        """The agent endpoint this client addresses."""
+        return self._base_url
+
+    def for_node(self, ip_address: str, *, port: int = 9000) -> "AgentClient":
+        """Return a client bound to one node's private agent endpoint."""
+        return AgentClient(
+            f"http://{ip_address}:{port}",
+            timeout=self._timeout,
+            shared_secret=self._shared_secret,
+        )
 
     async def create_container(
         self,
@@ -89,7 +110,14 @@ class AgentClient:
             "volumes": volumes or {},
             "command": command,
         }
-        return ContainerState.from_payload(await self._request("POST", "/containers", json=payload))
+        return ContainerState.from_payload(
+            await self._request(
+                "POST",
+                "/containers",
+                json=payload,
+                timeout=max(self._timeout, self._CREATE_TIMEOUT_SECONDS),
+            )
+        )
 
     async def inspect(self, container_id: str) -> ContainerState:
         return ContainerState.from_payload(
@@ -134,7 +162,10 @@ class AgentClient:
 
     async def compose_up(self, *, project_name: str, manifest: str) -> ComposeResult:
         payload = await self._request(
-            "POST", "/compose/up", json={"project_name": project_name, "manifest": manifest}
+            "POST",
+            "/compose/up",
+            json={"project_name": project_name, "manifest": manifest},
+            timeout=max(self._timeout, self._CREATE_TIMEOUT_SECONDS),
         )
         return ComposeResult(project_name=str(payload["project_name"]), log=str(payload["log"]))
 
@@ -171,7 +202,13 @@ class AgentClient:
         url = f"{self._base_url}{path}"
         try:
             async with httpx.AsyncClient(timeout=timeout or self._timeout) as client:
-                response = await client.request(method, url, json=json, params=params)
+                response = await client.request(
+                    method,
+                    url,
+                    json=json,
+                    params=params,
+                    headers={"X-Rudder-Agent-Secret": self._shared_secret},
+                )
         except httpx.HTTPError as exc:
             raise AgentError(f"Node agent unreachable at {self._base_url}: {exc}") from exc
 

@@ -1,0 +1,36 @@
+# Phase 2 node agent. Copy this file and the `agent/` source to each worker VM.
+# RUDDER_AGENT_ADVERTISE_ADDRESS must be the VM's private VPC address.
+name: rudder-agent
+
+services:
+  agent:
+    build:
+      context: ../../agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RUDDER_AGENT_BIND: 0.0.0.0
+      RUDDER_AGENT_PORT: "9000"
+      RUDDER_AGENT_CONTROL_PLANE_URL: ${RUDDER_AGENT_CONTROL_PLANE_URL:?set control plane URL}
+      RUDDER_AGENT_SHARED_SECRET: ${RUDDER_AGENT_SHARED_SECRET:?set a unique shared secret}
+      RUDDER_AGENT_NODE_HOSTNAME: ${RUDDER_AGENT_NODE_HOSTNAME:?set node hostname}
+      RUDDER_AGENT_ADVERTISE_ADDRESS: ${RUDDER_AGENT_ADVERTISE_ADDRESS:?set node private IP}
+    ports:
+      - "9000:9000"
+    # The agent probes workload IPs itself, so it must join the same private
+    # Docker network as the containers it creates.  It remains reachable by
+    # the control plane on its default Compose network and port 9000.
+    networks:
+      - default
+      - rudder
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - compose-state:/var/lib/rudder-agent/compose
+
+networks:
+  rudder:
+    external: true
+
+volumes:
+  compose-state:

@@ -21,6 +21,7 @@ export const keys = {
   githubPreview: (installationId: number, repository: string, branch: string, templateId: string) =>
     ["github-preview", installationId, repository, branch, templateId] as const,
   githubImport: (importId: string) => ["github-import", importId] as const,
+  nodes: ["nodes"] as const,
   projects: ["projects"] as const,
   environments: (projectId: string) => ["environments", projectId] as const,
   services: (environmentId: string) => ["services", environmentId] as const,
@@ -151,6 +152,14 @@ export function useVariables(serviceId: string | undefined) {
   });
 }
 
+export function useNodes() {
+  return useQuery({
+    queryKey: keys.nodes,
+    queryFn: api.listNodes,
+    refetchInterval: LIVE_POLL_MS,
+  });
+}
+
 // Build logs are deliberately absent from this file. `GET
 // /deployments/{id}/build-log` is an SSE stream, not a document with a URL you
 // can refetch, so there is nothing for a query cache to hold. `build-logs.tsx`
@@ -178,6 +187,21 @@ export function useDeploy(serviceId: string | undefined) {
     onSuccess: (deployment: Deployment) => {
       void client.invalidateQueries({ queryKey: keys.deployments(deployment.service_id) });
       void client.invalidateQueries({ queryKey: keys.instances(deployment.service_id) });
+    },
+  });
+}
+
+export function useRollbackDeployment(serviceId: string | undefined) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (deploymentId: string) => api.rollbackDeployment(deploymentId),
+    onSuccess: (deployment: Deployment) => {
+      void client.invalidateQueries({ queryKey: keys.deployments(deployment.service_id) });
+      void client.invalidateQueries({ queryKey: keys.instances(deployment.service_id) });
+      if (serviceId && serviceId !== deployment.service_id) {
+        void client.invalidateQueries({ queryKey: keys.deployments(serviceId) });
+        void client.invalidateQueries({ queryKey: keys.instances(serviceId) });
+      }
     },
   });
 }
