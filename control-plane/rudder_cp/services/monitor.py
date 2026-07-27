@@ -21,7 +21,14 @@ import logging
 from sqlmodel import Session, select
 
 from rudder_cp.config import Settings
-from rudder_cp.models import Deployment, DeploymentStatus, Instance, InstanceStatus, Node
+from rudder_cp.models import (
+    Deployment,
+    DeploymentStatus,
+    GitHubImport,
+    Instance,
+    InstanceStatus,
+    Node,
+)
 from rudder_cp.services import traefik
 from rudder_cp.services.agent_client import AgentClient, AgentError
 
@@ -47,7 +54,7 @@ async def reconcile_instances(
     settings: Settings,
 ) -> int:
     """Compare recorded instance state against the node. Returns changes made."""
-    instances = _live_instances(session)
+    instances = _live_instances(session, settings)
     changed = 0
 
     for instance in instances:
@@ -82,17 +89,27 @@ async def reconcile_instances(
     return changed
 
 
-def _live_instances(session: Session) -> list[Instance]:
-    return list(
-        session.exec(
-            select(Instance)
-            .join(Deployment, Deployment.id == Instance.deployment_id)  # type: ignore[arg-type]
-            .where(
-                Deployment.status == DeploymentStatus.LIVE,
-                Instance.status.in_(_OBSERVED_STATUSES),  # type: ignore[attr-defined]
-            )
-        ).all()
+def _live_instances(session: Session, settings: Settings) -> list[Instance]:
+    """Return Docker-owned instances that are safe to inspect through an agent.
+
+    A Phase 3 imported release stores Kubernetes pod IDs in ``Instance`` so
+    the existing deployment and history projections stay useful.  They are
+    not Docker container IDs, though.  Asking a node agent to inspect one
+    returns ``container_not_found`` and used to turn a ready Kubernetes
+    release into a false failed state two seconds after promotion.
+    """
+    statement = (
+        select(Instance)
+        .join(Deployment, Deployment.id == Instance.deployment_id)  # type: ignore[arg-type]
+        .where(
+            Deployment.status == DeploymentStatus.LIVE,
+            Instance.status.in_(_OBSERVED_STATUSES),  # type: ignore[attr-defined]
+        )
     )
+    if settings.runtime == "kubernetes":
+        kubernetes_release_owners = select(GitHubImport.app_service_id)
+        statement = statement.where(Deployment.service_id.not_in(kubernetes_release_owners))
+    return list(session.exec(statement).all())
 
 
 async def _observe(agent: AgentClient, container_id: str) -> InstanceStatus | None:

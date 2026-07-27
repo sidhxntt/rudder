@@ -65,7 +65,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("deploy worker started")
 
     reconciler = asyncio.create_task(
-        run_reconciler(engine=engine, stop_event=stop, agent_client=app.state.agent),
+        run_reconciler(
+            engine=engine,
+            stop_event=stop,
+            agent_client=app.state.agent,
+            settings=settings,
+        ),
         name="reconciler",
     )
 
