@@ -47,6 +47,10 @@ class WorkloadSpec:
     topology_spread: bool = False
     rolling_update: Mapping[str, str | int] | None = None
     prometheus_enabled: bool = False
+    # Statefully-mounted data starts at this size and can only grow. The
+    # concrete PVC expansion happens separately from StatefulSet replacement,
+    # because volumeClaimTemplates themselves are immutable after creation.
+    storage_size_mb: int = 1024
     # The workload may be controlled by an HPA, in which case ``replicas`` is
     # intentionally unset.  Readiness still needs a concrete safety boundary:
     # never promote traffic after just one pod when the requested minimum is
@@ -122,6 +126,8 @@ class KubernetesApi(Protocol):
 
     async def apply_workload(self, namespace: str, spec: WorkloadSpec) -> None: ...
 
+    async def expand_stateful_storage(self, namespace: str, spec: WorkloadSpec) -> None: ...
+
     async def apply_autoscaler(self, namespace: str, spec: AutoscalerSpec) -> None: ...
 
     async def delete_autoscaler(self, namespace: str, name: str) -> None: ...
@@ -186,8 +192,23 @@ class KubernetesRuntime:
             workloads: list[tuple[ComposeService, WorkloadSpec]] = []
             operation_observed: dict[str, dict[str, object]] = {}
             for member in release.services:
-                resource_name = release.resource_name(member.name)
+                # Immutable app candidates receive release-qualified names so
+                # the old revision can keep serving until the new one is
+                # ready. Stateful members are different: their PVC name is
+                # derived from the StatefulSet name. Giving a database a new
+                # name for every app revision silently gives it a new volume
+                # and loses the persistent identity users expect.
+                resource_name = (
+                    dns_label(member.name)
+                    if member.stateful
+                    else release.resource_name(member.name)
+                )
                 member_labels = {**labels, "rudder.service": dns_label(member.name)}
+                if member.stateful:
+                    # Candidate cleanup selects by rudder.release. Persistent
+                    # members must survive a failed app candidate and use a
+                    # stable, non-candidate label instead.
+                    member_labels["rudder.release"] = "stateful"
                 operation_config, member_observed = _operation_config(member.operations)
                 workload = WorkloadSpec(
                     name=resource_name,
@@ -206,6 +227,7 @@ class KubernetesRuntime:
                     topology_spread=operation_config["topology_spread"],
                     rolling_update=operation_config["rolling_update"],
                     prometheus_enabled=operation_config["prometheus_enabled"],
+                    storage_size_mb=operation_config["storage_size_mb"],
                     ready_replicas=operation_config["ready_replicas"],
                 )
                 # Keep the workload label on every associated primitive so a
@@ -230,6 +252,7 @@ class KubernetesRuntime:
                     topology_spread=workload.topology_spread,
                     rolling_update=workload.rolling_update,
                     prometheus_enabled=workload.prometheus_enabled,
+                    storage_size_mb=workload.storage_size_mb,
                     ready_replicas=workload.ready_replicas,
                 )
                 # Workers and one-shot background processes often have no
@@ -251,6 +274,9 @@ class KubernetesRuntime:
                 kind = "StatefulSet" if member.stateful else "Deployment"
                 await progress(f"kubernetes: applying {kind} for {member.name}\n")
                 await self.api.apply_workload(release.namespace, workload)
+                if member.stateful and operation_config["storage_expansion_requested"]:
+                    await progress(f"kubernetes: expanding persistent storage for {member.name}\n")
+                    await self.api.expand_stateful_storage(release.namespace, workload)
                 autoscaling = operation_config["autoscaling"]
                 if autoscaling is not None:
                     await progress(f"kubernetes: applying autoscaler for {member.name}\n")
@@ -411,6 +437,17 @@ def _command(value: object) -> tuple[str, ...] | None:
     return tuple(value)
 
 
+def _storage_mebibytes(value: object) -> int | None:
+    """Parse the small subset of Kubernetes quantities Rudder writes itself."""
+    if not isinstance(value, str):
+        return None
+    if value.endswith("Mi") and value[:-2].isdigit():
+        return int(value[:-2])
+    if value.endswith("Gi") and value[:-2].isdigit():
+        return int(value[:-2]) * 1024
+    return None
+
+
 def _operation_config(
     operations: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, object]]:
@@ -499,6 +536,14 @@ def _operation_config(
     schedules_raw = operations.get("schedules")
     schedules = list(schedules_raw) if isinstance(schedules_raw, list) else []
     job_raw = operations.get("last_job")
+    storage_raw = operations.get("storage")
+    storage_size_mb = 1024
+    storage_expansion_requested = False
+    if isinstance(storage_raw, Mapping):
+        requested_size_mb = storage_raw.get("requested_size_mb")
+        if isinstance(requested_size_mb, int) and requested_size_mb >= storage_size_mb:
+            storage_size_mb = requested_size_mb
+            storage_expansion_requested = requested_size_mb > 1024
     return (
         {
             "replicas": replicas,
@@ -509,6 +554,8 @@ def _operation_config(
             "topology_spread": placement.get("topology_spread") is True,
             "rolling_update": rolling_update,
             "prometheus_enabled": prometheus_enabled,
+            "storage_size_mb": storage_size_mb,
+            "storage_expansion_requested": storage_expansion_requested,
             "autoscaling": autoscaling,
             "schedules": schedules,
             "job": job_raw if isinstance(job_raw, Mapping) else None,
@@ -532,6 +579,7 @@ class AsyncKubernetesApi:
         self.autoscaling = client.AutoscalingV2Api(self.api_client)
         self.batch = client.BatchV1Api(self.api_client)
         self.networking = client.NetworkingV1Api(self.api_client)
+        self.storage = client.StorageV1Api(self.api_client)
 
     @classmethod
     async def from_kubeconfig(
@@ -711,21 +759,31 @@ class AsyncKubernetesApi:
                             spec=client.V1PersistentVolumeClaimSpec(
                                 access_modes=["ReadWriteOnce"],
                                 resources=client.V1VolumeResourceRequirements(
-                                    requests={"storage": "1Gi"}
+                                    requests={"storage": f"{spec.storage_size_mb}Mi"}
                                 ),
                             ),
                         )
                     ],
                 ),
             )
-            await self._create_or_replace(
-                self.apps.read_namespaced_stateful_set,
-                self.apps.create_namespaced_stateful_set,
-                self.apps.replace_namespaced_stateful_set,
-                spec.name,
-                body,
-                namespace=namespace,
-            )
+            # ``volumeClaimTemplates`` is immutable once a StatefulSet has
+            # created its data PVC. Preserve the server's template during a
+            # normal workload update; storage growth is handled by
+            # ``expand_stateful_storage`` against the PVC itself.
+            try:
+                existing = await self.apps.read_namespaced_stateful_set(
+                    name=spec.name, namespace=namespace
+                )
+            except ApiException as exc:
+                if exc.status != 404:
+                    raise
+                await self.apps.create_namespaced_stateful_set(namespace=namespace, body=body)
+            else:
+                body.metadata.resource_version = existing.metadata.resource_version
+                body.spec.volume_claim_templates = existing.spec.volume_claim_templates
+                await self.apps.replace_namespaced_stateful_set(
+                    name=spec.name, namespace=namespace, body=body
+                )
             return
         deployment_strategy = None
         if spec.rolling_update is not None:
@@ -752,6 +810,48 @@ class AsyncKubernetesApi:
             spec.name,
             body,
             namespace=namespace,
+        )
+
+    async def expand_stateful_storage(self, namespace: str, spec: WorkloadSpec) -> None:
+        """Grow an existing StatefulSet PVC after checking the StorageClass.
+
+        The StatefulSet volume claim template is immutable. Expanding the
+        actual ``data-<statefulset>-0`` PVC is the only supported Kubernetes
+        path, and it is refused unless the provisioner advertises expansion.
+        A first deployment has no PVC yet; its template already contains the
+        requested size, so there is nothing to patch.
+        """
+        pvc_name = f"data-{spec.name}-0"
+        try:
+            pvc = await self.core.read_namespaced_persistent_volume_claim(
+                pvc_name, namespace
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                return
+            raise
+        storage_class_name = pvc.spec.storage_class_name
+        if not storage_class_name:
+            raise RuntimeError(f"PVC {pvc_name} has no storage class; cannot safely expand it.")
+        storage_class = await self.storage.read_storage_class(storage_class_name)
+        if storage_class.allow_volume_expansion is not True:
+            raise RuntimeError(
+                f"StorageClass {storage_class_name} does not support volume expansion."
+            )
+        current = _storage_mebibytes(
+            (pvc.spec.resources.requests or {}).get("storage")
+        )
+        if current is not None and current >= spec.storage_size_mb:
+            return
+        patch = client.V1PersistentVolumeClaim(
+            spec=client.V1PersistentVolumeClaimSpec(
+                resources=client.V1VolumeResourceRequirements(
+                    requests={"storage": f"{spec.storage_size_mb}Mi"}
+                )
+            )
+        )
+        await self.core.patch_namespaced_persistent_volume_claim(
+            pvc_name, namespace, patch
         )
 
     async def apply_autoscaler(self, namespace: str, spec: AutoscalerSpec) -> None:
