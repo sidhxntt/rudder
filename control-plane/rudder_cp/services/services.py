@@ -25,6 +25,7 @@ from rudder_cp.models import (
     Instance,
     InstanceStatus,
     Service,
+    ServiceOperation,
     Variable,
     Volume,
 )
@@ -197,9 +198,17 @@ async def purge_service(session: Session, service: Service) -> None:
     for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all():
         session.delete(volume)
 
-    # Volume.service_id has no database-level ON DELETE cascade.  Flush its
-    # deletion before the parent service is deleted, otherwise SQLAlchemy can
-    # order both statements incorrectly and the transaction fails on the FK.
+    # ServiceOperation deliberately has no database ON DELETE cascade: an
+    # operation audit cannot outlive the service it describes, and explicit
+    # deletion keeps SQLite and PostgreSQL teardown ordering identical.
+    for operation in session.exec(
+        select(ServiceOperation).where(ServiceOperation.service_id == service.id)
+    ).all():
+        session.delete(operation)
+
+    # These service children have no database-level ON DELETE cascade. Flush
+    # their deletion before deleting the parent, otherwise SQLAlchemy can order
+    # statements incorrectly and the transaction fails on the FK.
     session.flush()
     session.delete(service)
     session.flush()

@@ -10,7 +10,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Literal, Self
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from rudder_cp.models.base import ServiceKind
 
@@ -18,6 +18,15 @@ _CPU_QUANTITY = re.compile(
     r"^(?:(?P<milli_number>(?:\d+(?:\.\d*)?|\.\d+))m|"
     r"(?P<number>(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?))$"
 )
+_KUBERNETES_LABEL_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$")
+_DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+_CRON_INTEGER = re.compile(r"^\d+$")
+
+
+class _OperationRequest(BaseModel):
+    """Shared strict input boundary for every persisted operations request."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 def _cpu_cores(quantity: str) -> Decimal:
@@ -42,10 +51,21 @@ def _cpu_cores(quantity: str) -> Decimal:
     return cores
 
 
-class ScaleRequest(BaseModel):
+class ScaleRequest(_OperationRequest):
     replicas: int = Field(ge=0, le=100)
-    service_kind: ServiceKind
-    data_role: Literal["primary", "read_replica"] = "primary"
+    service_kind: ServiceKind = Field(
+        description=(
+            "Untrusted client hint. The API router must replace it with the persisted "
+            "Service kind before authorizing a scale operation."
+        )
+    )
+    data_role: Literal["primary", "read_replica"] = Field(
+        default="primary",
+        description=(
+            "Untrusted client hint. The API router must replace it with the persisted "
+            "data role before authorizing a scale operation."
+        ),
+    )
 
     @model_validator(mode="after")
     def _reject_primary_database_scale(self) -> Self:
@@ -54,7 +74,7 @@ class ScaleRequest(BaseModel):
         return self
 
 
-class ResourceRequest(BaseModel):
+class ResourceRequest(_OperationRequest):
     cpu_request: str | None = Field(default=None, min_length=1, max_length=32)
     cpu_limit: str | None = Field(default=None, min_length=1, max_length=32)
     memory_request_mb: int | None = Field(default=None, gt=0)
@@ -84,7 +104,7 @@ class ResourceRequest(BaseModel):
         return self
 
 
-class AutoscalingRequest(BaseModel):
+class AutoscalingRequest(_OperationRequest):
     min_replicas: int = Field(ge=1, le=100)
     max_replicas: int = Field(ge=1, le=100)
     target_cpu_percent: int = Field(default=80, ge=1, le=100)
@@ -97,13 +117,21 @@ class AutoscalingRequest(BaseModel):
         return self
 
 
-class PlacementRequest(BaseModel):
+class PlacementRequest(_OperationRequest):
     node_selector: dict[str, str] = Field(default_factory=dict)
     topology_spread: bool = False
     anti_affinity: bool = False
 
+    @field_validator("node_selector")
+    @classmethod
+    def _validate_node_selector(cls, node_selector: dict[str, str]) -> dict[str, str]:
+        for key, value in node_selector.items():
+            _validate_kubernetes_label_key(key)
+            _validate_kubernetes_label_value(value)
+        return node_selector
 
-class RolloutRequest(BaseModel):
+
+class RolloutRequest(_OperationRequest):
     strategy: Literal["rolling", "blue_green", "canary"] = "rolling"
     canary_steps: tuple[int, ...] = ()
 
@@ -118,17 +146,17 @@ class RolloutRequest(BaseModel):
         return self
 
 
-class RollbackRequest(BaseModel):
+class RollbackRequest(_OperationRequest):
     """Select a prior immutable deployment without invoking a source build."""
 
     deployment_id: uuid.UUID
 
 
-class BackupRequest(BaseModel):
+class BackupRequest(_OperationRequest):
     retention_days: int = Field(default=7, ge=1, le=365)
 
 
-class RestoreRequest(BaseModel):
+class RestoreRequest(_OperationRequest):
     backup_id: uuid.UUID
     acknowledge_data_loss: bool = False
 
@@ -139,7 +167,7 @@ class RestoreRequest(BaseModel):
         return self
 
 
-class ReadReplicaRequest(BaseModel):
+class ReadReplicaRequest(_OperationRequest):
     replicas: int = Field(ge=1, le=10)
     public: bool = False
 
@@ -150,7 +178,7 @@ class ReadReplicaRequest(BaseModel):
         return self
 
 
-class StorageResizeRequest(BaseModel):
+class StorageResizeRequest(_OperationRequest):
     current_size_mb: int = Field(gt=0)
     requested_size_mb: int = Field(gt=0)
 
@@ -161,7 +189,7 @@ class StorageResizeRequest(BaseModel):
         return self
 
 
-class _CommandRequest(BaseModel):
+class _CommandRequest(_OperationRequest):
     command: tuple[str, ...]
 
     @field_validator("command")
@@ -185,8 +213,17 @@ class CronJobRequest(_CommandRequest):
     @field_validator("cron")
     @classmethod
     def _validate_five_field_cron(cls, cron: str) -> str:
-        if len(cron.split()) != 5:
+        fields = cron.split()
+        if len(fields) != 5:
             raise ValueError("cron schedules must have five fields")
+        for value, minimum, maximum, name in zip(
+            fields,
+            (0, 0, 1, 1, 0),
+            (59, 23, 31, 12, 7),
+            ("minute", "hour", "day of month", "month", "day of week"),
+            strict=True,
+        ):
+            _validate_cron_field(value, minimum=minimum, maximum=maximum, name=name)
         return cron
 
 
@@ -195,12 +232,12 @@ class OneOffJobRequest(_CommandRequest):
     retries: int = Field(default=0, ge=0, le=10)
 
 
-class ObservabilityRequest(BaseModel):
+class ObservabilityRequest(_OperationRequest):
     prometheus: bool = False
     grafana: bool = False
 
 
-class ServiceOperationsIntent(BaseModel):
+class ServiceOperationsIntent(_OperationRequest):
     """Normalized desired operation state persisted by later API slices."""
 
     resources: ResourceRequest | None = None
@@ -212,3 +249,72 @@ class ServiceOperationsIntent(BaseModel):
     storage: StorageResizeRequest | None = None
     schedules: tuple[CronJobRequest, ...] = ()
     observability: ObservabilityRequest | None = None
+
+
+def _validate_kubernetes_label_key(key: str) -> None:
+    if not key or key.count("/") > 1:
+        raise ValueError("node_selector keys must be valid Kubernetes label keys")
+
+    prefix, separator, name = key.partition("/")
+    if separator:
+        if not prefix or len(prefix) > 253:
+            raise ValueError("node_selector keys must be valid Kubernetes label keys")
+        labels = prefix.split(".")
+        if any(
+            not label or len(label) > 63 or _DNS_LABEL.fullmatch(label) is None
+            for label in labels
+        ):
+            raise ValueError("node_selector keys must be valid Kubernetes label keys")
+    else:
+        name = prefix
+
+    if len(name) > 63 or _KUBERNETES_LABEL_NAME.fullmatch(name) is None:
+        raise ValueError("node_selector keys must be valid Kubernetes label keys")
+
+
+def _validate_kubernetes_label_value(value: str) -> None:
+    # Kubernetes permits an empty label value, which is useful for presence-only
+    # selectors. Non-empty values share the label-name character restrictions.
+    if value and (len(value) > 63 or _KUBERNETES_LABEL_NAME.fullmatch(value) is None):
+        raise ValueError("node_selector values must be valid Kubernetes label values")
+
+
+def _validate_cron_field(value: str, *, minimum: int, maximum: int, name: str) -> None:
+    """Validate Kubernetes' five-field numeric cron grammar without accepting junk.
+
+    Kubernetes cron jobs use numeric five-field schedules. Lists, ranges, and
+    positive step values are accepted; named months/weekdays and six-field
+    schedules are deliberately not, because Kubernetes does not support them.
+    """
+
+    if not value or any(not item for item in value.split(",")):
+        raise ValueError(f"cron {name} must be a valid cron expression")
+
+    for item in value.split(","):
+        base, separator, raw_step = item.partition("/")
+        if separator:
+            if not raw_step or not _CRON_INTEGER.fullmatch(raw_step):
+                raise ValueError(f"cron {name} has an invalid step")
+            step = int(raw_step)
+            if step < 1 or step > maximum - minimum + 1:
+                raise ValueError(f"cron {name} has an invalid step")
+        if "/" in raw_step:
+            raise ValueError(f"cron {name} has an invalid step")
+
+        if base == "*":
+            continue
+
+        if "-" in base:
+            start, dash, end = base.partition("-")
+            if not dash or not _CRON_INTEGER.fullmatch(start) or not _CRON_INTEGER.fullmatch(end):
+                raise ValueError(f"cron {name} has an invalid range")
+            start_value, end_value = int(start), int(end)
+            if not (minimum <= start_value <= end_value <= maximum):
+                raise ValueError(f"cron {name} has an invalid range")
+            continue
+
+        if _CRON_INTEGER.fullmatch(base) is None:
+            raise ValueError(f"cron {name} must be numeric, a range, or wildcard")
+        numeric_value = int(base)
+        if not minimum <= numeric_value <= maximum:
+            raise ValueError(f"cron {name} is outside its allowed range")

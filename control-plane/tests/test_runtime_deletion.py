@@ -23,9 +23,11 @@ from rudder_cp.models import (
     Node,
     Project,
     Service,
+    ServiceOperation,
     User,
     Volume,
 )
+from rudder_cp.models.operations import OperationKind
 from rudder_cp.routers import services as services_router
 from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.services import environments, projects, services, traefik
@@ -153,6 +155,35 @@ async def test_deleting_a_service_removes_its_volume_before_the_service(engine, 
 
         assert session.get(Service, postgres.id) is None
         assert session.get(Volume, volume.id) is None
+
+
+async def test_deleting_a_service_removes_operation_history_before_the_service(
+    engine, settings
+):
+    """Operation history has a service FK and must not block regular deletion."""
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        node = Node(hostname="localhost", ip_address="127.0.0.1")
+        session.add(user)
+        session.add(project)
+        session.add(environment)
+        session.add(node)
+        session.commit()
+        api = _live_service(session, environment, node, "api")
+        operation = ServiceOperation(
+            service_id=api.id,
+            kind=OperationKind.SCALE,
+            requested={"replicas": 2},
+        )
+        session.add(operation)
+        session.commit()
+
+        await services.delete_service(session, api.id, agent=RecordingAgent(), settings=settings)
+
+        assert session.get(Service, api.id) is None
+        assert session.get(ServiceOperation, operation.id) is None
 
 
 async def test_deleting_a_live_environment_removes_its_containers_and_routes(engine, settings):

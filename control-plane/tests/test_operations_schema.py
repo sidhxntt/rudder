@@ -30,6 +30,14 @@ def test_workload_operations_reject_database_manual_scale():
         ScaleRequest(replicas=3, service_kind=ServiceKind.DATABASE)
 
 
+def test_scale_service_identity_is_explicitly_untrusted_client_input():
+    """The API must replace these hints with the persisted Service values."""
+    description = ScaleRequest.model_fields["service_kind"].description
+    assert description is not None
+    assert "untrusted" in description.lower()
+    assert "API router" in description
+
+
 def test_data_operations_reject_pvc_shrink():
     with pytest.raises(ValidationError, match="cannot shrink"):
         StorageResizeRequest(current_size_mb=1024, requested_size_mb=512)
@@ -46,6 +54,19 @@ def test_operation_requests_define_typed_safe_defaults():
     assert CronJobRequest(cron="0 * * * *", command=("python", "cleanup.py")).retries == 1
     assert OneOffJobRequest(command=("python", "manage.py", "migrate")).timeout_seconds == 900
     assert ObservabilityRequest(prometheus=True, grafana=True).grafana is True
+
+
+@pytest.mark.parametrize(
+    ("request_type", "payload"),
+    [
+        (ResourceRequest, {"cpu_request": "250m", "unknown": True}),
+        (PlacementRequest, {"node_selector": {}, "unknown": True}),
+        (CronJobRequest, {"cron": "0 * * * *", "command": ("echo", "ok"), "unknown": True}),
+    ],
+)
+def test_operation_requests_forbid_unknown_fields(request_type, payload):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        request_type(**payload)
 
 
 @pytest.mark.parametrize("quantity", ["500m", "1", "0.5", "1e3"])
@@ -73,6 +94,48 @@ def test_operations_reject_unsafe_cross_field_combinations():
         RestoreRequest(backup_id=uuid.uuid4())
     with pytest.raises(ValidationError, match="at least one argument"):
         OneOffJobRequest(command=())
+
+
+@pytest.mark.parametrize(
+    "cron",
+    [
+        "99 99 99 99 99",
+        "nope * * * *",
+        "* * * * 8",
+        "*/0 * * * *",
+    ],
+)
+def test_cron_jobs_reject_nonsensical_five_field_schedules(cron: str):
+    with pytest.raises(ValidationError, match="cron"):
+        CronJobRequest(cron=cron, command=("python", "cleanup.py"))
+
+
+def test_cron_jobs_accept_valid_five_field_schedule():
+    request = CronJobRequest(cron="0 */3 * * 1-5", command=("python", "cleanup.py"))
+
+    assert request.cron == "0 */3 * * 1-5"
+
+
+@pytest.mark.parametrize(
+    "node_selector",
+    [
+        {"example.com/invalid/key": "worker"},
+        {"InvalidPrefix.example.com/role": "worker"},
+        {"node-role": "has space"},
+        {"node-role": "-starts-with-a-dash"},
+    ],
+)
+def test_placement_rejects_invalid_kubernetes_label_selectors(node_selector: dict[str, str]):
+    with pytest.raises(ValidationError, match="Kubernetes label"):
+        PlacementRequest(node_selector=node_selector)
+
+
+def test_placement_accepts_valid_kubernetes_label_selectors():
+    request = PlacementRequest(
+        node_selector={"node.kubernetes.io/instance-type": "c3-standard-4", "zone": "asia-south1-a"}
+    )
+
+    assert request.node_selector["zone"] == "asia-south1-a"
 
 
 def test_service_operation_is_typed_durable_audit_record():
