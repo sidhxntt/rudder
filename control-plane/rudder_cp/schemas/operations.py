@@ -7,12 +7,14 @@ both the database and a cluster.
 
 import re
 import uuid
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from rudder_cp.models.base import ServiceKind
+from rudder_cp.models.operations import OperationKind, OperationStatus
 
 _CPU_QUANTITY = re.compile(
     r"^(?:(?P<milli_number>(?:\d+(?:\.\d*)?|\.\d+))m|"
@@ -72,6 +74,19 @@ class ScaleRequest(_OperationRequest):
         if self.service_kind is ServiceKind.DATABASE and self.data_role == "primary":
             raise ValueError("manual scale cannot target database primaries")
         return self
+
+
+class ScaleOperationRequest(_OperationRequest):
+    """Public scale payload.
+
+    ``service_kind`` and ``data_role`` remain accepted only for backwards
+    compatible clients.  They are intentionally ignored by the API: the
+    persisted service is the authority for both values.
+    """
+
+    replicas: int = Field(ge=0, le=100)
+    service_kind: ServiceKind | None = None
+    data_role: Literal["primary", "read_replica"] | None = None
 
 
 class ResourceRequest(_OperationRequest):
@@ -237,6 +252,22 @@ class ObservabilityRequest(_OperationRequest):
     grafana: bool = False
 
 
+class ServiceOperationRead(BaseModel):
+    """Safe public projection of an auditable requested operation."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    service_id: uuid.UUID
+    kind: OperationKind
+    status: OperationStatus
+    requested: dict[str, Any]
+    observed: dict[str, Any]
+    error_message: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
 class ServiceOperationsIntent(_OperationRequest):
     """Normalized desired operation state persisted by later API slices."""
 
@@ -261,8 +292,7 @@ def _validate_kubernetes_label_key(key: str) -> None:
             raise ValueError("node_selector keys must be valid Kubernetes label keys")
         labels = prefix.split(".")
         if any(
-            not label or len(label) > 63 or _DNS_LABEL.fullmatch(label) is None
-            for label in labels
+            not label or len(label) > 63 or _DNS_LABEL.fullmatch(label) is None for label in labels
         ):
             raise ValueError("node_selector keys must be valid Kubernetes label keys")
     else:
