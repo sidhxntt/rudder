@@ -11,7 +11,7 @@ import asyncio
 import base64
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from kubernetes_asyncio import client, config
 from kubernetes_asyncio.client import ApiException
@@ -40,6 +40,48 @@ class WorkloadSpec:
     labels: Mapping[str, str]
     stateful: bool
     volume_mount_path: str | None
+    replicas: int | None = 1
+    resources: Mapping[str, Mapping[str, str]] | None = None
+    node_selector: Mapping[str, str] | None = None
+    anti_affinity: bool = False
+    topology_spread: bool = False
+    rolling_update: Mapping[str, str] | None = None
+    prometheus_enabled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AutoscalerSpec:
+    name: str
+    workload_name: str
+    min_replicas: int
+    max_replicas: int
+    target_cpu_percent: int
+    target_memory_percent: int | None
+    labels: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class CronJobSpec:
+    name: str
+    schedule: str
+    image: str
+    command: tuple[str, ...]
+    environment: Mapping[str, str]
+    labels: Mapping[str, str]
+    timeout_seconds: int
+    retries: int
+    concurrency_policy: str
+
+
+@dataclass(frozen=True, slots=True)
+class JobSpec:
+    name: str
+    image: str
+    command: tuple[str, ...]
+    environment: Mapping[str, str]
+    labels: Mapping[str, str]
+    timeout_seconds: int
+    retries: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +105,7 @@ class PublicRouteSpec:
 class KubernetesReleaseResult:
     pod_ids: Mapping[str, str]
     public_hosts: Mapping[str, str]
+    operation_observed: Mapping[str, Mapping[str, object]]
 
 
 class KubernetesApi(Protocol):
@@ -73,6 +116,16 @@ class KubernetesApi(Protocol):
     async def apply_service(self, namespace: str, spec: ServiceSpec) -> None: ...
 
     async def apply_workload(self, namespace: str, spec: WorkloadSpec) -> None: ...
+
+    async def apply_autoscaler(self, namespace: str, spec: AutoscalerSpec) -> None: ...
+
+    async def apply_cron_job(self, namespace: str, spec: CronJobSpec) -> None: ...
+
+    async def apply_job(self, namespace: str, spec: JobSpec) -> None: ...
+
+    async def wait_job_complete(
+        self, namespace: str, spec: JobSpec, *, timeout_seconds: int, poll_seconds: float
+    ) -> bool: ...
 
     async def wait_ready(
         self,
@@ -120,9 +173,11 @@ class KubernetesRuntime:
 
         try:
             workloads: list[tuple[ComposeService, WorkloadSpec]] = []
+            operation_observed: dict[str, dict[str, object]] = {}
             for member in release.services:
                 resource_name = release.resource_name(member.name)
                 member_labels = {**labels, "rudder.service": dns_label(member.name)}
+                operation_config, member_observed = _operation_config(member.operations)
                 workload = WorkloadSpec(
                     name=resource_name,
                     service_name=member.name,
@@ -133,6 +188,13 @@ class KubernetesRuntime:
                     labels=member_labels,
                     stateful=member.stateful,
                     volume_mount_path=member.volume_mount_path,
+                    replicas=operation_config["replicas"],
+                    resources=operation_config["resources"],
+                    node_selector=operation_config["node_selector"],
+                    anti_affinity=operation_config["anti_affinity"],
+                    topology_spread=operation_config["topology_spread"],
+                    rolling_update=operation_config["rolling_update"],
+                    prometheus_enabled=operation_config["prometheus_enabled"],
                 )
                 # Workers and one-shot background processes often have no
                 # listening port. They still need a workload, but an empty
@@ -153,7 +215,86 @@ class KubernetesRuntime:
                 kind = "StatefulSet" if member.stateful else "Deployment"
                 await progress(f"kubernetes: applying {kind} for {member.name}\n")
                 await self.api.apply_workload(release.namespace, workload)
+                autoscaling = operation_config["autoscaling"]
+                if autoscaling is not None:
+                    await progress(f"kubernetes: applying autoscaler for {member.name}\n")
+                    await self.api.apply_autoscaler(
+                        release.namespace,
+                        AutoscalerSpec(
+                            name=dns_label(f"{resource_name}-hpa"),
+                            workload_name=resource_name,
+                            min_replicas=autoscaling["min_replicas"],
+                            max_replicas=autoscaling["max_replicas"],
+                            target_cpu_percent=autoscaling["target_cpu_percent"],
+                            target_memory_percent=autoscaling.get("target_memory_percent"),
+                            labels=member_labels,
+                        ),
+                    )
+                    member_observed["autoscaling"] = {
+                        "status": "applied",
+                        "min_replicas": autoscaling["min_replicas"],
+                        "max_replicas": autoscaling["max_replicas"],
+                    }
+                for schedule in operation_config["schedules"]:
+                    if not isinstance(schedule, Mapping):
+                        continue
+                    schedule_id = str(schedule.get("operation_id", "schedule"))
+                    spec = schedule.get("spec")
+                    if not isinstance(spec, dict):
+                        continue
+                    command = _command(spec.get("command"))
+                    if command is None:
+                        member_observed.setdefault("schedules", {})[schedule_id] = {
+                            "status": "degraded",
+                            "reason": "schedule has no validated command",
+                        }
+                        continue
+                    await progress(f"kubernetes: applying scheduled Job for {member.name}\n")
+                    cron_job = CronJobSpec(
+                        name=dns_label(f"{resource_name}-schedule-{schedule_id}"),
+                        schedule=str(spec.get("cron", "")),
+                        image=member.image,
+                        command=command,
+                        environment=member.environment,
+                        labels={**member_labels, "rudder.operation": dns_label(schedule_id)},
+                        timeout_seconds=_int(spec.get("timeout_seconds"), 900),
+                        retries=_int(spec.get("retries"), 0),
+                        concurrency_policy=str(spec.get("concurrency_policy", "forbid")),
+                    )
+                    await self.api.apply_cron_job(release.namespace, cron_job)
+                    member_observed.setdefault("schedules", {})[schedule_id] = {"status": "applied"}
+                job = operation_config["job"]
+                if job is not None:
+                    command = _command(job.get("command"))
+                    if command is None:
+                        member_observed["job"] = {
+                            "status": "degraded",
+                            "reason": "job has no validated command",
+                        }
+                    else:
+                        one_off = JobSpec(
+                            name=dns_label(f"{resource_name}-job"),
+                            image=member.image,
+                            command=command,
+                            environment=member.environment,
+                            labels=member_labels,
+                            timeout_seconds=_int(job.get("timeout_seconds"), 900),
+                            retries=_int(job.get("retries"), 0),
+                        )
+                        await progress(f"kubernetes: applying one-off Job for {member.name}\n")
+                        await self.api.apply_job(release.namespace, one_off)
+                        completed = await self.api.wait_job_complete(
+                            release.namespace,
+                            one_off,
+                            timeout_seconds=one_off.timeout_seconds,
+                            poll_seconds=self.settings.readiness_poll_seconds,
+                        )
+                        member_observed["job"] = {
+                            "status": "healthy" if completed else "failed",
+                            "name": one_off.name,
+                        }
                 workloads.append((member, workload))
+                operation_observed[member.name] = member_observed
 
             # This is the candidate safety boundary: never update an ingress
             # until every member of the release has reached readiness.
@@ -185,7 +326,11 @@ class KubernetesRuntime:
                     f"kubernetes: promoted public route for {member.name} at {host}\n"
                 )
                 public_hosts[member.name] = host
-            return KubernetesReleaseResult(pod_ids=pod_ids, public_hosts=public_hosts)
+            return KubernetesReleaseResult(
+                pod_ids=pod_ids,
+                public_hosts=public_hosts,
+                operation_observed=operation_observed,
+            )
         except Exception as original_error:
             # Candidate resources all carry a unique release label.  Removing
             # them on any failure preserves the last live workload and, because
@@ -201,6 +346,115 @@ class KubernetesRuntime:
             raise
 
 
+def _int(value: object, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _command(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    if not all(isinstance(part, str) and part for part in value):
+        return None
+    return tuple(value)
+
+
+def _operation_config(
+    operations: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, object]]:
+    """Translate validated desired intent into a deliberately small runtime view.
+
+    The control-plane validation is authoritative. These defensive checks still
+    make direct runtime use fail safe: malformed intent cannot create an
+    arbitrary Pod command, resource quantity, or traffic change.
+    """
+    resources_raw = operations.get("resources")
+    resources: dict[str, dict[str, str]] | None = None
+    if isinstance(resources_raw, Mapping):
+        requests: dict[str, str] = {}
+        limits: dict[str, str] = {}
+        cpu_request = resources_raw.get("cpu_request")
+        cpu_limit = resources_raw.get("cpu_limit")
+        memory_request = resources_raw.get("memory_request_mb")
+        memory_limit = resources_raw.get("memory_limit_mb")
+        if isinstance(cpu_request, str):
+            requests["cpu"] = cpu_request
+        if isinstance(cpu_limit, str):
+            limits["cpu"] = cpu_limit
+        if isinstance(memory_request, int) and memory_request > 0:
+            requests["memory"] = f"{memory_request}Mi"
+        if isinstance(memory_limit, int) and memory_limit > 0:
+            limits["memory"] = f"{memory_limit}Mi"
+        if requests or limits:
+            resources = {"requests": requests, "limits": limits}
+
+    placement_raw = operations.get("placement")
+    placement = placement_raw if isinstance(placement_raw, Mapping) else {}
+    selector_raw = placement.get("node_selector", {})
+    node_selector = (
+        {str(key): str(value) for key, value in selector_raw.items()}
+        if isinstance(selector_raw, Mapping)
+        else {}
+    )
+    autoscaling_raw = operations.get("autoscaling")
+    autoscaling = autoscaling_raw if isinstance(autoscaling_raw, Mapping) else None
+    replicas = operations.get("replicas")
+    if not isinstance(replicas, int):
+        replicas = 1
+    if autoscaling is not None:
+        # An HPA is the sole replica controller. Leaving .spec.replicas unset
+        # avoids every release reconciliation fighting the HPA.
+        replicas = None
+
+    rollout_raw = operations.get("rollout")
+    rollout = rollout_raw if isinstance(rollout_raw, Mapping) else {}
+    strategy = rollout.get("strategy", "rolling")
+    observed: dict[str, object] = {}
+    rolling_update: dict[str, str] | None = None
+    if strategy == "rolling":
+        rolling_update = {"max_surge": "25%", "max_unavailable": "0"}
+        observed["rollout"] = {"status": "applied", "strategy": "rolling"}
+    elif strategy in {"blue_green", "canary"}:
+        observed["rollout"] = {
+            "status": "degraded",
+            "reason": (
+                f"{strategy.replace('_', '/')} rollout requires a traffic manager "
+                "and is not enabled for this cluster"
+            ),
+        }
+
+    observability_raw = operations.get("observability")
+    observability = observability_raw if isinstance(observability_raw, Mapping) else {}
+    prometheus_enabled = observability.get("prometheus") is True
+    if prometheus_enabled or observability.get("grafana") is True:
+        observed["observability"] = {
+            "prometheus": "enabled" if prometheus_enabled else "disabled",
+            "grafana": (
+                "integration requested; no Grafana deployment is managed by Rudder"
+                if observability.get("grafana") is True
+                else "not requested"
+            ),
+        }
+
+    schedules_raw = operations.get("schedules")
+    schedules = list(schedules_raw) if isinstance(schedules_raw, list) else []
+    job_raw = operations.get("last_job")
+    return (
+        {
+            "replicas": replicas,
+            "resources": resources,
+            "node_selector": node_selector,
+            "anti_affinity": placement.get("anti_affinity") is True,
+            "topology_spread": placement.get("topology_spread") is True,
+            "rolling_update": rolling_update,
+            "prometheus_enabled": prometheus_enabled,
+            "autoscaling": autoscaling,
+            "schedules": schedules,
+            "job": job_raw if isinstance(job_raw, Mapping) else None,
+        },
+        observed,
+    )
+
+
 class AsyncKubernetesApi:
     """Small, replace-safe kubernetes-asyncio implementation of ``KubernetesApi``."""
 
@@ -213,6 +467,8 @@ class AsyncKubernetesApi:
         self.api_client = client.ApiClient()
         self.core = client.CoreV1Api(self.api_client)
         self.apps = client.AppsV1Api(self.api_client)
+        self.autoscaling = client.AutoscalingV2Api(self.api_client)
+        self.batch = client.BatchV1Api(self.api_client)
         self.networking = client.NetworkingV1Api(self.api_client)
 
     @classmethod
@@ -356,8 +612,23 @@ class AsyncKubernetesApi:
         selector = {"rudder.workload": spec.name}
         pod_labels = {**dict(spec.labels), **selector}
         template = client.V1PodTemplateSpec(
-            metadata=client.V1ObjectMeta(labels=pod_labels),
-            spec=client.V1PodSpec(containers=[container]),
+            metadata=client.V1ObjectMeta(
+                labels=pod_labels,
+                annotations=(
+                    {
+                        "prometheus.io/scrape": "true",
+                        "prometheus.io/port": str(spec.port),
+                    }
+                    if spec.prometheus_enabled and spec.port is not None
+                    else None
+                ),
+            ),
+            spec=client.V1PodSpec(
+                containers=[container],
+                node_selector=dict(spec.node_selector or {}) or None,
+                affinity=self._affinity(spec, selector),
+                topology_spread_constraints=self._topology_spread(spec, selector),
+            ),
         )
         if spec.stateful:
             if not spec.volume_mount_path:
@@ -369,7 +640,7 @@ class AsyncKubernetesApi:
                 metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
                 spec=client.V1StatefulSetSpec(
                     service_name=spec.name,
-                    replicas=1,
+                    replicas=spec.replicas if spec.replicas is not None else 1,
                     selector=client.V1LabelSelector(match_labels=selector),
                     template=template,
                     volume_claim_templates=[
@@ -394,12 +665,22 @@ class AsyncKubernetesApi:
                 namespace=namespace,
             )
             return
+        deployment_strategy = None
+        if spec.rolling_update is not None:
+            deployment_strategy = client.V1DeploymentStrategy(
+                type="RollingUpdate",
+                rolling_update=client.V1RollingUpdateDeployment(
+                    max_surge=spec.rolling_update["max_surge"],
+                    max_unavailable=spec.rolling_update["max_unavailable"],
+                ),
+            )
         body = client.V1Deployment(
             metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
             spec=client.V1DeploymentSpec(
-                replicas=1,
+                replicas=spec.replicas if spec.replicas is not None else 1,
                 selector=client.V1LabelSelector(match_labels=selector),
                 template=template,
+                strategy=deployment_strategy,
             ),
         )
         await self._create_or_replace(
@@ -410,6 +691,105 @@ class AsyncKubernetesApi:
             body,
             namespace=namespace,
         )
+
+    async def apply_autoscaler(self, namespace: str, spec: AutoscalerSpec) -> None:
+        metrics = [
+            client.V2MetricSpec(
+                type="Resource",
+                resource=client.V2ResourceMetricSource(
+                    name="cpu",
+                    target=client.V2MetricTarget(
+                        type="Utilization", average_utilization=spec.target_cpu_percent
+                    ),
+                ),
+            )
+        ]
+        if spec.target_memory_percent is not None:
+            metrics.append(
+                client.V2MetricSpec(
+                    type="Resource",
+                    resource=client.V2ResourceMetricSource(
+                        name="memory",
+                        target=client.V2MetricTarget(
+                            type="Utilization", average_utilization=spec.target_memory_percent
+                        ),
+                    ),
+                )
+            )
+        body = client.V2HorizontalPodAutoscaler(
+            metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
+            spec=client.V2HorizontalPodAutoscalerSpec(
+                scale_target_ref=client.V2CrossVersionObjectReference(
+                    api_version="apps/v1", kind="Deployment", name=spec.workload_name
+                ),
+                min_replicas=spec.min_replicas,
+                max_replicas=spec.max_replicas,
+                metrics=metrics,
+            ),
+        )
+        await self._create_or_replace(
+            self.autoscaling.read_namespaced_horizontal_pod_autoscaler,
+            self.autoscaling.create_namespaced_horizontal_pod_autoscaler,
+            self.autoscaling.replace_namespaced_horizontal_pod_autoscaler,
+            spec.name,
+            body,
+            namespace=namespace,
+        )
+
+    async def apply_cron_job(self, namespace: str, spec: CronJobSpec) -> None:
+        body = client.V1CronJob(
+            metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
+            spec=client.V1CronJobSpec(
+                schedule=spec.schedule,
+                concurrency_policy=spec.concurrency_policy.capitalize(),
+                job_template=client.V1JobTemplateSpec(
+                    spec=client.V1JobSpec(
+                        backoff_limit=spec.retries,
+                        active_deadline_seconds=spec.timeout_seconds,
+                        template=self._job_template(spec),
+                    )
+                ),
+            ),
+        )
+        await self._create_or_replace(
+            self.batch.read_namespaced_cron_job,
+            self.batch.create_namespaced_cron_job,
+            self.batch.replace_namespaced_cron_job,
+            spec.name,
+            body,
+            namespace=namespace,
+        )
+
+    async def apply_job(self, namespace: str, spec: JobSpec) -> None:
+        body = client.V1Job(
+            metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
+            spec=client.V1JobSpec(
+                backoff_limit=spec.retries,
+                active_deadline_seconds=spec.timeout_seconds,
+                template=self._job_template(spec),
+            ),
+        )
+        await self._create_or_replace(
+            self.batch.read_namespaced_job,
+            self.batch.create_namespaced_job,
+            self.batch.replace_namespaced_job,
+            spec.name,
+            body,
+            namespace=namespace,
+        )
+
+    async def wait_job_complete(
+        self, namespace: str, spec: JobSpec, *, timeout_seconds: int, poll_seconds: float
+    ) -> bool:
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            status = (await self.batch.read_namespaced_job_status(spec.name, namespace)).status
+            if (status.succeeded or 0) >= 1:
+                return True
+            if (status.failed or 0) > spec.retries:
+                return False
+            await asyncio.sleep(poll_seconds)
+        return False
 
     async def wait_ready(
         self,

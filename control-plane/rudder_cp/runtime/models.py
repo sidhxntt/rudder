@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 _DNS_LABEL = re.compile(r"[^a-z0-9-]+")
 _DASHES = re.compile(r"-+")
@@ -30,6 +31,10 @@ class ComposeService:
     public: bool = False
     stateful: bool = False
     volume_mount_path: str | None = None
+    # A validated snapshot of ServiceOperationsState.desired.  It is attached
+    # to the release instead of read by this runtime so Kubernetes rendering
+    # remains deterministic for an immutable deployment candidate.
+    operations: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
