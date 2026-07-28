@@ -15,7 +15,12 @@ from rudder_cp.models.deployment import Deployment, Instance
 from rudder_cp.models.domain import Domain
 from rudder_cp.models.github_import import GitHubImport, GitHubImportService
 from rudder_cp.models.node import Node
-from rudder_cp.models.operations import OperationKind, OperationStatus, ServiceOperation
+from rudder_cp.models.operations import (
+    OperationKind,
+    OperationStatus,
+    ServiceOperation,
+    ServiceOperationsState,
+)
 from rudder_cp.models.project import Environment, Project
 from rudder_cp.models.service import Service, Variable, Volume
 from rudder_cp.models.user import User
@@ -37,6 +42,7 @@ __all__ = [
     "Project",
     "Service",
     "ServiceOperation",
+    "ServiceOperationsState",
     "ServiceKind",
     "User",
     "Variable",

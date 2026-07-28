@@ -13,10 +13,17 @@ from typing import Any
 import sqlalchemy as sa
 from sqlmodel import Field, SQLModel
 
-from rudder_cp.models.base import created_at_column, optional_timestamp, pg_enum, uuid_pk
+from rudder_cp.models.base import (
+    created_at_column,
+    optional_timestamp,
+    pg_enum,
+    utc_now,
+    uuid_pk,
+)
 
 
 class OperationKind(StrEnum):
+    CONFIGURE = "configure"
     SCALE = "scale"
     RESOURCES = "resources"
     AUTOSCALING = "autoscaling"
@@ -38,10 +45,49 @@ class OperationStatus(StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {OperationStatus.HEALTHY, OperationStatus.DEGRADED, OperationStatus.FAILED}
+        return self in {
+            OperationStatus.HEALTHY,
+            OperationStatus.DEGRADED,
+            OperationStatus.FAILED,
+            OperationStatus.CANCELLED,
+        }
+
+
+class ServiceOperationsState(SQLModel, table=True):
+    """Current desired state and last observed reconciliation state for a service.
+
+    ``ServiceOperation`` remains the immutable audit log. This one-row aggregate
+    lets the reconciler consume intent exactly once per version without reading
+    transient request data or overloading source/build configuration.
+    """
+
+    __tablename__ = "service_operations_state"
+    __table_args__ = (
+        sa.UniqueConstraint("service_id", name="uq_service_operations_state_service"),
+    )
+
+    id: uuid.UUID = uuid_pk()
+    service_id: uuid.UUID = Field(
+        foreign_key="service.id", sa_type=sa.Uuid, nullable=False, index=True
+    )
+    desired: dict[str, Any] = Field(
+        default_factory=dict, sa_column=sa.Column(sa.JSON, nullable=False)
+    )
+    observed: dict[str, Any] = Field(
+        default_factory=dict, sa_column=sa.Column(sa.JSON, nullable=False)
+    )
+    version: int = Field(default=0, nullable=False)
+    pending_reconciliation: bool = Field(default=False, nullable=False, index=True)
+    created_at: datetime = created_at_column()
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_type=sa.DateTime(timezone=True),
+        nullable=False,
+    )
 
 
 class ServiceOperation(SQLModel, table=True):

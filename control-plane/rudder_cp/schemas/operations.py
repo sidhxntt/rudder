@@ -271,15 +271,37 @@ class ServiceOperationRead(BaseModel):
 class ServiceOperationsIntent(_OperationRequest):
     """Normalized desired operation state persisted by later API slices."""
 
+    replicas: int | None = Field(default=None, ge=0, le=100)
     resources: ResourceRequest | None = None
     autoscaling: AutoscalingRequest | None = None
     placement: PlacementRequest | None = None
     rollout: RolloutRequest | None = None
     backups: BackupRequest | None = None
+    restore: RestoreRequest | None = None
     read_replicas: ReadReplicaRequest | None = None
     storage: StorageResizeRequest | None = None
     schedules: tuple[CronJobRequest, ...] = ()
     observability: ObservabilityRequest | None = None
+    rollback: dict[str, Any] | None = None
+    last_job: dict[str, Any] | None = None
+
+
+class ServiceOperationsStateRead(BaseModel):
+    """Versioned desired/observed operations state returned to the UI."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    desired: dict[str, Any]
+    observed: dict[str, Any]
+    version: int
+    pending_reconciliation: bool
+    updated_at: datetime
+
+
+class ServiceOperationsEnvelope(ServiceOperationsStateRead):
+    """The canonical operations response: state plus immutable audit history."""
+
+    history: list["ServiceOperationRead"]
 
 
 def _validate_kubernetes_label_key(key: str) -> None:

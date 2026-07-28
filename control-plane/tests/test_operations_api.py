@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 import sqlalchemy as sa
@@ -18,7 +19,15 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from rudder_cp.config import get_settings
 from rudder_cp.db import get_session
-from rudder_cp.models import Environment, Project, Service, ServiceKind, User
+from rudder_cp.models import (
+    Deployment,
+    DeploymentStatus,
+    Environment,
+    Project,
+    Service,
+    ServiceKind,
+    User,
+)
 from rudder_cp.routers import auth as auth_router
 from rudder_cp.routers import operations as operations_router
 from rudder_cp.schemas.common import install_error_handlers
@@ -221,13 +230,21 @@ def test_operations_hide_other_users_services(
 def test_patch_operations_persists_declared_desired_intent(
     client: TestClient, seed: dict[str, str]
 ) -> None:
-    response = client.patch(
+    state = client.get(
         f"/services/{seed['app']}/operations",
         headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert state.status_code == 200, state.text
+    response = client.patch(
+        f"/services/{seed['app']}/operations",
+        headers={
+            "Authorization": f"Bearer {seed['token']}",
+            "If-Match": state.headers["etag"],
+        },
         json={"autoscaling": {"min_replicas": 2, "max_replicas": 4}},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["autoscaling"] == {
+    assert response.json()["desired"]["autoscaling"] == {
         "min_replicas": 2,
         "max_replicas": 4,
         "target_cpu_percent": 80,
@@ -240,7 +257,6 @@ def test_canonical_operation_families_create_typed_records(
 ) -> None:
     cases = (
         ("app", "/operations/rollout", {"strategy": "blue_green"}),
-        ("app", "/operations/rollback", {"deployment_id": "00000000-0000-0000-0000-000000000001"}),
         ("app", "/operations/placement", {"topology_spread": True}),
         ("primary", "/operations/data/backups", {"retention_days": 14}),
         (
@@ -282,6 +298,15 @@ def test_schedule_can_be_created_and_deleted(
     )
     assert deleted.status_code == 204, deleted.text
 
+    state = client.get(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert state.status_code == 200
+    cancelled = next(item for item in state.json()["history"] if item["id"] == created.json()["id"])
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["observed"]["cancelled"] is True
+
 
 def test_operations_are_registered_on_the_real_application() -> None:
     from rudder_cp.main import create_app
@@ -291,7 +316,7 @@ def test_operations_are_registered_on_the_real_application() -> None:
     assert response.status_code == 401
 
 
-def test_operation_idempotency_migration_enforces_one_key_per_service(
+def test_operations_state_migration_preserves_audit_constraints(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_url = f"sqlite:///{tmp_path / 'operations-idempotency.db'}"
@@ -307,13 +332,20 @@ def test_operation_idempotency_migration_enforces_one_key_per_service(
         command.upgrade(config, "b9a11d39f9d1")
         command.stamp(config, "c1d24ef9a8b7")
         command.upgrade(config, "0008")
-        command.upgrade(config, "0009")
+        command.upgrade(config, "0010")
         engine = sa.create_engine(database_url)
         with engine.connect() as connection:
             constraints = sa.inspect(connection).get_unique_constraints("service_operation")
+            state_constraints = sa.inspect(connection).get_unique_constraints(
+                "service_operations_state"
+            )
         assert any(
             constraint["name"] == "uq_service_operation_service_idempotency_key"
             for constraint in constraints
+        )
+        assert any(
+            constraint["name"] == "uq_service_operations_state_service"
+            for constraint in state_constraints
         )
         engine.dispose()
     finally:
@@ -343,7 +375,10 @@ def test_list_is_newest_first_and_data_operations_are_type_checked(
         headers={"Authorization": f"Bearer {seed['token']}"},
     )
     assert listed.status_code == 200
-    assert [operation["id"] for operation in listed.json()] == [resource.json()["id"], scale["id"]]
+    assert [operation["id"] for operation in listed.json()["history"]] == [
+        resource.json()["id"],
+        scale["id"],
+    ]
 
 
 def test_operations_return_uniform_not_found_and_validation_errors(
@@ -363,3 +398,156 @@ def test_operations_return_uniform_not_found_and_validation_errors(
     )
     assert invalid.status_code == 422
     assert invalid.json()["code"] in {"validation_error", "invalid_request"}
+
+
+def test_operations_get_returns_desired_observed_and_legacy_history_list(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    created = create_scale(client, seed, replicas=3, key="desired-scale")
+    envelope = client.get(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert envelope.status_code == 200, envelope.text
+    assert envelope.json()["desired"]["replicas"] == 3
+    assert envelope.json()["observed"]["reconciliation"]["pending"] is True
+    assert envelope.json()["history"][0]["id"] == created["id"]
+    assert envelope.headers["etag"] == '"1"'
+
+    legacy = client.get(
+        f"/services/{seed['app']}/operations?format=list",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert legacy.status_code == 200
+    assert legacy.json()[0]["id"] == created["id"]
+
+
+def test_patch_deep_merges_nested_intent_and_rejects_stale_version(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    initial = client.get(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert initial.headers["etag"] == '"0"'
+
+    first = client.patch(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}", "If-Match": '"0"'},
+        json={"resources": {"cpu_request": "250m", "cpu_limit": "500m"}},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["version"] == 1
+
+    second = client.patch(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}", "If-Match": '"1"'},
+        json={"resources": {"memory_request_mb": 256}},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["desired"]["resources"] == {
+        "cpu_request": "250m",
+        "cpu_limit": "500m",
+        "memory_request_mb": 256,
+        "memory_limit_mb": None,
+    }
+
+    stale = client.patch(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}", "If-Match": '"1"'},
+        json={"placement": {"topology_spread": True}},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "conflict"
+
+
+def test_rollback_requires_an_eligible_deployment_of_the_same_service(
+    client: TestClient, seed: dict[str, str], engine: Engine
+) -> None:
+    app_id = UUID(seed["app"])
+    with Session(engine) as session:
+        valid = Deployment(
+            service_id=app_id,
+            status=DeploymentStatus.SUPERSEDED,
+            image_tag="registry.local/immutable:prior",
+        )
+        queued = Deployment(service_id=app_id, status=DeploymentStatus.QUEUED)
+        foreign = Deployment(service_id=UUID(seed["primary"]), status=DeploymentStatus.LIVE)
+        session.add_all((valid, queued, foreign))
+        session.commit()
+        valid_id, queued_id, foreign_id = str(valid.id), str(queued.id), str(foreign.id)
+
+    accepted = client.post(
+        f"/services/{app_id}/operations/rollback",
+        headers=headers(seed, "rollback-valid"),
+        json={"deployment_id": valid_id},
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["requested"]["execution"] == "pending_runtime_reconciliation"
+
+    for index, target in enumerate((queued_id, foreign_id, "00000000-0000-0000-0000-000000000099")):
+        rejected = client.post(
+            f"/services/{app_id}/operations/rollback",
+            headers=headers(seed, f"rollback-invalid-{index}"),
+            json={"deployment_id": target},
+        )
+        assert rejected.status_code in {404, 422}, rejected.text
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    (
+        ("/operations/autoscaling", {"min_replicas": 1, "max_replicas": 2}),
+        ("/operations/placement", {"topology_spread": True}),
+        ("/operations/rollout", {"strategy": "blue_green"}),
+        ("/operations/jobs/run", {"command": ["echo", "no"]}),
+    ),
+)
+def test_app_only_operations_reject_database_services(
+    client: TestClient, seed: dict[str, str], path: str, payload: dict[str, Any]
+) -> None:
+    response = client.post(
+        f"/services/{seed['primary']}{path}",
+        headers=headers(seed, f"database-app-gate-{path}"),
+        json=payload,
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "invalid_request"
+
+
+def test_patch_operations_enforces_persisted_service_capabilities(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    state = client.get(
+        f"/services/{seed['primary']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert state.status_code == 200
+    headers_with_version = {
+        "Authorization": f"Bearer {seed['token']}",
+        "If-Match": state.headers["etag"],
+    }
+    for payload in (
+        {"autoscaling": {"min_replicas": 1, "max_replicas": 2}},
+        {"replicas": 2},
+    ):
+        rejected = client.patch(
+            f"/services/{seed['primary']}/operations",
+            headers=headers_with_version,
+            json=payload,
+        )
+        assert rejected.status_code == 422, rejected.text
+
+    app_state = client.get(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    rejected_data = client.patch(
+        f"/services/{seed['app']}/operations",
+        headers={
+            "Authorization": f"Bearer {seed['token']}",
+            "If-Match": app_state.headers["etag"],
+        },
+        json={"read_replicas": {"replicas": 1}},
+    )
+    assert rejected_data.status_code == 422, rejected_data.text

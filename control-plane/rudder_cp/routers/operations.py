@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Response, status
@@ -26,7 +26,8 @@ from rudder_cp.schemas.operations import (
     RolloutRequest,
     ScaleOperationRequest,
     ServiceOperationRead,
-    ServiceOperationsIntent,
+    ServiceOperationsEnvelope,
+    ServiceOperationsStateRead,
     StorageResizeRequest,
 )
 from rudder_cp.services import operations as operation_ops
@@ -42,6 +43,24 @@ IdempotencyKey = Annotated[
 def _dump(payload: object) -> dict[str, object]:
     # Pydantic's JSON mode makes UUIDs and tuples safe to persist in JSON.
     return payload.model_dump(mode="json")  # type: ignore[union-attr]
+
+
+def _state_read(state: object) -> ServiceOperationsStateRead:
+    return ServiceOperationsStateRead.model_validate(state)
+
+
+def _version_from_if_match(value: str) -> int:
+    try:
+        version = int(value.strip().strip('"'))
+    except ValueError as exc:
+        from rudder_cp.schemas.common import InvalidRequestError
+
+        raise InvalidRequestError("If-Match must contain an operations state version") from exc
+    if version < 0:
+        from rudder_cp.schemas.common import InvalidRequestError
+
+        raise InvalidRequestError("If-Match must contain a non-negative state version")
+    return version
 
 
 async def _submit(
@@ -69,34 +88,54 @@ async def _submit(
 
 @router.get(
     "/services/{service_id}/operations",
-    response_model=list[ServiceOperationRead],
+    response_model=ServiceOperationsEnvelope | list[ServiceOperationRead],
     responses=error_responses(404, 422),
     operation_id="list_service_operations",
 )
 async def list_service_operations(
-    service_id: UUID, session: SessionDep, user: CurrentUser
-) -> list[ServiceOperationRead]:
+    service_id: UUID,
+    session: SessionDep,
+    user: CurrentUser,
+    response: Response,
+    format: Literal["envelope", "list"] = "envelope",
+) -> ServiceOperationsEnvelope | list[ServiceOperationRead]:
     with translate_errors():
         rows = operation_ops.list_operations(session, service_id, owner_id=user.id)
-    return [ServiceOperationRead.model_validate(row) for row in rows]
+        state = operation_ops.get_operations_state(session, service_id, owner_id=user.id)
+    history = [ServiceOperationRead.model_validate(row) for row in rows]
+    response.headers["ETag"] = f'"{state.version}"'
+    if format == "list":
+        return history
+    return ServiceOperationsEnvelope(
+        **_state_read(state).model_dump(),
+        history=history,
+    )
 
 
 @router.patch(
     "/services/{service_id}/operations",
-    response_model=ServiceOperationsIntent,
-    responses=error_responses(404, 422),
+    response_model=ServiceOperationsStateRead,
+    responses=error_responses(404, 409, 422),
     operation_id="update_service_operations",
 )
 async def update_service_operations(
     service_id: UUID,
-    payload: ServiceOperationsIntent,
+    payload: dict[str, Any],
+    if_match: Annotated[str, Header(alias="If-Match", min_length=1)],
     session: SessionDep,
     user: CurrentUser,
-) -> ServiceOperationsIntent:
+    response: Response,
+) -> ServiceOperationsStateRead:
     with translate_errors():
-        return operation_ops.update_operations_intent(
-            session, service_id=service_id, owner_id=user.id, intent=payload
+        state = operation_ops.update_operations_intent(
+            session,
+            service_id=service_id,
+            owner_id=user.id,
+            changes=payload,
+            expected_version=_version_from_if_match(if_match),
         )
+    response.headers["ETag"] = f'"{state.version}"'
+    return _state_read(state)
 
 
 @router.post(
@@ -232,14 +271,20 @@ async def request_rollback(
     user: CurrentUser,
 ) -> ServiceOperationRead:
     """Record rollback intent only; the immutable deployment switch is a later reconciler action."""
-    return await _submit(
-        session,
-        service_id=service_id,
-        kind=OperationKind.ROLLBACK,
-        payload=payload,
-        idempotency_key=idempotency_key,
-        user=user,
-    )
+    with translate_errors():
+        service = operation_ops.get_service(session, service_id, owner_id=user.id)
+        requested = operation_ops.normalize_rollback_request(
+            session, service=service, deployment_id=payload.deployment_id
+        )
+        operation = operation_ops.create_operation(
+            session,
+            service_id=service_id,
+            kind=OperationKind.ROLLBACK,
+            requested=requested,
+            idempotency_key=idempotency_key,
+            owner_id=user.id,
+        )
+    return ServiceOperationRead.model_validate(operation)
 
 
 @router.post(
