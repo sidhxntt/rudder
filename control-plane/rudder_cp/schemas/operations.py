@@ -292,6 +292,19 @@ class ServiceOperationsIntent(_OperationRequest):
     rollback: dict[str, Any] | None = None
     last_job: dict[str, Any] | None = None
 
+    @model_validator(mode="after")
+    def _keep_manual_scale_and_hpa_exclusive(self) -> Self:
+        """A workload has one replica authority at a time.
+
+        Keeping this invariant in the persisted aggregate prevents an HPA and a
+        manual replica value from continuously fighting each other in the
+        Kubernetes reconciler.  Operators can explicitly clear either field
+        before switching control modes.
+        """
+        if self.replicas is not None and self.autoscaling is not None:
+            raise ValueError("manual replicas and autoscaling cannot be configured together")
+        return self
+
 
 class ServiceOperationsStateRead(BaseModel):
     """Versioned desired/observed operations state returned to the UI."""

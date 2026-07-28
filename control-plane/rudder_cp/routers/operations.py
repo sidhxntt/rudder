@@ -97,7 +97,7 @@ async def list_service_operations(
     session: SessionDep,
     user: CurrentUser,
     response: Response,
-    format: Literal["envelope", "list"] = "envelope",
+    format: Literal["envelope", "list"] = "list",
 ) -> ServiceOperationsEnvelope | list[ServiceOperationRead]:
     with translate_errors():
         rows = operation_ops.list_operations(session, service_id, owner_id=user.id)
