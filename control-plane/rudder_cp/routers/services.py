@@ -4,8 +4,6 @@ Created and listed under their environment, addressed by id at the top level.
 Deploying a service is a different workstream and does not live here.
 """
 
-# TODO(auth): protect with get_current_user
-
 from typing import Annotated
 from uuid import UUID
 
@@ -13,6 +11,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from sqlmodel import Session
 
 from rudder_cp.db import get_session
+from rudder_cp.routers.auth import CurrentUser
 from rudder_cp.schemas.common import error_responses, translate_errors
 from rudder_cp.schemas.domain import DomainRead
 from rudder_cp.schemas.service import (
@@ -43,10 +42,12 @@ SessionDep = Annotated[Session, Depends(get_session)]
     ),
 )
 async def create_service(
-    environment_id: UUID, payload: ServiceCreate, session: SessionDep
+    environment_id: UUID, payload: ServiceCreate, session: SessionDep, user: CurrentUser
 ) -> ServiceRead:
     with translate_errors():
-        service = await service_ops.create_service(session, environment_id, payload)
+        service = await service_ops.create_service(
+            session, environment_id, payload, owner_id=user.id
+        )
     return ServiceRead.model_validate(service)
 
 
@@ -57,9 +58,11 @@ async def create_service(
     operation_id="list_services",
     summary="List an environment's services",
 )
-async def list_services(environment_id: UUID, session: SessionDep) -> list[ServiceRead]:
+async def list_services(
+    environment_id: UUID, session: SessionDep, user: CurrentUser
+) -> list[ServiceRead]:
     with translate_errors():
-        rows = await service_ops.list_services(session, environment_id)
+        rows = await service_ops.list_services(session, environment_id, owner_id=user.id)
     return [ServiceRead.model_validate(row) for row in rows]
 
 
@@ -70,9 +73,9 @@ async def list_services(environment_id: UUID, session: SessionDep) -> list[Servi
     operation_id="get_service",
     summary="Get a service",
 )
-async def get_service(service_id: UUID, session: SessionDep) -> ServiceRead:
+async def get_service(service_id: UUID, session: SessionDep, user: CurrentUser) -> ServiceRead:
     with translate_errors():
-        service = await service_ops.get_service(session, service_id)
+        service = await service_ops.get_service(session, service_id, owner_id=user.id)
     return ServiceRead.model_validate(service)
 
 
@@ -89,10 +92,10 @@ async def get_service(service_id: UUID, session: SessionDep) -> ServiceRead:
     ),
 )
 async def update_service(
-    service_id: UUID, payload: ServiceUpdate, session: SessionDep
+    service_id: UUID, payload: ServiceUpdate, session: SessionDep, user: CurrentUser
 ) -> ServiceRead:
     with translate_errors():
-        service = await service_ops.update_service(session, service_id, payload)
+        service = await service_ops.update_service(session, service_id, payload, owner_id=user.id)
     return ServiceRead.model_validate(service)
 
 
@@ -108,10 +111,10 @@ async def update_service(
     ),
 )
 async def replace_service(
-    service_id: UUID, payload: ServiceReplace, session: SessionDep
+    service_id: UUID, payload: ServiceReplace, session: SessionDep, user: CurrentUser
 ) -> ServiceRead:
     with translate_errors():
-        service = await service_ops.replace_service(session, service_id, payload)
+        service = await service_ops.replace_service(session, service_id, payload, owner_id=user.id)
     return ServiceRead.model_validate(service)
 
 
@@ -127,7 +130,9 @@ async def replace_service(
         "deployments, its variables, volumes, deployments and instances."
     ),
 )
-async def delete_service(service_id: UUID, request: Request, session: SessionDep) -> None:
+async def delete_service(
+    service_id: UUID, request: Request, session: SessionDep, user: CurrentUser
+) -> None:
     with translate_errors():
         settings = request.app.state.settings
         await service_ops.delete_service(
@@ -135,6 +140,7 @@ async def delete_service(service_id: UUID, request: Request, session: SessionDep
             service_id,
             agent=request.app.state.agent,
             settings=settings,
+            owner_id=user.id,
         )
 
 
@@ -145,7 +151,10 @@ async def delete_service(service_id: UUID, request: Request, session: SessionDep
     operation_id="list_service_domains",
     summary="List every hostname that resolves to a service",
 )
-async def list_service_domains(service_id: UUID, session: SessionDep) -> list[DomainRead]:
+async def list_service_domains(
+    service_id: UUID, session: SessionDep, user: CurrentUser
+) -> list[DomainRead]:
     with translate_errors():
+        await service_ops.get_service(session, service_id, owner_id=user.id)
         rows = await domain_ops.list_domains_for_service(session, service_id)
     return [DomainRead.model_validate(row) for row in rows]

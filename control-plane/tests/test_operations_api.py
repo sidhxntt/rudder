@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from typing import Any
 from uuid import UUID
 
@@ -29,10 +29,12 @@ from rudder_cp.models import (
     Project,
     Service,
     ServiceKind,
+    ServiceManagedCapabilities,
     User,
 )
 from rudder_cp.routers import auth as auth_router
 from rudder_cp.routers import operations as operations_router
+from rudder_cp.routers import services as services_router
 from rudder_cp.schemas.common import ConflictError, install_error_handlers
 from rudder_cp.security import issue_token
 from rudder_cp.services import operations as operation_ops
@@ -89,6 +91,31 @@ def seed_fixture(engine: Engine) -> dict[str, str]:
         )
         session.add_all((app, primary, replica))
         session.commit()
+        session.add_all(
+            (
+                ServiceManagedCapabilities(
+                    service_id=app.id,
+                    allowed_job_commands=[
+                        ["python", "manage.py", "migrate"],
+                        ["python", "cleanup.py"],
+                    ],
+                    source="test",
+                ),
+                ServiceManagedCapabilities(
+                    service_id=primary.id,
+                    database_engine="postgres",
+                    data_role="primary",
+                    source="test",
+                ),
+                ServiceManagedCapabilities(
+                    service_id=replica.id,
+                    database_engine="postgres",
+                    data_role="read_replica",
+                    source="test",
+                ),
+            )
+        )
+        session.commit()
         return {
             "token": issue_token(user.id).token,
             "intruder_token": issue_token(intruder.id).token,
@@ -109,6 +136,7 @@ def client_fixture(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Iterator[
         operations_router.router,
         dependencies=[Depends(auth_router.get_current_user)],
     )
+    app.include_router(services_router.router)
 
     def session_override() -> Iterator[Session]:
         with Session(engine) as session:
@@ -780,6 +808,62 @@ def test_job_commands_require_a_persisted_allowlist(
     assert rejected.status_code == 422, rejected.text
 
 
+def test_user_writable_build_config_cannot_grant_privileged_operation_capabilities(
+    client: TestClient, seed: dict[str, str], engine: Engine
+) -> None:
+    """A browser-controlled source/build config is never an operations authority."""
+    with Session(engine) as session:
+        environment_id = session.get(Service, UUID(seed["app"])).environment_id
+        untrusted_app = Service(
+            environment_id=environment_id,
+            name="untrusted-worker",
+            kind=ServiceKind.APP,
+        )
+        untrusted_database = Service(
+            environment_id=environment_id,
+            name="untrusted-postgres",
+            kind=ServiceKind.DATABASE,
+            build_config={"managed_image": "postgres:16-alpine", "data_role": "primary"},
+        )
+        session.add_all((untrusted_app, untrusted_database))
+        session.commit()
+        app_id = str(untrusted_app.id)
+        database_id = str(untrusted_database.id)
+
+    changed_app = client.patch(
+        f"/services/{app_id}",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+        json={"build_config": {"allowed_job_commands": [["echo", "would-be-rce"]]}},
+    )
+    changed_database = client.patch(
+        f"/services/{database_id}",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+        json={"build_config": {"managed_image": "postgres:16-alpine", "data_role": "primary"}},
+    )
+    assert changed_app.status_code == 200, changed_app.text
+    assert changed_database.status_code == 200, changed_database.text
+
+    job = client.post(
+        f"/services/{app_id}/operations/jobs/run",
+        headers=headers(seed, "untrusted-job-command"),
+        json={"command": ["echo", "would-be-rce"]},
+    )
+    replica = client.post(
+        f"/services/{database_id}/operations/data/read-replicas",
+        headers=headers(seed, "untrusted-data-engine"),
+        json={"replicas": 1},
+    )
+    storage = client.post(
+        f"/services/{database_id}/operations/data/storage",
+        headers=headers(seed, "untrusted-data-storage"),
+        json={"current_size_mb": 1024, "requested_size_mb": 2048},
+    )
+
+    assert job.status_code == 422, job.text
+    assert replica.status_code == 422, replica.text
+    assert storage.status_code == 422, storage.text
+
+
 @pytest.mark.parametrize(
     ("image", "expected_status"),
     (
@@ -794,13 +878,23 @@ def test_sql_data_operations_use_persisted_engine_metadata(
 ) -> None:
     with Session(engine) as session:
         environment_id = session.get(Service, UUID(seed["app"])).environment_id
+        engine_name = image.split(":", 1)[0]
         data_service = Service(
             environment_id=environment_id,
-            name=f"engine-{image.split(':', 1)[0]}",
+            name=f"engine-{engine_name}",
             kind=ServiceKind.DATABASE,
-            build_config={"managed_image": image},
+            build_config={"managed_image": "untrusted-browser-value"},
         )
         session.add(data_service)
+        session.flush()
+        session.add(
+            ServiceManagedCapabilities(
+                service_id=data_service.id,
+                database_engine=engine_name,
+                data_role="primary",
+                source="test",
+            )
+        )
         session.commit()
         service_id = str(data_service.id)
     response = client.post(
@@ -896,6 +990,106 @@ def test_concurrent_distinct_operations_retain_both_desired_fields_and_audits(
             OperationKind.SCALE,
             OperationKind.RESOURCES,
         }
+    finally:
+        engine.dispose()
+
+
+def test_concurrent_schedule_cancel_and_resource_update_preserve_both_intents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling a schedule must not overwrite a simultaneous desired-state write."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'schedule-cancel-race.db'}",
+        connect_args={"check_same_thread": False, "timeout": 15},
+    )
+    SQLModel.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            owner = User(email="schedule-owner@example.com", password_hash="x")
+            session.add(owner)
+            session.commit()
+            project = Project(name="schedules", owner_id=owner.id)
+            session.add(project)
+            session.commit()
+            environment = Environment(project_id=project.id, name="production")
+            session.add(environment)
+            session.commit()
+            service = Service(environment_id=environment.id, name="worker", kind=ServiceKind.APP)
+            session.add(service)
+            session.commit()
+            session.add(
+                ServiceManagedCapabilities(
+                    service_id=service.id,
+                    allowed_job_commands=[["python", "cleanup.py"]],
+                    source="test",
+                )
+            )
+            session.commit()
+            schedule = operation_ops.create_operation(
+                session,
+                service_id=service.id,
+                kind=OperationKind.SCHEDULE,
+                requested={
+                    "command": ["python", "cleanup.py"],
+                    "cron": "0 * * * *",
+                    "timeout_seconds": 900,
+                    "retries": 1,
+                    "concurrency_policy": "forbid",
+                },
+                idempotency_key="scheduled-cleanup",
+                owner_id=owner.id,
+            )
+            service_id, owner_id, schedule_id = service.id, owner.id, schedule.id
+
+        stale_state_loaded = Event()
+        allow_cancel = Event()
+        original_state_for = operation_ops._state_for
+
+        def delayed_state_for(session: Session, service: Service):
+            state = original_state_for(session, service)
+            if session.info.get("schedule_cancel"):
+                stale_state_loaded.set()
+                assert allow_cancel.wait(timeout=10)
+            return state
+
+        monkeypatch.setattr(operation_ops, "_state_for", delayed_state_for)
+
+        def cancel() -> None:
+            with Session(engine) as session:
+                session.info["schedule_cancel"] = True
+                operation_ops.delete_schedule(
+                    session,
+                    service_id=service_id,
+                    operation_id=schedule_id,
+                    owner_id=owner_id,
+                )
+
+        def configure_resources() -> None:
+            assert stale_state_loaded.wait(timeout=10)
+            with Session(engine) as session:
+                operation_ops.create_operation(
+                    session,
+                    service_id=service_id,
+                    kind=OperationKind.RESOURCES,
+                    requested={"cpu_request": "250m", "memory_limit_mb": 512},
+                    idempotency_key="concurrent-resources-after-cancel",
+                    owner_id=owner_id,
+                )
+            allow_cancel.set()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            cancelling = executor.submit(cancel)
+            updating = executor.submit(configure_resources)
+            cancelling.result(timeout=15)
+            updating.result(timeout=15)
+
+        with Session(engine) as session:
+            state = operation_ops.get_operations_state(session, service_id, owner_id=owner_id)
+            history = operation_ops.list_operations(session, service_id, owner_id=owner_id)
+        assert state.desired["resources"]["cpu_request"] == "250m"
+        assert state.desired["schedules"] == []
+        cancelled = next(item for item in history if item.id == schedule_id)
+        assert cancelled.status is operation_ops.OperationStatus.CANCELLED
     finally:
         engine.dispose()
 

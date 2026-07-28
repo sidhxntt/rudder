@@ -28,6 +28,7 @@ from rudder_cp.models import (
     Project,
     Service,
     ServiceKind,
+    ServiceManagedCapabilities,
     ServiceOperation,
     ServiceOperationsState,
 )
@@ -125,9 +126,20 @@ def _request_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _database_role(service: Service) -> str:
-    role = service.build_config.get("data_role")
-    return "read_replica" if role == "read_replica" else "primary"
+def _managed_capabilities(
+    session: Session, service: Service
+) -> ServiceManagedCapabilities | None:
+    """Return trusted server-owned metadata, never browser build input."""
+    return session.exec(
+        select(ServiceManagedCapabilities).where(
+            ServiceManagedCapabilities.service_id == service.id
+        )
+    ).first()
+
+
+def _database_role(capabilities: ServiceManagedCapabilities | None) -> str:
+    is_replica = capabilities is not None and capabilities.data_role == "read_replica"
+    return "read_replica" if is_replica else "primary"
 
 
 def _require_database(service: Service, kind: OperationKind) -> None:
@@ -138,35 +150,11 @@ def _require_database(service: Service, kind: OperationKind) -> None:
         )
 
 
-def _database_engine(service: Service) -> str | None:
-    """Resolve a data engine only from service metadata persisted by Rudder.
-
-    Browser input is never an authority for database capability.  Imports
-    persist managed image/template information in ``build_config``; unknown
-    or ambiguous metadata is intentionally treated as unsupported until a
-    dedicated integration teaches Rudder how to operate it safely.
-    """
-    config = service.build_config if isinstance(service.build_config, dict) else {}
-    for key in ("database_engine", "engine", "template", "managed_image", "image"):
-        raw = config.get(key)
-        if not isinstance(raw, str):
-            continue
-        value = raw.lower().split("@", 1)[0]
-        first = value.split("/", 1)[-1].split(":", 1)[0]
-        if first in {"postgres", "postgresql", "timescaledb"}:
-            return "postgres"
-        if first in {"mysql", "mariadb"}:
-            return first
-        if first in {"redis", "valkey"}:
-            return "redis"
-        if first in {"mongo", "mongodb"}:
-            return "mongo"
-    return None
-
-
-def _require_sql_database(service: Service, kind: OperationKind) -> None:
+def _require_sql_database(
+    service: Service, kind: OperationKind, capabilities: ServiceManagedCapabilities | None
+) -> None:
     _require_database(service, kind)
-    engine = _database_engine(service)
+    engine = capabilities.database_engine if capabilities is not None else None
     if engine not in _SQL_ENGINES:
         raise InvalidRequestError(
             f"{kind.value} operations require a known compatible SQL engine",
@@ -178,6 +166,24 @@ def _require_sql_database(service: Service, kind: OperationKind) -> None:
         )
 
 
+def _require_managed_database(
+    service: Service, kind: OperationKind, capabilities: ServiceManagedCapabilities | None
+) -> None:
+    """Reject database mutations unless Rudder provisioned trusted metadata.
+
+    A legacy or manually-created database service can still exist, but it
+    cannot receive stateful operation intents until it is adopted through a
+    server-controlled import/template path.  In particular, browser supplied
+    ``build_config`` must never become an authorization signal.
+    """
+    _require_database(service, kind)
+    if capabilities is None:
+        raise InvalidRequestError(
+            f"{kind.value} operations require managed database metadata",
+            details={"service_id": str(service.id)},
+        )
+
+
 def _require_app(service: Service, kind: OperationKind) -> None:
     if service.kind is not ServiceKind.APP:
         raise InvalidRequestError(
@@ -186,7 +192,11 @@ def _require_app(service: Service, kind: OperationKind) -> None:
         )
 
 
-def _require_allowed_job_command(service: Service, requested: dict[str, Any]) -> None:
+def _require_allowed_job_command(
+    service: Service,
+    requested: dict[str, Any],
+    capabilities: ServiceManagedCapabilities | None,
+) -> None:
     """Allow execution only for commands explicitly stored in service metadata.
 
     The operation endpoint submits future runtime work; accepting arbitrary
@@ -198,7 +208,7 @@ def _require_allowed_job_command(service: Service, requested: dict[str, Any]) ->
     command = requested.get("command")
     if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
         raise InvalidRequestError("job command must be a validated argument list")
-    raw_allowlist = service.build_config.get("allowed_job_commands")
+    raw_allowlist = capabilities.allowed_job_commands if capabilities is not None else []
     allowed = {
         tuple(item)
         for item in raw_allowlist
@@ -211,12 +221,14 @@ def _require_allowed_job_command(service: Service, requested: dict[str, Any]) ->
         )
 
 
-def normalize_scale_request(service: Service, payload: ScaleOperationRequest) -> dict[str, Any]:
+def normalize_scale_request(
+    session: Session, service: Service, payload: ScaleOperationRequest
+) -> dict[str, Any]:
     try:
         normalized = ScaleRequest(
             replicas=payload.replicas,
             service_kind=service.kind,
-            data_role=_database_role(service),
+            data_role=_database_role(_managed_capabilities(session, service)),
         )
     except ValidationError as exc:
         raise InvalidRequestError(
@@ -371,14 +383,15 @@ def create_operation(
     """
     for attempt in range(_MAX_STATE_WRITE_RETRIES):
         service = _require_service(session, service_id, owner_id=owner_id)
+        capabilities = _managed_capabilities(session, service)
         if database_only:
-            _require_database(service, kind)
+            _require_managed_database(service, kind, capabilities)
         if kind in {OperationKind.BACKUP, OperationKind.RESTORE, OperationKind.READ_REPLICA}:
-            _require_sql_database(service, kind)
+            _require_sql_database(service, kind, capabilities)
         if kind in _APP_ONLY_KINDS:
             _require_app(service, kind)
         if kind in {OperationKind.JOB, OperationKind.SCHEDULE}:
-            _require_allowed_job_command(service, requested)
+            _require_allowed_job_command(service, requested, capabilities)
 
         existing_key = session.exec(
             select(ServiceOperation).where(
@@ -499,6 +512,7 @@ def update_operations_intent(
 ) -> ServiceOperationsState:
     """Deep-merge validated desired state and retain an immutable configuration audit row."""
     service = _require_service(session, service_id, owner_id=owner_id)
+    capabilities = _managed_capabilities(session, service)
     state = _state_for(session, service)
     allowed = set(ServiceOperationsIntent.model_fields) - _INTERNAL_ONLY_INTENT_FIELDS
     unknown = set(changes) - allowed
@@ -515,13 +529,13 @@ def update_operations_intent(
     if set(changes) & _APP_ONLY_INTENT_FIELDS:
         _require_app(service, OperationKind.CONFIGURE)
     if set(changes) & _DATABASE_ONLY_INTENT_FIELDS:
-        _require_database(service, OperationKind.CONFIGURE)
+        _require_managed_database(service, OperationKind.CONFIGURE, capabilities)
     if set(changes) & _SQL_DATABASE_INTENT_FIELDS:
-        _require_sql_database(service, OperationKind.CONFIGURE)
+        _require_sql_database(service, OperationKind.CONFIGURE, capabilities)
     if (
         "replicas" in changes
         and service.kind is ServiceKind.DATABASE
-        and _database_role(service) == "primary"
+        and _database_role(capabilities) == "primary"
     ):
         raise InvalidRequestError(
             "manual scale cannot target database primaries",
@@ -578,32 +592,98 @@ def delete_schedule(
     operation_id: uuid.UUID,
     owner_id: uuid.UUID,
 ) -> None:
-    """Cancel a schedule without deleting its audit record."""
-    service = _require_service(session, service_id, owner_id=owner_id)
-    operation = session.get(ServiceOperation, operation_id)
-    if (
-        operation is None
-        or operation.service_id != service.id
-        or operation.kind is not OperationKind.SCHEDULE
-    ):
-        raise NotFoundError(
-            f"schedule {operation_id} does not exist", details={"operation_id": str(operation_id)}
-        )
-    if operation.status is OperationStatus.CANCELLED:
-        return
-    state = _state_for(session, service)
-    schedules = [
-        schedule
-        for schedule in state.desired.get("schedules", [])
-        if not (
-            isinstance(schedule, dict)
-            and schedule.get("operation_id") == str(operation.id)
-        )
-    ]
-    state.desired = {**state.desired, "schedules": schedules}
-    _touch_pending(state)
-    operation.status = OperationStatus.CANCELLED
-    operation.observed = {**operation.observed, "cancelled": True}
-    operation.completed_at = utc_now()
-    session.add_all((operation, state))
-    session.commit()
+    """Cancel a schedule without allowing a stale state write to erase intent.
+
+    This mirrors ``create_operation``'s aggregate compare-and-swap.  A cancel
+    is a desired-state mutation just like scale/resources; both the audit
+    status and the state version must advance in the same transaction.
+    """
+    for attempt in range(_MAX_STATE_WRITE_RETRIES):
+        service = _require_service(session, service_id, owner_id=owner_id)
+        operation = session.get(ServiceOperation, operation_id)
+        if (
+            operation is None
+            or operation.service_id != service.id
+            or operation.kind is not OperationKind.SCHEDULE
+        ):
+            raise NotFoundError(
+                f"schedule {operation_id} does not exist",
+                details={"operation_id": str(operation_id)},
+            )
+        if operation.status is OperationStatus.CANCELLED:
+            return
+        try:
+            state = _state_for(session, service)
+        except IntegrityError as exc:
+            session.rollback()
+            if attempt + 1 < _MAX_STATE_WRITE_RETRIES:
+                continue
+            raise ConflictError(
+                "service operations state is being initialized; retry the request",
+                details={"service_id": str(service.id)},
+            ) from exc
+
+        schedules = [
+            schedule
+            for schedule in state.desired.get("schedules", [])
+            if not (
+                isinstance(schedule, dict)
+                and schedule.get("operation_id") == str(operation.id)
+            )
+        ]
+        desired = _normalize_desired_intent({**state.desired, "schedules": schedules})
+        next_version = state.version + 1
+        observed = {
+            **state.observed,
+            "reconciliation": {
+                "pending": True,
+                "requested_version": next_version,
+            },
+        }
+        try:
+            updated = session.execute(
+                sa.update(ServiceOperationsState)
+                .where(
+                    ServiceOperationsState.id == state.id,
+                    ServiceOperationsState.version == state.version,
+                )
+                .values(
+                    desired=desired,
+                    observed=observed,
+                    version=next_version,
+                    pending_reconciliation=True,
+                    updated_at=utc_now(),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if updated.rowcount != 1:
+                session.rollback()
+                continue
+            session.execute(
+                sa.update(ServiceOperation)
+                .where(
+                    ServiceOperation.id == operation.id,
+                    ServiceOperation.status != OperationStatus.CANCELLED,
+                )
+                .values(
+                    status=OperationStatus.CANCELLED,
+                    observed={**operation.observed, "cancelled": True},
+                    completed_at=utc_now(),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            session.commit()
+            return
+        except IntegrityError as exc:
+            session.rollback()
+            if attempt + 1 < _MAX_STATE_WRITE_RETRIES:
+                continue
+            raise ConflictError(
+                "schedule cancellation conflicted with service operations state",
+                details={"service_id": str(service_id), "operation_id": str(operation_id)},
+            ) from exc
+
+    raise ConflictError(
+        "service operations state changed repeatedly; reload and retry",
+        details={"service_id": str(service_id)},
+    )

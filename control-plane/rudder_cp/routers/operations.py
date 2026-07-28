@@ -153,7 +153,7 @@ async def request_scale(
 ) -> ServiceOperationRead:
     with translate_errors():
         service = operation_ops.get_service(session, service_id, owner_id=user.id)
-        requested = operation_ops.normalize_scale_request(service, payload)
+        requested = operation_ops.normalize_scale_request(session, service, payload)
         operation = operation_ops.create_operation(
             session,
             service_id=service_id,

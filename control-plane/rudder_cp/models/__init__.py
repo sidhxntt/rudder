@@ -18,6 +18,7 @@ from rudder_cp.models.node import Node
 from rudder_cp.models.operations import (
     OperationKind,
     OperationStatus,
+    ServiceManagedCapabilities,
     ServiceOperation,
     ServiceOperationsState,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "OperationStatus",
     "Project",
     "Service",
+    "ServiceManagedCapabilities",
     "ServiceOperation",
     "ServiceOperationsState",
     "ServiceKind",

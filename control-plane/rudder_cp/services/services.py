@@ -24,6 +24,7 @@ from rudder_cp.models import (
     Environment,
     Instance,
     InstanceStatus,
+    Project,
     Service,
     ServiceOperation,
     Variable,
@@ -50,23 +51,31 @@ class RuntimeCleanupError(RudderError):
         )
 
 
-async def list_services(session: Session, environment_id: uuid.UUID) -> list[Service]:
-    environment = _require_environment(session, environment_id)
+async def list_services(
+    session: Session, environment_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
+) -> list[Service]:
+    environment = _require_environment(session, environment_id, owner_id=owner_id)
     rows = session.exec(
         select(Service).where(Service.environment_id == environment.id).order_by(Service.name)
     ).all()
     return list(rows)
 
 
-async def get_service(session: Session, service_id: uuid.UUID) -> Service:
-    return _require_service(session, service_id)
+async def get_service(
+    session: Session, service_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
+) -> Service:
+    return _require_service(session, service_id, owner_id=owner_id)
 
 
 async def create_service(
-    session: Session, environment_id: uuid.UUID, payload: ServiceCreate
+    session: Session,
+    environment_id: uuid.UUID,
+    payload: ServiceCreate,
+    *,
+    owner_id: uuid.UUID | None = None,
 ) -> Service:
     """Create a service and, in the same transaction, its D15 system Domain."""
-    environment = _require_environment(session, environment_id)
+    environment = _require_environment(session, environment_id, owner_id=owner_id)
 
     service = Service(environment_id=environment.id, **payload.model_dump())
     session.add(service)
@@ -86,24 +95,37 @@ async def create_service(
 
 
 async def update_service(
-    session: Session, service_id: uuid.UUID, payload: ServiceUpdate
+    session: Session,
+    service_id: uuid.UUID,
+    payload: ServiceUpdate,
+    *,
+    owner_id: uuid.UUID | None = None,
 ) -> Service:
     """PATCH. Absent fields are untouched; ``None`` is only sent for nullables."""
-    service = _require_service(session, service_id)
+    service = _require_service(session, service_id, owner_id=owner_id)
     data = payload.model_dump(exclude_unset=True)
     return await _apply_service_write(session, service=service, data=data)
 
 
 async def replace_service(
-    session: Session, service_id: uuid.UUID, payload: ServiceReplace
+    session: Session,
+    service_id: uuid.UUID,
+    payload: ServiceReplace,
+    *,
+    owner_id: uuid.UUID | None = None,
 ) -> Service:
     """PUT. Every writable field is set, so the same body twice is the same row."""
-    service = _require_service(session, service_id)
+    service = _require_service(session, service_id, owner_id=owner_id)
     return await _apply_service_write(session, service=service, data=payload.model_dump())
 
 
 async def delete_service(
-    session: Session, service_id: uuid.UUID, *, agent: AgentClient, settings: Settings
+    session: Session,
+    service_id: uuid.UUID,
+    *,
+    agent: AgentClient,
+    settings: Settings,
+    owner_id: uuid.UUID | None = None,
 ) -> None:
     """Delete a service and everything that hangs off it.
 
@@ -111,7 +133,7 @@ async def delete_service(
     refusal would leave the user unable to delete a service at all without
     hand-deleting its variables, volumes, deployments and domains first.
     """
-    service = _require_service(session, service_id)
+    service = _require_service(session, service_id, owner_id=owner_id)
     await remove_runtime_containers(
         session, service_ids=[service.id], agent=agent, settings=settings
     )
@@ -281,21 +303,34 @@ def _flush_or_conflict(session: Session, *, environment_id: uuid.UUID, name: str
         ) from err
 
 
-def _require_environment(session: Session, environment_id: uuid.UUID) -> Environment:
+def _require_environment(
+    session: Session, environment_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
+) -> Environment:
     environment = session.get(Environment, environment_id)
     if environment is None:
         raise NotFoundError(
             f"environment {environment_id} does not exist",
             details={"environment_id": str(environment_id)},
         )
+    if owner_id is not None:
+        project = session.get(Project, environment.project_id)
+        if project is None or project.owner_id != owner_id:
+            raise NotFoundError(
+                f"environment {environment_id} does not exist",
+                details={"environment_id": str(environment_id)},
+            )
     return environment
 
 
-def _require_service(session: Session, service_id: uuid.UUID) -> Service:
+def _require_service(
+    session: Session, service_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
+) -> Service:
     service = session.get(Service, service_id)
     if service is None:
         raise NotFoundError(
             f"service {service_id} does not exist",
             details={"service_id": str(service_id)},
         )
+    if owner_id is not None:
+        _require_environment(session, service.environment_id, owner_id=owner_id)
     return service

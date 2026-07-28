@@ -90,6 +90,36 @@ class ServiceOperationsState(SQLModel, table=True):
     )
 
 
+class ServiceManagedCapabilities(SQLModel, table=True):
+    """Capabilities authored by Rudder's trusted import/template pipeline.
+
+    ``Service.build_config`` is user-editable source/build input.  It must
+    never grant a dashboard permission to execute a job or mutate a managed
+    database.  This small, separate record is created only by server-side
+    provisioning code and intentionally has no generic CRUD endpoint.
+    """
+
+    __tablename__ = "service_managed_capabilities"
+    __table_args__ = (
+        sa.UniqueConstraint("service_id", name="uq_service_managed_capabilities_service"),
+    )
+
+    id: uuid.UUID = uuid_pk()
+    service_id: uuid.UUID = Field(
+        foreign_key="service.id", sa_type=sa.Uuid, nullable=False, index=True
+    )
+    # Canonical engine labels such as postgres, mysql, mariadb, redis, mongo.
+    database_engine: str | None = Field(default=None, max_length=32)
+    # ``primary`` or ``read_replica`` for supported database templates.
+    data_role: str | None = Field(default=None, max_length=32)
+    # Exact argv lists accepted by the one-off job / schedule endpoints.
+    allowed_job_commands: list[list[str]] = Field(
+        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False)
+    )
+    source: str = Field(default="import", max_length=32)
+    created_at: datetime = created_at_column()
+
+
 class ServiceOperation(SQLModel, table=True):
     """One requested service operation and the reconciler's observed result."""
 
