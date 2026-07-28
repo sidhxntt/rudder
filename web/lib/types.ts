@@ -283,8 +283,16 @@ export interface ServiceOperationsEnvelope {
   pending_reconciliation: boolean;
   updated_at: string;
   history: ServiceOperation[];
+  /** Safe server-authored flags; command arguments and secrets are never exposed. */
+  capabilities: ServiceOperationCapabilities;
   /** HTTP ETag used for safe compare-and-swap configuration patches. */
   etag: string | null;
+}
+
+export interface ServiceOperationCapabilities {
+  database_engine: string | null;
+  data_role: string | null;
+  job_commands_available: boolean;
 }
 
 export interface ServiceOperationsState {

@@ -45,7 +45,7 @@ class WorkloadSpec:
     node_selector: Mapping[str, str] | None = None
     anti_affinity: bool = False
     topology_spread: bool = False
-    rolling_update: Mapping[str, str] | None = None
+    rolling_update: Mapping[str, str | int] | None = None
     prometheus_enabled: bool = False
     # The workload may be controlled by an HPA, in which case ``replicas`` is
     # intentionally unset.  Readiness still needs a concrete safety boundary:
@@ -469,7 +469,10 @@ def _operation_config(
     observed: dict[str, object] = {}
     rolling_update: dict[str, str] | None = None
     if strategy == "rolling":
-        rolling_update = {"max_surge": "25%", "max_unavailable": "0"}
+        # Kubernetes accepts an IntOrString here. A bare numeric string is
+        # interpreted as a percentage and rejected by the API server; use an
+        # actual integer for zero unavailable pods.
+        rolling_update = {"max_surge": "25%", "max_unavailable": 0}
         observed["rollout"] = {"status": "applied", "strategy": "rolling"}
     elif strategy in {"blue_green", "canary"}:
         observed["rollout"] = {

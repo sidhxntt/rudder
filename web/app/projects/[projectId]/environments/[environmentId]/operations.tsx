@@ -124,7 +124,11 @@ export function Operations({ service }: { service: Service }) {
   const runtime = record(observed.runtime);
   const reconciliation = record(observed.reconciliation);
   const isApp = service.kind === "app";
-  const isDatabase = service.kind === "database";
+  const capabilities = operations.data?.capabilities;
+  const databaseEngine = capabilities?.database_engine ?? null;
+  const managedDatabase = service.kind === "database" && databaseEngine !== null;
+  const sqlDatabase = managedDatabase && ["postgres", "mysql", "mariadb"].includes(databaseEngine);
+  const jobCommandsAvailable = isApp && Boolean(capabilities?.job_commands_available);
 
   const [replicaValue, setReplicaValue] = useState(String(number(desired.replicas, service.replica_count)));
   const [cpuRequest, setCpuRequest] = useState(text(desiredResources.cpu_request));
@@ -155,6 +159,7 @@ export function Operations({ service }: { service: Service }) {
   const [scheduleCommand, setScheduleCommand] = useState("");
   const [prometheus, setPrometheus] = useState(Boolean(desiredObservability.prometheus));
   const [grafana, setGrafana] = useState(Boolean(desiredObservability.grafana));
+  const [restoreCandidate, setRestoreCandidate] = useState<string | null>(null);
 
   const knownGoodDeployments = useMemo(
     () => (deployments.data ?? []).filter((deployment) => deployment.status === "live" || deployment.status === "superseded"),
@@ -223,20 +228,72 @@ export function Operations({ service }: { service: Service }) {
           <Section title="Release">
             <div className="grid grid-cols-[1fr_auto] gap-sm"><Field label="Rollout strategy"><select aria-label="Rollout strategy" className={inputClass} value={rolloutStrategy} onChange={(event) => setRolloutStrategy(event.target.value as "rolling" | "blue_green" | "canary")}><option value="rolling">rolling</option><option value="blue_green">blue/green</option><option value="canary">canary</option></select></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={rollout.isPending} onClick={() => rollout.mutate({ strategy: rolloutStrategy, canary_steps: rolloutStrategy === "canary" ? canarySteps.split(",").map((step) => Number(step.trim())).filter(Boolean) : undefined })}>Save rollout</button></div></div>
             {rolloutStrategy === "canary" ? <Field label="Canary steps (%)"><input aria-label="Canary steps" className={`${inputClass} mt-sm`} value={canarySteps} onChange={(event) => setCanarySteps(event.target.value)} /></Field> : null}
-            <div className="mt-md border-t border-hairline-faint pt-sm"><p className="text-micro text-ink-secondary">Restore immutable release</p><p className="pt-xxs text-micro text-ink-faint">Restoring a release repoints the existing immutable image. No source build is started.</p><div className="mt-sm space-y-xs">{knownGoodDeployments.map((deployment) => <div key={deployment.id} className="flex items-center justify-between gap-sm"><span className="truncate font-mono text-micro text-ink-mute">{deployment.commit_sha ?? deployment.image_tag ?? deployment.id}</span><button type="button" className={buttonClass} disabled={rollback.isPending} onClick={() => rollback.mutate(deployment.id)}>Restore</button></div>)}{knownGoodDeployments.length === 0 ? <p className="text-micro text-ink-faint">No immutable healthy release is available.</p> : null}</div></div>
+            <div className="mt-md border-t border-hairline-faint pt-sm">
+              <p className="text-micro text-ink-secondary">Restore immutable release</p>
+              <p className="pt-xxs text-micro text-ink-faint">
+                Restoring a release repoints the existing immutable image. No source build is started.
+              </p>
+              <div className="mt-sm space-y-xs">
+                {knownGoodDeployments.map((deployment) => (
+                  <div key={deployment.id} className="flex items-center justify-between gap-sm">
+                    <span className="truncate font-mono text-micro text-ink-mute">
+                      {deployment.commit_sha ?? deployment.image_tag ?? deployment.id}
+                    </span>
+                    {restoreCandidate === deployment.id ? (
+                      <div className="flex items-center gap-xs">
+                        <button
+                          type="button"
+                          className={buttonClass}
+                          onClick={() => setRestoreCandidate(null)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className={buttonClass}
+                          disabled={rollback.isPending}
+                          onClick={() => {
+                            rollback.mutate(deployment.id);
+                            setRestoreCandidate(null);
+                          }}
+                        >
+                          Confirm restore without a build
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className={buttonClass}
+                        disabled={rollback.isPending}
+                        onClick={() => setRestoreCandidate(deployment.id)}
+                      >
+                        Restore
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {knownGoodDeployments.length === 0 ? (
+                  <p className="text-micro text-ink-faint">No immutable healthy release is available.</p>
+                ) : null}
+              </div>
+            </div>
           </Section>
 
           <Section title="Jobs & placement">
             <Field label="Node selector (key=value, comma separated)"><input aria-label="Node selector" className={inputClass} value={nodeSelector} onChange={(event) => setNodeSelector(event.target.value)} /></Field>
             <div className="mt-sm flex gap-md text-micro text-ink-mute"><label><input type="checkbox" checked={topologySpread} onChange={(event) => setTopologySpread(event.target.checked)} /> spread across nodes</label><label><input type="checkbox" checked={antiAffinity} onChange={(event) => setAntiAffinity(event.target.checked)} /> anti-affinity</label></div>
             <button type="button" className={`${buttonClass} mt-sm`} disabled={placement.isPending} onClick={() => { const selector = Object.fromEntries(nodeSelector.split(",").map((part) => part.trim()).filter(Boolean).map((part) => { const [key, ...value] = part.split("="); return [key.trim(), value.join("=").trim()]; })); placement.mutate({ node_selector: selector, topology_spread: topologySpread, anti_affinity: antiAffinity }); }}>Apply placement</button>
-            <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="One-off command (must be approved by the service template)"><input aria-label="One-off command" className={inputClass} placeholder="npm run migrate" value={jobCommand} onChange={(event) => setJobCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={runJob.isPending || !jobCommand.trim()} onClick={() => runJob.mutate({ command: jobCommand.trim().split(/\s+/) })}>Run job</button></div>
-            <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="Schedule"><input aria-label="Schedule cron" className={inputClass} value={scheduleCron} onChange={(event) => setScheduleCron(event.target.value)} /></Field><Field label="Scheduled command"><input aria-label="Scheduled command" className={`${inputClass} mt-sm`} placeholder="npm run cleanup" value={scheduleCommand} onChange={(event) => setScheduleCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={schedule.isPending || !scheduleCommand.trim()} onClick={() => schedule.mutate({ cron: scheduleCron, command: scheduleCommand.trim().split(/\s+/) })}>Add schedule</button>{schedules.map((item) => { const entry = record(item); return <div key={String(entry.operation_id)} className="mt-xs flex justify-between text-micro text-ink-mute"><span>{text(record(entry.spec).cron, "schedule")}</span><button type="button" className="text-ink-faint hover:text-status-failed" onClick={() => deleteSchedule.mutate(String(entry.operation_id))}>remove</button></div>; })}</div>
+            {jobCommandsAvailable ? (
+              <>
+                <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="One-off command (must be approved by the service template)"><input aria-label="One-off command" className={inputClass} placeholder="npm run migrate" value={jobCommand} onChange={(event) => setJobCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={runJob.isPending || !jobCommand.trim()} onClick={() => runJob.mutate({ command: jobCommand.trim().split(/\s+/) })}>Run job</button></div>
+                <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="Schedule"><input aria-label="Schedule cron" className={inputClass} value={scheduleCron} onChange={(event) => setScheduleCron(event.target.value)} /></Field><Field label="Scheduled command"><input aria-label="Scheduled command" className={`${inputClass} mt-sm`} placeholder="npm run cleanup" value={scheduleCommand} onChange={(event) => setScheduleCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={schedule.isPending || !scheduleCommand.trim()} onClick={() => schedule.mutate({ cron: scheduleCron, command: scheduleCommand.trim().split(/\s+/) })}>Add schedule</button>{schedules.map((item) => { const entry = record(item); return <div key={String(entry.operation_id)} className="mt-xs flex justify-between text-micro text-ink-mute"><span>{text(record(entry.spec).cron, "schedule")}</span><button type="button" className="text-ink-faint hover:text-status-failed" onClick={() => deleteSchedule.mutate(String(entry.operation_id))}>remove</button></div>; })}</div>
+              </>
+            ) : <p className="mt-md border-t border-hairline-faint pt-sm text-micro text-ink-faint">No approved one-off or scheduled commands are configured for this service.</p>}
           </Section>
         </>
       ) : null}
 
-      {isDatabase ? <Section title="Data"><p className="text-micro text-ink-faint">Database actions are only applied when Rudder confirms managed-engine capability. Unsupported operator actions remain explicitly degraded.</p><div className="mt-sm grid grid-cols-2 gap-sm"><Field label="Backup retention (days)"><input aria-label="Backup retention days" className={inputClass} inputMode="numeric" value={retentionDays} onChange={(event) => setRetentionDays(event.target.value)} /></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={backup.isPending} onClick={() => backup.mutate(Number(retentionDays))}>Create backup</button></div><Field label="Read replicas"><input aria-label="Read replicas" className={inputClass} inputMode="numeric" value={readReplicas} onChange={(event) => setReadReplicas(event.target.value)} /></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={replicas.isPending} onClick={() => replicas.mutate(Number(readReplicas))}>Request replicas</button></div><Field label="Current storage (MB)"><input aria-label="Current storage" className={inputClass} inputMode="numeric" value={storageCurrent} onChange={(event) => setStorageCurrent(event.target.value)} /></Field><Field label="Requested storage (MB)"><input aria-label="Requested storage" className={inputClass} inputMode="numeric" value={storageRequested} onChange={(event) => setStorageRequested(event.target.value)} /></Field></div><button type="button" className={`${buttonClass} mt-sm`} disabled={storage.isPending || !storageCurrent || !storageRequested} onClick={() => storage.mutate({ currentSizeMb: Number(storageCurrent), requestedSizeMb: Number(storageRequested) })}>Request storage expansion</button><p className="pt-xs text-micro text-ink-faint">Volumes can grow but cannot safely shrink. Read replicas always remain private.</p></Section> : <Section title="Data"><p className="text-micro text-ink-faint">Data controls are available only for managed database services.</p></Section>}
+      {managedDatabase ? <Section title="Data"><p className="text-micro text-ink-faint">Managed {databaseEngine} controls. Unsupported operator actions are reported as degraded instead of being treated as successful.</p>{sqlDatabase ? <div className="mt-sm grid grid-cols-2 gap-sm"><Field label="Backup retention (days)"><input aria-label="Backup retention days" className={inputClass} inputMode="numeric" value={retentionDays} onChange={(event) => setRetentionDays(event.target.value)} /></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={backup.isPending} onClick={() => backup.mutate(Number(retentionDays))}>Create backup</button></div><Field label="Read replicas"><input aria-label="Read replicas" className={inputClass} inputMode="numeric" value={readReplicas} onChange={(event) => setReadReplicas(event.target.value)} /></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={replicas.isPending} onClick={() => replicas.mutate(Number(readReplicas))}>Request replicas</button></div></div> : <p className="mt-sm text-micro text-ink-faint">Backups and SQL read replicas are unavailable for this engine.</p>}<div className="mt-sm grid grid-cols-2 gap-sm"><Field label="Current storage (MB)"><input aria-label="Current storage" className={inputClass} inputMode="numeric" value={storageCurrent} onChange={(event) => setStorageCurrent(event.target.value)} /></Field><Field label="Requested storage (MB)"><input aria-label="Requested storage" className={inputClass} inputMode="numeric" value={storageRequested} onChange={(event) => setStorageRequested(event.target.value)} /></Field></div><button type="button" className={`${buttonClass} mt-sm`} disabled={storage.isPending || !storageCurrent || !storageRequested} onClick={() => storage.mutate({ currentSizeMb: Number(storageCurrent), requestedSizeMb: Number(storageRequested) })}>Request storage expansion</button><p className="pt-xs text-micro text-ink-faint">Volumes can grow but cannot safely shrink. Read replicas always remain private.</p></Section> : <Section title="Data"><p className="text-micro text-ink-faint">Data controls are unavailable until Rudder confirms managed database capability for this service.</p></Section>}
 
       <Section title="Observability"><div className="flex gap-md text-micro text-ink-mute"><label><input aria-label="Enable Prometheus" type="checkbox" checked={prometheus} onChange={(event) => setPrometheus(event.target.checked)} /> Prometheus</label><label><input aria-label="Enable Grafana" type="checkbox" checked={grafana} onChange={(event) => setGrafana(event.target.checked)} /> Grafana</label></div><button type="button" className={`${buttonClass} mt-sm`} disabled={observability.isPending} onClick={() => observability.mutate({ prometheus, grafana })}>Save observability</button></Section>
       <Section title="Operation history"><OperationHistory history={operations.data?.history ?? []} /></Section>

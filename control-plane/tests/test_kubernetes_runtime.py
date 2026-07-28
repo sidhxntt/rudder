@@ -265,7 +265,7 @@ async def test_runtime_renders_app_operations_as_workload_hpa_and_jobs() -> None
     assert workload.anti_affinity is True
     assert workload.topology_spread is True
     assert workload.prometheus_enabled is True
-    assert workload.rolling_update is not None
+    assert workload.rolling_update == {"max_surge": "25%", "max_unavailable": 0}
     autoscaler = next(value for name, value in api.calls if name == "autoscaler")
     assert autoscaler.min_replicas == 2
     assert autoscaler.max_replicas == 5

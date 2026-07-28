@@ -14,6 +14,11 @@ const hooks = vi.hoisted(() => {
         version: 1,
         pending_reconciliation: false,
         updated_at: "2026-07-28T00:00:00Z",
+        capabilities: {
+          database_engine: null as string | null,
+          data_role: null as string | null,
+          job_commands_available: false,
+        },
         history: [
           {
             id: "operation-1",
@@ -77,7 +82,14 @@ const app = {
 };
 
 describe("Operations", () => {
-  beforeEach(() => hooks.mutation.mutate.mockClear());
+  beforeEach(() => {
+    hooks.mutation.mutate.mockClear();
+    hooks.operations.data.capabilities = {
+      database_engine: null,
+      data_role: null,
+      job_commands_available: false,
+    };
+  });
 
   it("exposes workload controls and labels immutable restore as no-build", () => {
     render(<Operations service={app} />);
@@ -101,9 +113,41 @@ describe("Operations", () => {
     expect(hooks.mutation.mutate).toHaveBeenCalledWith(3);
   });
 
+  it("requires confirmation before restoring an immutable deployment", async () => {
+    const user = userEvent.setup();
+    render(<Operations service={app} />);
+
+    await user.click(screen.getByRole("button", { name: "Restore" }));
+
+    expect(hooks.mutation.mutate).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "Confirm restore without a build" }),
+    ).toBeTruthy();
+
+    await user.click(
+      screen.getByRole("button", { name: "Confirm restore without a build" }),
+    );
+
+    expect(hooks.mutation.mutate).toHaveBeenCalledWith("old");
+  });
+
   it("does not expose database write controls for an application", () => {
     render(<Operations service={app} />);
-    expect(screen.getByText("Data controls are available only for managed database services.")).toBeTruthy();
+    expect(screen.getByText("Data controls are unavailable until Rudder confirms managed database capability for this service.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Create backup" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run job" })).toBeNull();
+    expect(screen.getByText("No approved one-off or scheduled commands are configured for this service.")).toBeTruthy();
+  });
+
+  it("only exposes SQL data controls after the server reports a managed engine", () => {
+    hooks.operations.data.capabilities = {
+      database_engine: "postgres",
+      data_role: "primary",
+      job_commands_available: false,
+    };
+    render(<Operations service={{ ...app, kind: "database" }} />);
+
+    expect(screen.getByRole("button", { name: "Create backup" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Request replicas" })).toBeTruthy();
   });
 });

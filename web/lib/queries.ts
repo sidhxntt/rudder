@@ -176,6 +176,18 @@ export function useServiceOperations(serviceId: string | undefined) {
   });
 }
 
+/** Compare-and-swap replacement for advanced desired-state editors. */
+export function useUpdateServiceOperations(serviceId: string | undefined) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { changes: Record<string, unknown>; etag: string }) =>
+      api.updateServiceOperations(serviceId ?? "", args.changes, args.etag),
+    onSuccess: () => {
+      if (serviceId) void client.invalidateQueries({ queryKey: keys.operations(serviceId) });
+    },
+  });
+}
+
 function useOperationMutation<T>(
   serviceId: string | undefined,
   operation: (serviceId: string, payload: T) => Promise<unknown>,
