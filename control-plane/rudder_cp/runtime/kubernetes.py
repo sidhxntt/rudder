@@ -47,6 +47,11 @@ class WorkloadSpec:
     topology_spread: bool = False
     rolling_update: Mapping[str, str] | None = None
     prometheus_enabled: bool = False
+    # The workload may be controlled by an HPA, in which case ``replicas`` is
+    # intentionally unset.  Readiness still needs a concrete safety boundary:
+    # never promote traffic after just one pod when the requested minimum is
+    # greater than one.  Zero is a valid scale-to-zero terminal state.
+    ready_replicas: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +124,13 @@ class KubernetesApi(Protocol):
 
     async def apply_autoscaler(self, namespace: str, spec: AutoscalerSpec) -> None: ...
 
+    async def delete_autoscaler(self, namespace: str, name: str) -> None: ...
+
     async def apply_cron_job(self, namespace: str, spec: CronJobSpec) -> None: ...
+
+    async def delete_cron_jobs_for_workload(
+        self, namespace: str, *, workload_name: str, release_id: str
+    ) -> None: ...
 
     async def apply_job(self, namespace: str, spec: JobSpec) -> None: ...
 
@@ -195,6 +206,31 @@ class KubernetesRuntime:
                     topology_spread=operation_config["topology_spread"],
                     rolling_update=operation_config["rolling_update"],
                     prometheus_enabled=operation_config["prometheus_enabled"],
+                    ready_replicas=operation_config["ready_replicas"],
+                )
+                # Keep the workload label on every associated primitive so a
+                # later intent reconciliation can remove only the stale HPA /
+                # CronJobs for this immutable release.  A disabled feature is
+                # a deletion, not merely an omitted future render.
+                member_labels = {**member_labels, "rudder.workload": resource_name}
+                workload = WorkloadSpec(
+                    name=workload.name,
+                    service_name=workload.service_name,
+                    image=workload.image,
+                    port=workload.port,
+                    command=workload.command,
+                    environment=workload.environment,
+                    labels=member_labels,
+                    stateful=workload.stateful,
+                    volume_mount_path=workload.volume_mount_path,
+                    replicas=workload.replicas,
+                    resources=workload.resources,
+                    node_selector=workload.node_selector,
+                    anti_affinity=workload.anti_affinity,
+                    topology_spread=workload.topology_spread,
+                    rolling_update=workload.rolling_update,
+                    prometheus_enabled=workload.prometheus_enabled,
+                    ready_replicas=workload.ready_replicas,
                 )
                 # Workers and one-shot background processes often have no
                 # listening port. They still need a workload, but an empty
@@ -235,6 +271,21 @@ class KubernetesRuntime:
                         "min_replicas": autoscaling["min_replicas"],
                         "max_replicas": autoscaling["max_replicas"],
                     }
+                else:
+                    await self.api.delete_autoscaler(
+                        release.namespace, dns_label(f"{resource_name}-hpa")
+                    )
+                    member_observed["autoscaling"] = {"status": "disabled"}
+
+                # CronJob names are derived from operation ids, so intent
+                # deletion cannot be represented by upserting the remaining
+                # jobs. Prune this release/workload's scheduled jobs first,
+                # then render exactly the desired schedule set.
+                await self.api.delete_cron_jobs_for_workload(
+                    release.namespace,
+                    workload_name=resource_name,
+                    release_id=release.release_id,
+                )
                 for schedule in operation_config["schedules"]:
                     if not isinstance(schedule, Mapping):
                         continue
@@ -313,7 +364,9 @@ class KubernetesRuntime:
             for member, workload in workloads:
                 if not member.public or member.port is None:
                     continue
-                host = f"{dns_label(member.name)}-{release.namespace}.{self.settings.local_domain}"
+                host = member.public_host or (
+                    f"{dns_label(member.name)}-{release.namespace}.{self.settings.local_domain}"
+                )
                 route = PublicRouteSpec(
                     name=dns_label(f"route-{member.name}"),
                     host=host,
@@ -404,6 +457,11 @@ def _operation_config(
         # An HPA is the sole replica controller. Leaving .spec.replicas unset
         # avoids every release reconciliation fighting the HPA.
         replicas = None
+    ready_replicas = (
+        _int(autoscaling.get("min_replicas"), 1)
+        if autoscaling is not None
+        else replicas
+    )
 
     rollout_raw = operations.get("rollout")
     rollout = rollout_raw if isinstance(rollout_raw, Mapping) else {}
@@ -441,6 +499,7 @@ def _operation_config(
     return (
         {
             "replicas": replicas,
+            "ready_replicas": max(0, ready_replicas),
             "resources": resources,
             "node_selector": node_selector,
             "anti_affinity": placement.get("anti_affinity") is True,
@@ -736,6 +795,15 @@ class AsyncKubernetesApi:
             namespace=namespace,
         )
 
+    async def delete_autoscaler(self, namespace: str, name: str) -> None:
+        try:
+            await self.autoscaling.delete_namespaced_horizontal_pod_autoscaler(
+                name, namespace, body=client.V1DeleteOptions(propagation_policy="Background")
+            )
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+
     async def apply_cron_job(self, namespace: str, spec: CronJobSpec) -> None:
         body = client.V1CronJob(
             metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
@@ -758,6 +826,19 @@ class AsyncKubernetesApi:
             spec.name,
             body,
             namespace=namespace,
+        )
+
+    async def delete_cron_jobs_for_workload(
+        self, namespace: str, *, workload_name: str, release_id: str
+    ) -> None:
+        selector = (
+            f"rudder.workload={workload_name},"
+            f"rudder.release={dns_label(release_id)}"
+        )
+        await self.batch.delete_collection_namespaced_cron_job(
+            namespace,
+            label_selector=selector,
+            body=client.V1DeleteOptions(propagation_policy="Background"),
         )
 
     async def apply_job(self, namespace: str, spec: JobSpec) -> None:
@@ -799,6 +880,11 @@ class AsyncKubernetesApi:
         timeout_seconds: int,
         poll_seconds: float,
     ) -> str:
+        required = spec.ready_replicas
+        # A scale-to-zero service is intentionally ready without a pod.  It
+        # must not wait forever or manufacture a fake running instance.
+        if required == 0:
+            return spec.name
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         while asyncio.get_running_loop().time() < deadline:
             if spec.stateful:
@@ -811,7 +897,7 @@ class AsyncKubernetesApi:
                     await self.apps.read_namespaced_deployment_status(spec.name, namespace)
                 ).status
                 ready = status.available_replicas or 0
-            if ready >= 1:
+            if ready >= required:
                 pods = await self.core.list_namespaced_pod(
                     namespace, label_selector=f"rudder.workload={spec.name}"
                 )
@@ -866,6 +952,15 @@ class AsyncKubernetesApi:
         await self.apps.delete_collection_namespaced_stateful_set(
             namespace, label_selector=selector, body=delete_options
         )
+        await self.autoscaling.delete_collection_namespaced_horizontal_pod_autoscaler(
+            namespace, label_selector=selector, body=delete_options
+        )
+        await self.batch.delete_collection_namespaced_job(
+            namespace, label_selector=selector, body=delete_options
+        )
+        await self.batch.delete_collection_namespaced_cron_job(
+            namespace, label_selector=selector, body=delete_options
+        )
         await self.core.delete_collection_namespaced_service(
             namespace, label_selector=selector, body=delete_options
         )
@@ -911,8 +1006,62 @@ class AsyncKubernetesApi:
             env=env,
             readiness_probe=probe,
             resources=client.V1ResourceRequirements(
-                requests={"cpu": "250m", "memory": "256Mi"},
-                limits={"cpu": "500m", "memory": "512Mi"},
+                requests=(spec.resources or {}).get(
+                    "requests", {"cpu": "250m", "memory": "256Mi"}
+                ),
+                limits=(spec.resources or {}).get(
+                    "limits", {"cpu": "500m", "memory": "512Mi"}
+                ),
+            ),
+        )
+
+    def _affinity(
+        self, spec: WorkloadSpec, selector: Mapping[str, str]
+    ) -> client.V1Affinity | None:
+        if not spec.anti_affinity:
+            return None
+        return client.V1Affinity(
+            pod_anti_affinity=client.V1PodAntiAffinity(
+                preferred_during_scheduling_ignored_during_execution=[
+                    client.V1WeightedPodAffinityTerm(
+                        weight=100,
+                        pod_affinity_term=client.V1PodAffinityTerm(
+                            topology_key="kubernetes.io/hostname",
+                            label_selector=client.V1LabelSelector(match_labels=dict(selector)),
+                        ),
+                    )
+                ]
+            )
+        )
+
+    def _topology_spread(
+        self, spec: WorkloadSpec, selector: Mapping[str, str]
+    ) -> list[client.V1TopologySpreadConstraint] | None:
+        if not spec.topology_spread:
+            return None
+        return [
+            client.V1TopologySpreadConstraint(
+                max_skew=1,
+                topology_key="kubernetes.io/hostname",
+                when_unsatisfiable="ScheduleAnyway",
+                label_selector=client.V1LabelSelector(match_labels=dict(selector)),
+            )
+        ]
+
+    def _job_template(self, spec: CronJobSpec | JobSpec) -> client.V1PodTemplateSpec:
+        env = [client.V1EnvVar(name=key, value=value) for key, value in spec.environment.items()]
+        return client.V1PodTemplateSpec(
+            metadata=client.V1ObjectMeta(labels=dict(spec.labels)),
+            spec=client.V1PodSpec(
+                restart_policy="Never",
+                containers=[
+                    client.V1Container(
+                        name="job",
+                        image=spec.image,
+                        command=list(spec.command),
+                        env=env,
+                    )
+                ],
             ),
         )
 

@@ -1,6 +1,13 @@
+from types import SimpleNamespace
+
 import pytest
 
-from rudder_cp.runtime.kubernetes import KubernetesRuntime, RuntimeSettings
+from rudder_cp.runtime.kubernetes import (
+    AsyncKubernetesApi,
+    KubernetesRuntime,
+    RuntimeSettings,
+    WorkloadSpec,
+)
 from rudder_cp.runtime.models import ComposeService, KubernetesRelease
 
 
@@ -36,6 +43,29 @@ class FakeKubernetesApi:
 
     async def apply_workload(self, namespace: str, spec: object) -> None:
         self.calls.append(("workload", spec))
+
+    async def apply_autoscaler(self, namespace: str, spec: object) -> None:
+        self.calls.append(("autoscaler", spec))
+
+    async def delete_autoscaler(self, namespace: str, name: str) -> None:
+        self.calls.append(("delete-autoscaler", name))
+
+    async def apply_cron_job(self, namespace: str, spec: object) -> None:
+        self.calls.append(("cronjob", spec))
+
+    async def delete_cron_jobs_for_workload(
+        self, namespace: str, *, workload_name: str, release_id: str
+    ) -> None:
+        self.calls.append(("delete-cronjobs", (workload_name, release_id)))
+
+    async def apply_job(self, namespace: str, spec: object) -> None:
+        self.calls.append(("job", spec))
+
+    async def wait_job_complete(
+        self, namespace: str, spec: object, *, timeout_seconds: int, poll_seconds: float
+    ) -> bool:
+        self.calls.append(("job-complete", spec))
+        return True
 
     async def wait_ready(
         self,
@@ -89,6 +119,32 @@ async def test_runtime_creates_private_stateful_service_and_public_web_after_rea
 
 
 @pytest.mark.asyncio
+async def test_runtime_uses_reviewed_public_domain_for_ingress() -> None:
+    """The URL Rudder displays must be the hostname its ingress serves."""
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(api, RuntimeSettings(local_domain="localhost"))
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="web",
+                image="registry/web@sha256:1",
+                port=3000,
+                public=True,
+                public_host="shop.production.localhost",
+            ),
+        ),
+    )
+
+    result = await runtime.apply(release, project_id="project", environment_id="environment")
+
+    ingress = next(value for name, value in api.calls if name == "ingress")
+    assert ingress.host == "shop.production.localhost"
+    assert result.public_hosts == {"web": "shop.production.localhost"}
+
+
+@pytest.mark.asyncio
 async def test_failed_candidate_is_cleaned_up_without_promoting_a_route() -> None:
     class UnreadyKubernetesApi(FakeKubernetesApi):
         async def wait_ready(
@@ -139,3 +195,163 @@ async def test_portless_worker_is_a_workload_without_an_invalid_service() -> Non
 
     assert [name for name, _ in api.calls if name == "workload"] == ["workload"]
     assert not [name for name, _ in api.calls if name == "service"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_renders_app_operations_as_workload_hpa_and_jobs() -> None:
+    """Approved app intent becomes Kubernetes primitives without a source rebuild."""
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(api, RuntimeSettings())
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="worker",
+                image="registry/worker@sha256:1",
+                command=("python", "worker.py"),
+                operations={
+                    "replicas": 3,
+                    "resources": {
+                        "cpu_request": "400m",
+                        "cpu_limit": "1",
+                        "memory_request_mb": 384,
+                        "memory_limit_mb": 768,
+                    },
+                    "autoscaling": {
+                        "min_replicas": 2,
+                        "max_replicas": 5,
+                        "target_cpu_percent": 70,
+                        "target_memory_percent": 80,
+                    },
+                    "placement": {
+                        "node_selector": {"nodepool": "workers"},
+                        "topology_spread": True,
+                        "anti_affinity": True,
+                    },
+                    "rollout": {"strategy": "rolling"},
+                    "observability": {"prometheus": True, "grafana": True},
+                    "schedules": [
+                        {
+                            "operation_id": "schedule-1",
+                            "spec": {
+                                "cron": "*/5 * * * *",
+                                "command": ["python", "cleanup.py"],
+                                "timeout_seconds": 60,
+                                "retries": 1,
+                                "concurrency_policy": "forbid",
+                            },
+                        }
+                    ],
+                    "last_job": {
+                        "command": ["python", "backfill.py"],
+                        "timeout_seconds": 60,
+                        "retries": 0,
+                    },
+                },
+            ),
+        ),
+    )
+
+    result = await runtime.apply(release, project_id="project", environment_id="environment")
+
+    workload = next(value for name, value in api.calls if name == "workload")
+    assert workload.replicas is None  # HPA owns replica count.
+    assert workload.resources == {
+        "requests": {"cpu": "400m", "memory": "384Mi"},
+        "limits": {"cpu": "1", "memory": "768Mi"},
+    }
+    assert workload.node_selector == {"nodepool": "workers"}
+    assert workload.anti_affinity is True
+    assert workload.topology_spread is True
+    assert workload.prometheus_enabled is True
+    assert workload.rolling_update is not None
+    autoscaler = next(value for name, value in api.calls if name == "autoscaler")
+    assert autoscaler.min_replicas == 2
+    assert autoscaler.max_replicas == 5
+    assert autoscaler.target_cpu_percent == 70
+    assert autoscaler.target_memory_percent == 80
+    assert [name for name, _ in api.calls if name == "cronjob"] == ["cronjob"]
+    assert [name for name, _ in api.calls if name == "job"] == ["job"]
+    assert result.operation_observed["worker"]["observability"] == {
+        "prometheus": "enabled",
+        "grafana": "integration requested; no Grafana deployment is managed by Rudder",
+    }
+
+
+@pytest.mark.asyncio
+async def test_runtime_prunes_disabled_hpa_and_cancelled_cronjobs_before_applying_intent() -> None:
+    """Clearing runtime intent removes the owned primitive, rather than leaking it."""
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(api, RuntimeSettings())
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(ComposeService(name="worker", image="registry/worker@sha256:1"),),
+    )
+
+    result = await runtime.apply(release, project_id="project", environment_id="environment")
+
+    assert ("delete-autoscaler", "worker-aabbccdd-hpa") in api.calls
+    assert ("delete-cronjobs", ("worker-aabbccdd", release.release_id)) in api.calls
+    assert result.operation_observed["worker"]["autoscaling"] == {"status": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_requires_the_requested_number_of_replicas() -> None:
+    """One available pod is not sufficient for a three-replica release."""
+
+    class Apps:
+        async def read_namespaced_deployment_status(self, _name: str, _namespace: str):
+            return SimpleNamespace(status=SimpleNamespace(available_replicas=1))
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.apps = Apps()
+    api.core = SimpleNamespace()
+    spec = WorkloadSpec(
+        name="web", service_name="web", image="registry/web@sha256:1", port=3000,
+        command=None, environment={}, labels={}, stateful=False, volume_mount_path=None,
+        replicas=3, ready_replicas=3,
+    )
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        await api.wait_ready("rudder", spec, timeout_seconds=0.003, poll_seconds=0.001)
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_accepts_scale_to_zero_without_querying_pods() -> None:
+    api = object.__new__(AsyncKubernetesApi)
+    api.apps = SimpleNamespace()
+    api.core = SimpleNamespace()
+    spec = WorkloadSpec(
+        name="worker", service_name="worker", image="registry/worker@sha256:1", port=None,
+        command=None, environment={}, labels={}, stateful=False, volume_mount_path=None,
+        replicas=0, ready_replicas=0,
+    )
+
+    assert await api.wait_ready("rudder", spec, timeout_seconds=1, poll_seconds=0.1) == "worker"
+
+
+@pytest.mark.asyncio
+async def test_runtime_marks_unsupported_progressive_rollouts_degraded() -> None:
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(api, RuntimeSettings())
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="web",
+                image="registry/web@sha256:1",
+                port=3000,
+                operations={"rollout": {"strategy": "canary", "canary_steps": [10, 50, 100]}},
+            ),
+        ),
+    )
+
+    result = await runtime.apply(release, project_id="project", environment_id="environment")
+
+    assert result.operation_observed["web"]["rollout"] == {
+        "status": "degraded",
+        "reason": "canary rollout requires a traffic manager and is not enabled for this cluster",
+    }

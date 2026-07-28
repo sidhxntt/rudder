@@ -27,6 +27,7 @@ from rudder_cp.logs.store import BuildLogStore
 from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
+    Domain,
     Environment,
     GitHubImport,
     GitHubImportService,
@@ -101,7 +102,7 @@ async def _verify_imported_release(temp_dir: Path, suffix: str) -> None:
         await _assert_failed_candidate_preserves_live_route(
             engine, settings, store, api, namespace, host, release.service_id
         )
-        print(f"kind end-to-end verification passed: http://{host}:8081")
+        print(f"kind end-to-end verification passed: http://{host}")
     finally:
         await api.core.delete_namespace(
             namespace,
@@ -166,6 +167,15 @@ def _create_imported_release(engine, suffix: str) -> ImportedRelease:
             build_config={"compose_service": "redis"},
         )
         session.add_all([web, worker, postgres, redis])
+        session.commit()
+        session.add(
+            Domain(
+                hostname="web.production.localhost",
+                environment_id=environment.id,
+                service_id=web.id,
+                is_system=True,
+            )
+        )
         session.commit()
         session.add_all(
             [
@@ -235,7 +245,7 @@ def _create_imported_release(engine, suffix: str) -> ImportedRelease:
         namespace = dns_label(f"rudder-{environment.id.hex[:12]}")
         return ImportedRelease(
             namespace,
-            f"web-{namespace}.localhost",
+            "web.production.localhost",
             deployment.id,
             web.id,
         )
@@ -265,7 +275,7 @@ async def _assert_private_services_have_no_ingress(api: AsyncKubernetesApi, name
         for rule in (ingress.spec.rules or [])
         if rule.host
     }
-    if len(hosts) != 1 or not next(iter(hosts)).startswith("web-"):
+    if hosts != {"web.production.localhost"}:
         raise RuntimeError(
             f"private services unexpectedly received ingress routes: {sorted(hosts)}"
         )
@@ -326,7 +336,7 @@ async def _wait_for_namespace_deletion(api: AsyncKubernetesApi, namespace: str) 
 
 
 def _request_status(host: str) -> int:
-    request = Request("http://127.0.0.1:8081/", headers={"Host": host})
+    request = Request("http://127.0.0.1/", headers={"Host": host})
     with urlopen(request, timeout=2) as response:
         return response.status
 

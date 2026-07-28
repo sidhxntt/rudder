@@ -30,6 +30,7 @@ from rudder_cp.logs.store import BuildLogStore
 from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
+    Domain,
     GitHubImport,
     GitHubImportService,
     Instance,
@@ -37,6 +38,7 @@ from rudder_cp.models import (
     Node,
     NodeStatus,
     Service,
+    ServiceOperationsState,
     Volume,
 )
 from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, KubernetesRuntime, RuntimeSettings
@@ -48,6 +50,11 @@ from rudder_cp.services.builder import BuildFailed, BuildRequest, build_image
 from rudder_cp.services.github_app import GitHubAppClient, GitHubAppError
 from rudder_cp.services.health import is_still_alive, wait_until_healthy
 from rudder_cp.services.locks import service_deploy_lock
+from rudder_cp.services.operation_reconciler import (
+    mark_runtime_operations_failed,
+    mark_runtime_operations_progressing,
+    reconcile_runtime_operations,
+)
 
 log = logging.getLogger("rudder_cp.deploy")
 
@@ -588,6 +595,7 @@ async def _deploy_imported_kubernetes(
             "No healthy Rudder node is available to account for this Kubernetes release.",
         )
     api: AsyncKubernetesApi | None = None
+    mappings: list[GitHubImportService] = []
     try:
         app_env = await variables.resolve_service_env(session, service.id)
         manifest = await _compose_runtime_manifest(
@@ -625,6 +633,18 @@ async def _deploy_imported_kubernetes(
                 raw.get("environment"),
                 await variables.resolve_service_env(session, member_service.id),
             )
+            public_domain = None
+            if mapping.is_public:
+                public_domain = session.exec(
+                    select(Domain)
+                    .where(Domain.service_id == member_service.id)
+                    .order_by(Domain.is_system.desc(), Domain.created_at)
+                ).first()
+            operations_state = session.exec(
+                select(ServiceOperationsState).where(
+                    ServiceOperationsState.service_id == member_service.id
+                )
+            ).first()
             members.append(
                 KubernetesComposeService(
                     name=mapping.compose_service,
@@ -633,9 +653,11 @@ async def _deploy_imported_kubernetes(
                     command=command,
                     environment=member_environment,
                     public=mapping.is_public,
+                    public_host=public_domain.hostname if public_domain is not None else None,
                     stateful=mapping.role
                     in {"database", "cache", "broker", "search", "storage"},
                     volume_mount_path=volume.mount_path if volume is not None else None,
+                    operations=operations_state.desired if operations_state is not None else {},
                 )
             )
         namespace = dns_label(
@@ -651,6 +673,9 @@ async def _deploy_imported_kubernetes(
             kubeconfig_path=settings.kubernetes_kubeconfig,
         )
         runtime = KubernetesRuntime(api, runtime_settings)
+        mark_runtime_operations_progressing(
+            session, service_ids=[mapping.service_id for mapping in mappings]
+        )
         await _append_release_log(
             store,
             deployment.id,
@@ -667,6 +692,12 @@ async def _deploy_imported_kubernetes(
             on_progress=lambda text: _append_release_log(store, deployment.id, text),
         )
     except (ApiException, OSError, ValueError, yaml.YAMLError, RuntimeError) as exc:
+        if mappings:
+            mark_runtime_operations_failed(
+                session,
+                service_ids=[mapping.service_id for mapping in mappings],
+                reason=f"Kubernetes release failed before readiness: {exc}",
+            )
         return _fail(session, deployment, f"Could not apply Kubernetes release. {exc}")
     finally:
         if api is not None:
@@ -688,6 +719,11 @@ async def _deploy_imported_kubernetes(
                 status=InstanceStatus.HEALTHY,
                 started_at=datetime.now(UTC),
             )
+        )
+        reconcile_runtime_operations(
+            session,
+            service_id=mapping.service_id,
+            runtime_observed=result.operation_observed.get(mapping.compose_service, {}),
         )
     deployment.status = DeploymentStatus.LIVE
     deployment.became_live_at = datetime.now(UTC)

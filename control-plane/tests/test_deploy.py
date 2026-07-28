@@ -22,6 +22,7 @@ from rudder_cp.config import Settings
 from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
+    Domain,
     Environment,
     GitHubImport,
     GitHubImportService,
@@ -253,6 +254,27 @@ class FakeKubernetesApi:
         self.calls.append(("workload", spec.name))
         self.workloads[spec.service_name] = spec
 
+    async def apply_autoscaler(self, namespace: str, spec) -> None:
+        self.calls.append(("autoscaler", spec.name))
+
+    async def delete_autoscaler(self, namespace: str, name: str) -> None:
+        self.calls.append(("delete-autoscaler", name))
+
+    async def apply_cron_job(self, namespace: str, spec) -> None:
+        self.calls.append(("cronjob", spec.name))
+
+    async def delete_cron_jobs_for_workload(
+        self, namespace: str, *, workload_name: str, release_id: str
+    ) -> None:
+        self.calls.append(("delete-cronjobs", workload_name))
+
+    async def apply_job(self, namespace: str, spec) -> None:
+        self.calls.append(("job", spec.name))
+
+    async def wait_job_complete(self, namespace: str, spec, **_kwargs) -> bool:
+        self.calls.append(("job-complete", spec.name))
+        return True
+
     async def wait_ready(self, namespace: str, spec, **_kwargs) -> str:
         self.calls.append(("ready", spec.name))
         if spec.service_name == self.fail_service:
@@ -261,7 +283,7 @@ class FakeKubernetesApi:
 
     async def promote_public_service(self, namespace: str, spec) -> None:
         self.calls.append(("ingress", spec.name))
-        self.public_routes[spec.name] = spec.backend_service_name
+        self.public_routes[spec.name] = spec
 
     async def delete_release(self, namespace: str, release_id: str) -> None:
         self.calls.append(("cleanup", release_id))
@@ -511,7 +533,7 @@ async def test_imported_kubernetes_release_waits_for_every_member_before_public_
     app_workload = next(
         value for name, value in api.calls if name == "workload" and value.startswith("app-")
     )
-    assert api.public_routes == {"route-app": app_workload}
+    assert api.public_routes["route-app"].backend_service_name == app_workload
     assert api.workloads["postgres"].environment == {"POSTGRES_PASSWORD": "rudder"}
     with Session(engine) as session:
         instances = list(
@@ -527,6 +549,33 @@ async def test_imported_kubernetes_release_waits_for_every_member_before_public_
     assert "kubernetes: applying StatefulSet for postgres" in contents
     assert "kubernetes: postgres is ready" in contents
     assert "kubernetes: promoted public route for app" in contents
+
+
+async def test_imported_kubernetes_release_uses_its_persisted_public_domain(
+    engine, service, settings, monkeypatch
+):
+    _configure_kubernetes_import(engine, service)
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        session.add(
+            Domain(
+                hostname="api.production.localhost",
+                environment_id=app.environment_id,
+                service_id=app.id,
+                is_system=True,
+            )
+        )
+        session.commit()
+
+    settings.runtime = "kubernetes"
+    api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, api)
+
+    outcome = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    assert api.public_routes["route-app"].host == "api.production.localhost"
 
 
 async def test_imported_kubernetes_failure_keeps_previous_live_route_unchanged(

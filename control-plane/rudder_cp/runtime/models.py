@@ -29,6 +29,9 @@ class ComposeService:
     command: tuple[str, ...] | None = None
     environment: Mapping[str, str] = field(default_factory=dict)
     public: bool = False
+    # The reviewed Rudder domain is canonical.  When present, the runtime must
+    # expose this hostname instead of inventing a release-local alternative.
+    public_host: str | None = None
     stateful: bool = False
     volume_mount_path: str | None = None
     # A validated snapshot of ServiceOperationsState.desired.  It is attached
