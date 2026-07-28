@@ -329,6 +329,13 @@ class ServiceOperationCapabilitiesRead(BaseModel):
     database_engine: str | None = None
     data_role: str | None = None
     job_commands_available: bool = False
+    # These are deliberately server-authored feature flags. A managed
+    # database alone does not guarantee that its active runtime has a safe
+    # implementation for a data operation (for example an operator plus an
+    # object-store backup target). Browsers must default-deny when omitted.
+    storage_expansion_available: bool = False
+    backup_restore_available: bool = False
+    read_replicas_available: bool = False
 
 
 class ServiceOperationsEnvelope(ServiceOperationsStateRead):

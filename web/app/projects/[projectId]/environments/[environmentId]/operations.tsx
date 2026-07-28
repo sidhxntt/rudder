@@ -128,6 +128,12 @@ export function Operations({ service }: { service: Service }) {
   const databaseEngine = capabilities?.database_engine ?? null;
   const managedDatabase = service.kind === "database" && databaseEngine !== null;
   const sqlDatabase = managedDatabase && ["postgres", "mysql", "mariadb"].includes(databaseEngine);
+  const backupRestoreAvailable = managedDatabase && Boolean(capabilities?.backup_restore_available);
+  const readReplicasAvailable =
+    sqlDatabase && capabilities?.data_role === "primary" && Boolean(capabilities?.read_replicas_available);
+  const storageExpansionAvailable = managedDatabase && Boolean(capabilities?.storage_expansion_available);
+  const dataOperationsAvailable =
+    backupRestoreAvailable || readReplicasAvailable || storageExpansionAvailable;
   const jobCommandsAvailable = isApp && Boolean(capabilities?.job_commands_available);
 
   const [replicaValue, setReplicaValue] = useState(String(number(desired.replicas, service.replica_count)));
@@ -293,7 +299,115 @@ export function Operations({ service }: { service: Service }) {
         </>
       ) : null}
 
-      {managedDatabase ? <Section title="Data"><p className="text-micro text-ink-faint">Managed {databaseEngine} controls. Unsupported operator actions are reported as degraded instead of being treated as successful.</p>{sqlDatabase ? <div className="mt-sm grid grid-cols-2 gap-sm"><Field label="Backup retention (days)"><input aria-label="Backup retention days" className={inputClass} inputMode="numeric" value={retentionDays} onChange={(event) => setRetentionDays(event.target.value)} /></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={backup.isPending} onClick={() => backup.mutate(Number(retentionDays))}>Create backup</button></div><Field label="Read replicas"><input aria-label="Read replicas" className={inputClass} inputMode="numeric" value={readReplicas} onChange={(event) => setReadReplicas(event.target.value)} /></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={replicas.isPending} onClick={() => replicas.mutate(Number(readReplicas))}>Request replicas</button></div></div> : <p className="mt-sm text-micro text-ink-faint">Backups and SQL read replicas are unavailable for this engine.</p>}<div className="mt-sm grid grid-cols-2 gap-sm"><Field label="Current storage (MB)"><input aria-label="Current storage" className={inputClass} inputMode="numeric" value={storageCurrent} onChange={(event) => setStorageCurrent(event.target.value)} /></Field><Field label="Requested storage (MB)"><input aria-label="Requested storage" className={inputClass} inputMode="numeric" value={storageRequested} onChange={(event) => setStorageRequested(event.target.value)} /></Field></div><button type="button" className={`${buttonClass} mt-sm`} disabled={storage.isPending || !storageCurrent || !storageRequested} onClick={() => storage.mutate({ currentSizeMb: Number(storageCurrent), requestedSizeMb: Number(storageRequested) })}>Request storage expansion</button><p className="pt-xs text-micro text-ink-faint">Volumes can grow but cannot safely shrink. Read replicas always remain private.</p></Section> : <Section title="Data"><p className="text-micro text-ink-faint">Data controls are unavailable until Rudder confirms managed database capability for this service.</p></Section>}
+      {managedDatabase ? (
+        <Section title="Data">
+          <p className="text-micro text-ink-faint">
+            Managed {databaseEngine} controls. Rudder shows only actions the control plane has confirmed
+            are supported for this service.
+          </p>
+
+          {!dataOperationsAvailable ? (
+            <p className="mt-sm text-micro text-ink-faint">
+              Data operations are not available for this managed service.
+            </p>
+          ) : null}
+
+          {backupRestoreAvailable ? (
+            <div className="mt-sm grid grid-cols-2 gap-sm">
+              <Field label="Backup retention (days)">
+                <input
+                  aria-label="Backup retention days"
+                  className={inputClass}
+                  inputMode="numeric"
+                  value={retentionDays}
+                  onChange={(event) => setRetentionDays(event.target.value)}
+                />
+              </Field>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  className={buttonClass}
+                  disabled={backup.isPending}
+                  onClick={() => backup.mutate(Number(retentionDays))}
+                >
+                  Create backup
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {readReplicasAvailable ? (
+            <div className="mt-sm grid grid-cols-2 gap-sm">
+              <Field label="Read replicas">
+                <input
+                  aria-label="Read replicas"
+                  className={inputClass}
+                  inputMode="numeric"
+                  value={readReplicas}
+                  onChange={(event) => setReadReplicas(event.target.value)}
+                />
+              </Field>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  className={buttonClass}
+                  disabled={replicas.isPending}
+                  onClick={() => replicas.mutate(Number(readReplicas))}
+                >
+                  Request replicas
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {storageExpansionAvailable ? (
+            <>
+              <div className="mt-sm grid grid-cols-2 gap-sm">
+                <Field label="Current storage (MB)">
+                  <input
+                    aria-label="Current storage"
+                    className={inputClass}
+                    inputMode="numeric"
+                    value={storageCurrent}
+                    onChange={(event) => setStorageCurrent(event.target.value)}
+                  />
+                </Field>
+                <Field label="Requested storage (MB)">
+                  <input
+                    aria-label="Requested storage"
+                    className={inputClass}
+                    inputMode="numeric"
+                    value={storageRequested}
+                    onChange={(event) => setStorageRequested(event.target.value)}
+                  />
+                </Field>
+              </div>
+              <button
+                type="button"
+                className={`${buttonClass} mt-sm`}
+                disabled={storage.isPending || !storageCurrent || !storageRequested}
+                onClick={() =>
+                  storage.mutate({
+                    currentSizeMb: Number(storageCurrent),
+                    requestedSizeMb: Number(storageRequested),
+                  })
+                }
+              >
+                Request storage expansion
+              </button>
+              <p className="pt-xs text-micro text-ink-faint">
+                Volumes can grow but cannot safely shrink. Read replicas always remain private.
+              </p>
+            </>
+          ) : null}
+        </Section>
+      ) : (
+        <Section title="Data">
+          <p className="text-micro text-ink-faint">
+            Data controls are unavailable until Rudder confirms managed database capability for this service.
+          </p>
+        </Section>
+      )}
 
       <Section title="Observability"><div className="flex gap-md text-micro text-ink-mute"><label><input aria-label="Enable Prometheus" type="checkbox" checked={prometheus} onChange={(event) => setPrometheus(event.target.checked)} /> Prometheus</label><label><input aria-label="Enable Grafana" type="checkbox" checked={grafana} onChange={(event) => setGrafana(event.target.checked)} /> Grafana</label></div><button type="button" className={`${buttonClass} mt-sm`} disabled={observability.isPending} onClick={() => observability.mutate({ prometheus, grafana })}>Save observability</button></Section>
       <Section title="Operation history"><OperationHistory history={operations.data?.history ?? []} /></Section>

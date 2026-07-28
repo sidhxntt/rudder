@@ -18,6 +18,9 @@ const hooks = vi.hoisted(() => {
           database_engine: null as string | null,
           data_role: null as string | null,
           job_commands_available: false,
+          storage_expansion_available: false,
+          backup_restore_available: false,
+          read_replicas_available: false,
         },
         history: [
           {
@@ -88,6 +91,9 @@ describe("Operations", () => {
       database_engine: null,
       data_role: null,
       job_commands_available: false,
+      storage_expansion_available: false,
+      backup_restore_available: false,
+      read_replicas_available: false,
     };
   });
 
@@ -144,10 +150,32 @@ describe("Operations", () => {
       database_engine: "postgres",
       data_role: "primary",
       job_commands_available: false,
+      storage_expansion_available: false,
+      backup_restore_available: false,
+      read_replicas_available: false,
+    };
+    render(<Operations service={{ ...app, kind: "database" }} />);
+
+    expect(screen.queryByRole("button", { name: "Create backup" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Request replicas" })).toBeNull();
+    expect(
+      screen.getByText("Data operations are not available for this managed service."),
+    ).toBeTruthy();
+  });
+
+  it("only exposes data actions confirmed by the server", () => {
+    hooks.operations.data.capabilities = {
+      database_engine: "postgres",
+      data_role: "primary",
+      job_commands_available: false,
+      storage_expansion_available: true,
+      backup_restore_available: true,
+      read_replicas_available: true,
     };
     render(<Operations service={{ ...app, kind: "database" }} />);
 
     expect(screen.getByRole("button", { name: "Create backup" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Request replicas" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Request storage expansion" })).toBeTruthy();
   });
 });

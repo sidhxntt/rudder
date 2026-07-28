@@ -116,6 +116,13 @@ async def list_service_operations(
             database_engine=capabilities.database_engine if capabilities else None,
             data_role=capabilities.data_role if capabilities else None,
             job_commands_available=bool(capabilities and capabilities.allowed_job_commands),
+            # Data controls remain unavailable until a runtime-specific
+            # operator advertises them. Keeping these explicit, rather than
+            # inferring them from a Docker image name, prevents the UI from
+            # offering operations that only persist intent today.
+            storage_expansion_available=False,
+            backup_restore_available=False,
+            read_replicas_available=False,
         ),
         history=history,
     )

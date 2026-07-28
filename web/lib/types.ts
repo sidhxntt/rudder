@@ -293,6 +293,12 @@ export interface ServiceOperationCapabilities {
   database_engine: string | null;
   data_role: string | null;
   job_commands_available: boolean;
+  /** Only true when the control plane can expand this service's PVC safely. */
+  storage_expansion_available?: boolean;
+  /** Only true when the configured data engine supports Rudder backup/restore. */
+  backup_restore_available?: boolean;
+  /** Only true when the configured primary supports managed SQL replicas. */
+  read_replicas_available?: boolean;
 }
 
 export interface ServiceOperationsState {

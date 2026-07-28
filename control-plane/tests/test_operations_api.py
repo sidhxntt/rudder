@@ -550,11 +550,19 @@ def test_operations_envelope_exposes_only_safe_server_managed_capabilities(
         "database_engine": None,
         "data_role": None,
         "job_commands_available": True,
+        "storage_expansion_available": False,
+        "backup_restore_available": False,
+        "read_replicas_available": False,
     }
     assert database_response.json()["capabilities"] == {
         "database_engine": "postgres",
         "data_role": "primary",
         "job_commands_available": False,
+        # A managed database is not enough. These actions stay hidden until
+        # the active runtime has a real operator/backend for them.
+        "storage_expansion_available": False,
+        "backup_restore_available": False,
+        "read_replicas_available": False,
     }
     assert "allowed_job_commands" not in app_response.json()["capabilities"]
 
