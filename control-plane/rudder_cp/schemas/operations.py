@@ -242,6 +242,13 @@ class CronJobRequest(_CommandRequest):
         return cron
 
 
+class ScheduledJobIntent(_OperationRequest):
+    """A CronJob desired-state entry linked to its immutable audit operation."""
+
+    operation_id: uuid.UUID
+    spec: CronJobRequest
+
+
 class OneOffJobRequest(_CommandRequest):
     timeout_seconds: int = Field(default=900, ge=1, le=86_400)
     retries: int = Field(default=0, ge=0, le=10)
@@ -280,7 +287,7 @@ class ServiceOperationsIntent(_OperationRequest):
     restore: RestoreRequest | None = None
     read_replicas: ReadReplicaRequest | None = None
     storage: StorageResizeRequest | None = None
-    schedules: tuple[CronJobRequest, ...] = ()
+    schedules: tuple[ScheduledJobIntent, ...] = ()
     observability: ObservabilityRequest | None = None
     rollback: dict[str, Any] | None = None
     last_job: dict[str, Any] | None = None

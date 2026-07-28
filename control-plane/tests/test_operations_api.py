@@ -30,8 +30,9 @@ from rudder_cp.models import (
 )
 from rudder_cp.routers import auth as auth_router
 from rudder_cp.routers import operations as operations_router
-from rudder_cp.schemas.common import install_error_handlers
+from rudder_cp.schemas.common import ConflictError, install_error_handlers
 from rudder_cp.security import issue_token
+from rudder_cp.services import operations as operation_ops
 
 
 @pytest.fixture(name="engine")
@@ -308,6 +309,63 @@ def test_schedule_can_be_created_and_deleted(
     assert cancelled["observed"]["cancelled"] is True
 
 
+def test_identical_schedules_keep_operation_identity_when_one_is_cancelled(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    payload = {"cron": "0 * * * *", "command": ["python", "cleanup.py"]}
+    first = client.post(
+        f"/services/{seed['app']}/operations/schedules",
+        headers=headers(seed, "schedule-identity-first"),
+        json=payload,
+    )
+    second = client.post(
+        f"/services/{seed['app']}/operations/schedules",
+        headers=headers(seed, "schedule-identity-second"),
+        json=payload,
+    )
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+
+    before_cancel = client.get(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert before_cancel.status_code == 200, before_cancel.text
+    schedules = before_cancel.json()["desired"]["schedules"]
+    assert {entry["operation_id"] for entry in schedules} == {
+        first.json()["id"],
+        second.json()["id"],
+    }
+    assert all(entry["spec"] == first.json()["requested"] for entry in schedules)
+
+    cancelled = client.delete(
+        f"/services/{seed['app']}/operations/schedules/{first.json()['id']}",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert cancelled.status_code == 204, cancelled.text
+
+    after_cancel = client.get(
+        f"/services/{seed['app']}/operations",
+        headers={"Authorization": f"Bearer {seed['token']}"},
+    )
+    assert after_cancel.status_code == 200, after_cancel.text
+    assert after_cancel.json()["desired"]["schedules"] == [
+        {"operation_id": second.json()["id"], "spec": second.json()["requested"]}
+    ]
+
+
+def test_schedule_rejects_database_services(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    response = client.post(
+        f"/services/{seed['primary']}/operations/schedules",
+        headers=headers(seed, "database-schedule"),
+        json={"cron": "0 * * * *", "command": ["python", "cleanup.py"]},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "invalid_request"
+
+
 def test_operations_are_registered_on_the_real_application() -> None:
     from rudder_cp.main import create_app
 
@@ -459,6 +517,73 @@ def test_patch_deep_merges_nested_intent_and_rejects_stale_version(
     )
     assert stale.status_code == 409
     assert stale.json()["code"] == "conflict"
+
+
+def test_operations_compare_and_swap_allows_only_one_stale_session_to_win(
+    tmp_path: Path,
+) -> None:
+    """Two independently opened sessions cannot both write version zero.
+
+    This intentionally avoids the TestClient's request lifecycle: the second
+    session keeps its initial state object alive while the first transaction
+    commits. A read-then-write implementation would accept both writes; the
+    persistence update must compare the version in SQL instead.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'operations-race.db'}")
+    SQLModel.metadata.create_all(engine)
+    try:
+        with Session(engine) as setup:
+            owner = User(email="race-owner@example.com", password_hash="x")
+            setup.add(owner)
+            setup.commit()
+            project = Project(name="race", owner_id=owner.id)
+            setup.add(project)
+            setup.commit()
+            environment = Environment(project_id=project.id, name="production")
+            service = Service(environment_id=environment.id, name="api", kind=ServiceKind.APP)
+            setup.add_all((environment, service))
+            setup.commit()
+            service_id, owner_id = service.id, owner.id
+
+        with Session(engine) as first, Session(engine) as second:
+            first_snapshot = operation_ops.get_operations_state(
+                first, service_id, owner_id=owner_id
+            )
+            second_snapshot = operation_ops.get_operations_state(
+                second, service_id, owner_id=owner_id
+            )
+            assert first_snapshot.version == second_snapshot.version == 0
+
+            winner = operation_ops.update_operations_intent(
+                first,
+                service_id=service_id,
+                owner_id=owner_id,
+                changes={"resources": {"cpu_request": "250m"}},
+                expected_version=first_snapshot.version,
+            )
+            assert winner.version == 1
+
+            with pytest.raises(ConflictError):
+                operation_ops.update_operations_intent(
+                    second,
+                    service_id=service_id,
+                    owner_id=owner_id,
+                    changes={"placement": {"topology_spread": True}},
+                    expected_version=second_snapshot.version,
+                )
+
+        with Session(engine) as verify:
+            state = operation_ops.get_operations_state(verify, service_id, owner_id=owner_id)
+            assert state.version == 1
+            assert state.desired["resources"]["cpu_request"] == "250m"
+            assert state.desired["placement"] is None
+            operations = operation_ops.list_operations(verify, service_id, owner_id=owner_id)
+            assert len(operations) == 1
+            assert operations[0].requested["patch"] == {
+                "resources": {"cpu_request": "250m"}
+            }
+    finally:
+        engine.dispose()
 
 
 def test_rollback_requires_an_eligible_deployment_of_the_same_service(

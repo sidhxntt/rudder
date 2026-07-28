@@ -14,6 +14,7 @@ import uuid
 from copy import deepcopy
 from typing import Any
 
+import sqlalchemy as sa
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -42,6 +43,7 @@ _APP_ONLY_KINDS = {
     OperationKind.AUTOSCALING,
     OperationKind.PLACEMENT,
     OperationKind.ROLLOUT,
+    OperationKind.SCHEDULE,
     OperationKind.JOB,
 }
 
@@ -194,7 +196,11 @@ def _touch_pending(state: ServiceOperationsState) -> None:
 
 
 def _desired_after_operation(
-    desired: dict[str, Any], kind: OperationKind, requested: dict[str, Any]
+    desired: dict[str, Any],
+    kind: OperationKind,
+    requested: dict[str, Any],
+    *,
+    operation_id: uuid.UUID,
 ) -> dict[str, Any]:
     next_desired = deepcopy(desired)
     mapping = {
@@ -215,8 +221,12 @@ def _desired_after_operation(
         next_desired["replicas"] = requested["replicas"]
     elif kind is OperationKind.SCHEDULE:
         schedules = list(next_desired.get("schedules", []))
-        if requested not in schedules:
-            schedules.append(deepcopy(requested))
+        schedules.append(
+            {
+                "operation_id": str(operation_id),
+                "spec": deepcopy(requested),
+            }
+        )
         next_desired["schedules"] = schedules
     elif kind in mapping:
         next_desired[mapping[kind]] = deepcopy(requested)
@@ -296,7 +306,12 @@ def create_operation(
         requested=requested,
     )
     state = _state_for(session, service)
-    state.desired = _desired_after_operation(state.desired, kind, requested)
+    state.desired = _desired_after_operation(
+        state.desired,
+        kind,
+        requested,
+        operation_id=operation.id,
+    )
     _touch_pending(state)
     session.add_all((operation, state))
     try:
@@ -330,16 +345,16 @@ def update_operations_intent(
     """Deep-merge validated desired state and retain an immutable configuration audit row."""
     service = _require_service(session, service_id, owner_id=owner_id)
     state = _state_for(session, service)
-    if state.version != expected_version:
-        raise ConflictError(
-            "service operations state has changed; reload and retry",
-            details={"expected_version": expected_version, "actual_version": state.version},
-        )
     allowed = set(ServiceOperationsIntent.model_fields)
     unknown = set(changes) - allowed
     if unknown:
         raise InvalidRequestError(
             "unknown operations intent fields", details={"fields": sorted(unknown)}
+        )
+    if "schedules" in changes:
+        raise InvalidRequestError(
+            "schedules must be created through the schedules endpoint",
+            details={"field": "schedules"},
         )
     if set(changes) & _APP_ONLY_INTENT_FIELDS:
         _require_app(service, OperationKind.CONFIGURE)
@@ -362,14 +377,42 @@ def update_operations_intent(
             "operations intent failed validation", details={"errors": exc.errors()}
         ) from exc
 
+    next_version = expected_version + 1
+    next_observed = {
+        **state.observed,
+        "reconciliation": {
+            "pending": True,
+            "requested_version": next_version,
+        },
+    }
+    updated = session.execute(
+        sa.update(ServiceOperationsState)
+        .where(
+            ServiceOperationsState.id == state.id,
+            ServiceOperationsState.version == expected_version,
+        )
+        .values(
+            desired=normalized,
+            observed=next_observed,
+            version=next_version,
+            pending_reconciliation=True,
+            updated_at=utc_now(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount != 1:
+        session.rollback()
+        raise ConflictError(
+            "service operations state has changed; reload and retry",
+            details={"expected_version": expected_version},
+        )
+
     operation = ServiceOperation(
         service_id=service.id,
         kind=OperationKind.CONFIGURE,
-        requested={"patch": changes, "from_version": state.version},
+        requested={"patch": changes, "from_version": expected_version},
     )
-    state.desired = normalized
-    _touch_pending(state)
-    session.add_all((operation, state))
+    session.add(operation)
     session.commit()
     session.refresh(state)
     return state
@@ -396,11 +439,14 @@ def delete_schedule(
     if operation.status is OperationStatus.CANCELLED:
         return
     state = _state_for(session, service)
-    schedules = list(state.desired.get("schedules", []))
-    try:
-        schedules.remove(operation.requested)
-    except ValueError:
-        pass
+    schedules = [
+        schedule
+        for schedule in state.desired.get("schedules", [])
+        if not (
+            isinstance(schedule, dict)
+            and schedule.get("operation_id") == str(operation.id)
+        )
+    ]
     state.desired = {**state.desired, "schedules": schedules}
     _touch_pending(state)
     operation.status = OperationStatus.CANCELLED
