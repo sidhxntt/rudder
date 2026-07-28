@@ -49,7 +49,14 @@ class ServiceOperation(SQLModel, table=True):
 
     __tablename__ = "service_operation"
     __table_args__ = (
-        sa.Index("ix_service_operation_service_request", "service_id", "request_hash"),
+        # PostgreSQL permits multiple NULLs in a unique constraint.  That lets
+        # maintenance/audit records omit a hash while API-originated requests
+        # are durably idempotent per service.
+        sa.UniqueConstraint(
+            "service_id",
+            "request_hash",
+            name="uq_service_operation_service_request_hash",
+        ),
     )
 
     id: uuid.UUID = uuid_pk()

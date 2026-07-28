@@ -55,20 +55,19 @@ def upgrade() -> None:
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["service_id"], ["service.id"]),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "service_id",
+            "request_hash",
+            name="uq_service_operation_service_request_hash",
+        ),
     )
     op.create_index("ix_service_operation_service_id", "service_operation", ["service_id"])
     op.create_index("ix_service_operation_kind", "service_operation", ["kind"])
     op.create_index("ix_service_operation_status", "service_operation", ["status"])
     op.create_index("ix_service_operation_request_hash", "service_operation", ["request_hash"])
-    op.create_index(
-        "ix_service_operation_service_request",
-        "service_operation",
-        ["service_id", "request_hash"],
-    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_service_operation_service_request", table_name="service_operation")
     op.drop_index("ix_service_operation_request_hash", table_name="service_operation")
     op.drop_index("ix_service_operation_status", table_name="service_operation")
     op.drop_index("ix_service_operation_kind", table_name="service_operation")

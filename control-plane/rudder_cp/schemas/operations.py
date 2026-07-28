@@ -5,12 +5,40 @@ before a reconciler talks to Kubernetes, keeping unsafe combinations out of
 both the database and a cluster.
 """
 
+import re
 import uuid
+from decimal import Decimal, InvalidOperation
 from typing import Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from rudder_cp.models.base import ServiceKind
+
+_CPU_QUANTITY = re.compile(
+    r"^(?P<number>(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?P<milli>m)?$"
+)
+
+
+def _cpu_cores(quantity: str) -> Decimal:
+    """Parse the positive DecimalSI CPU quantities accepted by Kubernetes.
+
+    CPU may be expressed in cores (``1``, ``0.5``, ``1e3``) or millicores
+    (``500m``).  Memory suffixes such as ``Mi`` are intentionally rejected:
+    they are valid memory quantities, not CPU quantities.
+    """
+
+    match = _CPU_QUANTITY.fullmatch(quantity)
+    if match is None:
+        raise ValueError("must be a valid Kubernetes CPU quantity")
+    try:
+        cores = Decimal(match.group("number"))
+    except InvalidOperation as exc:  # defensive: regex should make this unreachable
+        raise ValueError("must be a valid Kubernetes CPU quantity") from exc
+    if match.group("milli"):
+        cores /= Decimal(1000)
+    if cores <= 0:
+        raise ValueError("must be a positive Kubernetes CPU quantity")
+    return cores
 
 
 class ScaleRequest(BaseModel):
@@ -30,6 +58,29 @@ class ResourceRequest(BaseModel):
     cpu_limit: str | None = Field(default=None, min_length=1, max_length=32)
     memory_request_mb: int | None = Field(default=None, gt=0)
     memory_limit_mb: int | None = Field(default=None, gt=0)
+
+    @field_validator("cpu_request", "cpu_limit")
+    @classmethod
+    def _validate_cpu_quantity(cls, quantity: str | None) -> str | None:
+        if quantity is not None:
+            _cpu_cores(quantity)
+        return quantity
+
+    @model_validator(mode="after")
+    def _validate_resource_bounds(self) -> Self:
+        if (
+            self.cpu_request is not None
+            and self.cpu_limit is not None
+            and _cpu_cores(self.cpu_request) > _cpu_cores(self.cpu_limit)
+        ):
+            raise ValueError("cpu_request cannot exceed cpu_limit")
+        if (
+            self.memory_request_mb is not None
+            and self.memory_limit_mb is not None
+            and self.memory_request_mb > self.memory_limit_mb
+        ):
+            raise ValueError("memory_request_mb cannot exceed memory_limit_mb")
+        return self
 
 
 class AutoscalingRequest(BaseModel):
