@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from rudder_cp.config import Settings
+from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import (
     Deployment,
@@ -23,6 +23,7 @@ from rudder_cp.models import (
     Node,
     Project,
     Service,
+    ServiceManagedCapabilities,
     ServiceOperation,
     User,
     Volume,
@@ -30,6 +31,7 @@ from rudder_cp.models import (
 from rudder_cp.models.operations import OperationKind
 from rudder_cp.routers import services as services_router
 from rudder_cp.schemas.common import install_error_handlers
+from rudder_cp.security import issue_token
 from rudder_cp.services import environments, projects, services, traefik
 from rudder_cp.services.agent_client import AgentError
 from rudder_cp.services.services import RuntimeCleanupError
@@ -186,6 +188,37 @@ async def test_deleting_a_service_removes_operation_history_before_the_service(
         assert session.get(ServiceOperation, operation.id) is None
 
 
+async def test_deleting_a_service_removes_managed_capabilities_before_the_service(
+    engine, settings
+):
+    """Trusted capability metadata has a service FK and must not block teardown."""
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        node = Node(hostname="localhost", ip_address="127.0.0.1")
+        session.add(user)
+        session.add(project)
+        session.add(environment)
+        session.add(node)
+        session.commit()
+        postgres = _live_service(session, environment, node, "postgres")
+        capabilities = ServiceManagedCapabilities(
+            service_id=postgres.id,
+            database_engine="postgres",
+            allowed_job_commands=[["pg_dump"]],
+        )
+        session.add(capabilities)
+        session.commit()
+
+        await services.delete_service(
+            session, postgres.id, agent=RecordingAgent(), settings=settings
+        )
+
+        assert session.get(Service, postgres.id) is None
+        assert session.get(ServiceManagedCapabilities, capabilities.id) is None
+
+
 async def test_deleting_a_live_environment_removes_its_containers_and_routes(engine, settings):
     with Session(engine) as session:
         user = User(email="owner@example.com", password_hash="x")
@@ -202,6 +235,13 @@ async def test_deleting_a_live_environment_removes_its_containers_and_routes(eng
         session.commit()
         api = _live_service(session, production, node, "api")
         staging_api = _live_service(session, staging, node, "staging-api")
+        capabilities = ServiceManagedCapabilities(
+            service_id=api.id,
+            database_engine="postgres",
+            allowed_job_commands=[["pg_dump"]],
+        )
+        session.add(capabilities)
+        session.commit()
 
         await traefik.render_all(session, settings)
         agent = RecordingAgent()
@@ -212,6 +252,7 @@ async def test_deleting_a_live_environment_removes_its_containers_and_routes(eng
         assert agent.removed == ["container-api"]
         assert session.get(Environment, production.id) is None
         assert session.get(Service, api.id) is None
+        assert session.get(ServiceManagedCapabilities, capabilities.id) is None
         assert session.get(Service, staging_api.id) is not None
         assert len(await asyncio.to_thread(_route_files, settings)) == 1
 
@@ -330,6 +371,13 @@ async def test_deleting_a_live_project_removes_its_containers_and_routes(engine,
         session.commit()
         api = _live_service(session, environment, node, "api")
         other_api = _live_service(session, other_environment, node, "other-api")
+        capabilities = ServiceManagedCapabilities(
+            service_id=api.id,
+            database_engine="postgres",
+            allowed_job_commands=[["pg_dump"]],
+        )
+        session.add(capabilities)
+        session.commit()
         await traefik.render_all(session, settings)
 
         agent = RecordingAgent()
@@ -338,6 +386,7 @@ async def test_deleting_a_live_project_removes_its_containers_and_routes(engine,
         assert agent.removed == ["container-api"]
         assert session.get(Project, project.id) is None
         assert session.get(Service, api.id) is None
+        assert session.get(ServiceManagedCapabilities, capabilities.id) is None
         assert session.get(Service, other_api.id) is not None
         assert len(await asyncio.to_thread(_route_files, settings)) == 1
 
@@ -416,7 +465,9 @@ async def test_failed_project_runtime_cleanup_keeps_database_and_route(engine, s
         assert len(await asyncio.to_thread(_route_files, settings)) == 1
 
 
-def test_service_delete_returns_runtime_cleanup_error(engine, settings):
+def test_service_delete_returns_runtime_cleanup_error(engine, settings, monkeypatch):
+    monkeypatch.setenv("RUDDER_JWT_SECRET", "runtime-deletion-api-test-secret-32")
+    get_settings.cache_clear()
     with Session(engine) as session:
         user = User(email="owner@example.com", password_hash="x")
         project = Project(name="shop", owner_id=user.id)
@@ -428,6 +479,7 @@ def test_service_delete_returns_runtime_cleanup_error(engine, settings):
         session.add(node)
         session.commit()
         api = _live_service(session, environment, node, "api")
+        token = issue_token(user.id).token
 
     app = FastAPI()
     app.state.settings = settings
@@ -440,10 +492,11 @@ def test_service_delete_returns_runtime_cleanup_error(engine, settings):
             yield request_session
 
     app.dependency_overrides[get_session] = override_get_session
-    with TestClient(app) as client:
+    with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
         response = client.delete(f"/services/{api.id}")
 
     assert response.status_code == 503
     assert response.json()["code"] == "runtime_cleanup_failed"
     with Session(engine) as session:
         assert session.get(Service, api.id) is not None
+    get_settings.cache_clear()

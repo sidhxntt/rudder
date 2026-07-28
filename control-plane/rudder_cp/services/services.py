@@ -26,6 +26,7 @@ from rudder_cp.models import (
     InstanceStatus,
     Project,
     Service,
+    ServiceManagedCapabilities,
     ServiceOperation,
     Variable,
     Volume,
@@ -227,6 +228,16 @@ async def purge_service(session: Session, service: Service) -> None:
         select(ServiceOperation).where(ServiceOperation.service_id == service.id)
     ).all():
         session.delete(operation)
+
+    # Trusted import/template capability metadata is also service-owned.  It
+    # intentionally has no database cascade so SQLite and PostgreSQL follow
+    # the same explicit, FK-safe teardown order.
+    for capabilities in session.exec(
+        select(ServiceManagedCapabilities).where(
+            ServiceManagedCapabilities.service_id == service.id
+        )
+    ).all():
+        session.delete(capabilities)
 
     # These service children have no database-level ON DELETE cascade. Flush
     # their deletion before deleting the parent, otherwise SQLAlchemy can order
