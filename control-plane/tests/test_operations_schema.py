@@ -56,6 +56,8 @@ def test_resources_accept_kubernetes_cpu_quantities(quantity: str):
 def test_resources_reject_invalid_or_inverted_limits():
     with pytest.raises(ValidationError, match="Kubernetes CPU quantity"):
         ResourceRequest(cpu_request="500Mi")
+    with pytest.raises(ValidationError, match="Kubernetes CPU quantity"):
+        ResourceRequest(cpu_request="1e3m")
     with pytest.raises(ValidationError, match="cpu_request cannot exceed cpu_limit"):
         ResourceRequest(cpu_request="2", cpu_limit="1500m")
     with pytest.raises(ValidationError, match="memory_request_mb cannot exceed memory_limit_mb"):

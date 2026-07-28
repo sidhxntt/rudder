@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from rudder_cp.models.base import ServiceKind
 
 _CPU_QUANTITY = re.compile(
-    r"^(?P<number>(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?P<milli>m)?$"
+    r"^(?:(?P<milli_number>(?:\d+(?:\.\d*)?|\.\d+))m|"
+    r"(?P<number>(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?))$"
 )
 
 
@@ -31,10 +32,10 @@ def _cpu_cores(quantity: str) -> Decimal:
     if match is None:
         raise ValueError("must be a valid Kubernetes CPU quantity")
     try:
-        cores = Decimal(match.group("number"))
+        cores = Decimal(match.group("milli_number") or match.group("number"))
     except InvalidOperation as exc:  # defensive: regex should make this unreachable
         raise ValueError("must be a valid Kubernetes CPU quantity") from exc
-    if match.group("milli"):
+    if match.group("milli_number"):
         cores /= Decimal(1000)
     if cores <= 0:
         raise ValueError("must be a positive Kubernetes CPU quantity")
