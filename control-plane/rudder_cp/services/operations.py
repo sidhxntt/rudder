@@ -137,6 +137,19 @@ def _managed_capabilities(
     ).first()
 
 
+def get_managed_capabilities(
+    session: Session, service_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
+) -> ServiceManagedCapabilities | None:
+    """Return trusted capability metadata only after the normal owner check.
+
+    Callers must project this result before returning it to a browser; raw job
+    command allowlists are an execution policy, not user interface data.
+    """
+
+    service = _require_service(session, service_id, owner_id=owner_id)
+    return _managed_capabilities(session, service)
+
+
 def _database_role(capabilities: ServiceManagedCapabilities | None) -> str:
     is_replica = capabilities is not None and capabilities.data_role == "read_replica"
     return "read_replica" if is_replica else "primary"

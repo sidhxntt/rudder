@@ -531,6 +531,34 @@ def test_operations_get_preserves_history_list_and_envelope_is_explicit(
     assert explicit_list.json()[0]["id"] == created["id"]
 
 
+def test_operations_envelope_exposes_only_safe_server_managed_capabilities(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    """The dashboard may gate controls, but never receives mutable build input."""
+    app_response = client.get(
+        f"/services/{seed['app']}/operations?format=envelope",
+        headers=headers(seed),
+    )
+    database_response = client.get(
+        f"/services/{seed['primary']}/operations?format=envelope",
+        headers=headers(seed),
+    )
+
+    assert app_response.status_code == 200, app_response.text
+    assert database_response.status_code == 200, database_response.text
+    assert app_response.json()["capabilities"] == {
+        "database_engine": None,
+        "data_role": None,
+        "job_commands_available": True,
+    }
+    assert database_response.json()["capabilities"] == {
+        "database_engine": "postgres",
+        "data_role": "primary",
+        "job_commands_available": False,
+    }
+    assert "allowed_job_commands" not in app_response.json()["capabilities"]
+
+
 def test_patch_deep_merges_nested_intent_and_rejects_stale_version(
     client: TestClient, seed: dict[str, str]
 ) -> None:

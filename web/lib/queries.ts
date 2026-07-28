@@ -9,7 +9,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import * as api from "./api";
-import type { Deployment, ServiceUpdate } from "./types";
+import type {
+  AutoscalingOperationRequest,
+  Deployment,
+  ResourceOperationRequest,
+  ServiceUpdate,
+} from "./types";
 
 export const keys = {
   githubImportStatus: ["github-import-status"] as const,
@@ -29,6 +34,7 @@ export const keys = {
   deployments: (serviceId: string) => ["deployments", serviceId] as const,
   instances: (serviceId: string) => ["instances", serviceId] as const,
   variables: (serviceId: string) => ["variables", serviceId] as const,
+  operations: (serviceId: string) => ["service-operations", serviceId] as const,
 };
 
 export function useGitHubImportStatus() {
@@ -157,6 +163,109 @@ export function useNodes() {
     queryKey: keys.nodes,
     queryFn: api.listNodes,
     refetchInterval: LIVE_POLL_MS,
+  });
+}
+
+/** Desired/observed Kubernetes operation state, refreshed while a release applies. */
+export function useServiceOperations(serviceId: string | undefined) {
+  return useQuery({
+    queryKey: keys.operations(serviceId ?? ""),
+    queryFn: () => api.getServiceOperations(serviceId ?? ""),
+    enabled: Boolean(serviceId),
+    refetchInterval: LIVE_POLL_MS,
+  });
+}
+
+function useOperationMutation<T>(
+  serviceId: string | undefined,
+  operation: (serviceId: string, payload: T) => Promise<unknown>,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: T) => operation(serviceId ?? "", payload),
+    onSuccess: () => {
+      if (serviceId) void client.invalidateQueries({ queryKey: keys.operations(serviceId) });
+    },
+  });
+}
+
+export function useScaleOperation(serviceId: string | undefined) {
+  return useOperationMutation(serviceId, (id, replicas: number) => api.requestScale(id, replicas));
+}
+
+export function useResourcesOperation(serviceId: string | undefined) {
+  return useOperationMutation(serviceId, (id, payload: ResourceOperationRequest) => api.requestResources(id, payload));
+}
+
+export function useAutoscalingOperation(serviceId: string | undefined) {
+  return useOperationMutation(serviceId, (id, payload: AutoscalingOperationRequest) => api.requestAutoscaling(id, payload));
+}
+
+export function usePlacementOperation(serviceId: string | undefined) {
+  return useOperationMutation(
+    serviceId,
+    (id, payload: { node_selector: Record<string, string>; topology_spread: boolean; anti_affinity: boolean }) =>
+      api.requestPlacement(id, payload),
+  );
+}
+
+export function useRolloutOperation(serviceId: string | undefined) {
+  return useOperationMutation(
+    serviceId,
+    (id, payload: { strategy: "rolling" | "blue_green" | "canary"; canary_steps?: number[] }) =>
+      api.requestRollout(id, payload),
+  );
+}
+
+export function useOperationRollback(serviceId: string | undefined) {
+  return useOperationMutation(serviceId, (id, deploymentId: string) => api.requestOperationRollback(id, deploymentId));
+}
+
+export function useBackupOperation(serviceId: string | undefined) {
+  return useOperationMutation(serviceId, (id, retentionDays: number) => api.requestBackup(id, retentionDays));
+}
+
+export function useReadReplicasOperation(serviceId: string | undefined) {
+  return useOperationMutation(serviceId, (id, replicas: number) => api.requestReadReplicas(id, replicas));
+}
+
+export function useStorageOperation(serviceId: string | undefined) {
+  return useOperationMutation(
+    serviceId,
+    (id, payload: { currentSizeMb: number; requestedSizeMb: number }) =>
+      api.requestStorage(id, payload.currentSizeMb, payload.requestedSizeMb),
+  );
+}
+
+export function useScheduleOperation(serviceId: string | undefined) {
+  return useOperationMutation(
+    serviceId,
+    (id, payload: { cron: string; command: string[]; timeout_seconds?: number; retries?: number }) =>
+      api.requestSchedule(id, payload),
+  );
+}
+
+export function useJobOperation(serviceId: string | undefined) {
+  return useOperationMutation(
+    serviceId,
+    (id, payload: { command: string[]; timeout_seconds?: number; retries?: number }) => api.requestJob(id, payload),
+  );
+}
+
+export function useObservabilityOperation(serviceId: string | undefined) {
+  return useOperationMutation(
+    serviceId,
+    (id, payload: { prometheus: boolean; grafana: boolean }) => api.requestObservability(id, payload),
+  );
+}
+
+export function useDeleteScheduleOperation(serviceId: string | undefined) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (operationId: string) => api.deleteSchedule(serviceId ?? "", operationId),
+    onSuccess: () => {
+      if (serviceId) void client.invalidateQueries({ queryKey: keys.operations(serviceId) });
+    },
   });
 }
 

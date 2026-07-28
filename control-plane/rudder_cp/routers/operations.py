@@ -25,6 +25,7 @@ from rudder_cp.schemas.operations import (
     RollbackRequest,
     RolloutRequest,
     ScaleOperationRequest,
+    ServiceOperationCapabilitiesRead,
     ServiceOperationRead,
     ServiceOperationsEnvelope,
     ServiceOperationsStateRead,
@@ -106,8 +107,16 @@ async def list_service_operations(
     response.headers["ETag"] = f'"{state.version}"'
     if format == "list":
         return history
+    capabilities = operation_ops.get_managed_capabilities(
+        session, service_id, owner_id=user.id
+    )
     return ServiceOperationsEnvelope(
         **_state_read(state).model_dump(),
+        capabilities=ServiceOperationCapabilitiesRead(
+            database_engine=capabilities.database_engine if capabilities else None,
+            data_role=capabilities.data_role if capabilities else None,
+            job_commands_available=bool(capabilities and capabilities.allowed_job_commands),
+        ),
         history=history,
     )
 

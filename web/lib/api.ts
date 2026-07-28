@@ -32,6 +32,11 @@ import type {
   Node,
   Project,
   Service,
+  ServiceOperation,
+  ServiceOperationsEnvelope,
+  ServiceOperationsState,
+  ResourceOperationRequest,
+  AutoscalingOperationRequest,
   ServiceUpdate,
   TokenResponse,
   User,
@@ -109,10 +114,11 @@ async function toApiError(response: Response): Promise<ApiError> {
 interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: unknown;
+  headers?: Record<string, string>;
 }
 
 async function send(path: string, options: RequestOptions = {}): Promise<Response> {
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: "application/json", ...options.headers };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
   const response = await fetch(`${BASE}${path}`, {
@@ -338,6 +344,131 @@ export function putVariable(
 /** DELETE /services/{service_id}/variables/{key} → 204. */
 export function deleteVariable(serviceId: string, key: string): Promise<void> {
   return requestEmpty(`/services/${id(serviceId)}/variables/${id(key)}`, {
+    method: "DELETE",
+  });
+}
+
+// --- Kubernetes operations -------------------------------------------------
+
+/** GET /services/{service_id}/operations?format=envelope, including its ETag. */
+export async function getServiceOperations(serviceId: string): Promise<ServiceOperationsEnvelope> {
+  const response = await send(`/services/${id(serviceId)}/operations?format=envelope`);
+  const body = (await response.json()) as Omit<ServiceOperationsEnvelope, "etag">;
+  return { ...body, etag: response.headers.get("ETag") };
+}
+
+/** PATCH /services/{service_id}/operations performs a compare-and-swap state update. */
+export async function updateServiceOperations(
+  serviceId: string,
+  changes: Record<string, unknown>,
+  etag: string,
+): Promise<ServiceOperationsState> {
+  const response = await send(`/services/${id(serviceId)}/operations`, {
+    method: "PATCH",
+    body: changes,
+    headers: { "If-Match": etag },
+  });
+  const body = (await response.json()) as Omit<ServiceOperationsState, "etag">;
+  return { ...body, etag: response.headers.get("ETag") };
+}
+
+function idempotencyKey(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `operation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function submitServiceOperation(
+  serviceId: string,
+  path: string,
+  body: object,
+): Promise<ServiceOperation> {
+  return requestJson<ServiceOperation>(`/services/${id(serviceId)}/operations${path}`, {
+    method: "POST",
+    body,
+    headers: { "Idempotency-Key": idempotencyKey() },
+  });
+}
+
+export function requestScale(serviceId: string, replicas: number): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/scale", { replicas });
+}
+
+export function requestResources(
+  serviceId: string,
+  payload: ResourceOperationRequest,
+): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/resources", payload);
+}
+
+export function requestAutoscaling(
+  serviceId: string,
+  payload: AutoscalingOperationRequest,
+): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/autoscaling", payload);
+}
+
+export function requestPlacement(
+  serviceId: string,
+  payload: { node_selector: Record<string, string>; topology_spread: boolean; anti_affinity: boolean },
+): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/placement", payload);
+}
+
+export function requestRollout(
+  serviceId: string,
+  payload: { strategy: "rolling" | "blue_green" | "canary"; canary_steps?: number[] },
+): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/rollout", payload);
+}
+
+/** Restores a previously-built immutable image; it never starts a source build. */
+export function requestOperationRollback(serviceId: string, deploymentId: string): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/rollback", { deployment_id: deploymentId });
+}
+
+export function requestBackup(serviceId: string, retentionDays: number): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/data/backups", { retention_days: retentionDays });
+}
+
+export function requestReadReplicas(serviceId: string, replicas: number): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/data/read-replicas", { replicas, public: false });
+}
+
+export function requestStorage(
+  serviceId: string,
+  currentSizeMb: number,
+  requestedSizeMb: number,
+): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/data/storage", {
+    current_size_mb: currentSizeMb,
+    requested_size_mb: requestedSizeMb,
+  });
+}
+
+export function requestSchedule(
+  serviceId: string,
+  payload: { cron: string; command: string[]; timeout_seconds?: number; retries?: number },
+): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/schedules", payload);
+}
+
+export function requestJob(
+  serviceId: string,
+  payload: { command: string[]; timeout_seconds?: number; retries?: number },
+): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/jobs/run", payload);
+}
+
+export function requestObservability(
+  serviceId: string,
+  payload: { prometheus: boolean; grafana: boolean },
+): Promise<ServiceOperation> {
+  return submitServiceOperation(serviceId, "/observability", payload);
+}
+
+export function deleteSchedule(serviceId: string, operationId: string): Promise<void> {
+  return requestEmpty(`/services/${id(serviceId)}/operations/schedules/${id(operationId)}`, {
     method: "DELETE",
   });
 }

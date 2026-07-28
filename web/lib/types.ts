@@ -238,3 +238,74 @@ export type BuildOutcome = "succeeded" | "failed";
 
 /** Derived, not stored. `Service` has no status column in the PRD data model. */
 export type ServiceStatus = "live" | "building" | "failed" | "draining" | "unknown";
+
+/** Durable Kubernetes operations intent and its latest observed result. */
+export type OperationStatus =
+  | "pending"
+  | "progressing"
+  | "healthy"
+  | "degraded"
+  | "failed"
+  | "cancelled";
+
+export type OperationKind =
+  | "configure"
+  | "scale"
+  | "resources"
+  | "autoscaling"
+  | "placement"
+  | "rollout"
+  | "rollback"
+  | "backup"
+  | "restore"
+  | "read_replica"
+  | "storage"
+  | "schedule"
+  | "job"
+  | "observability";
+
+export interface ServiceOperation {
+  id: string;
+  service_id: string;
+  kind: OperationKind;
+  status: OperationStatus;
+  requested: Record<string, unknown>;
+  observed: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface ServiceOperationsEnvelope {
+  desired: Record<string, unknown>;
+  observed: Record<string, unknown>;
+  version: number;
+  pending_reconciliation: boolean;
+  updated_at: string;
+  history: ServiceOperation[];
+  /** HTTP ETag used for safe compare-and-swap configuration patches. */
+  etag: string | null;
+}
+
+export interface ServiceOperationsState {
+  desired: Record<string, unknown>;
+  observed: Record<string, unknown>;
+  version: number;
+  pending_reconciliation: boolean;
+  updated_at: string;
+  etag: string | null;
+}
+
+export interface ResourceOperationRequest {
+  cpu_request?: string;
+  cpu_limit?: string;
+  memory_request_mb?: number;
+  memory_limit_mb?: number;
+}
+
+export interface AutoscalingOperationRequest {
+  min_replicas: number;
+  max_replicas: number;
+  target_cpu_percent?: number;
+  target_memory_percent?: number;
+}

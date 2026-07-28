@@ -318,9 +318,23 @@ class ServiceOperationsStateRead(BaseModel):
     updated_at: datetime
 
 
+class ServiceOperationCapabilitiesRead(BaseModel):
+    """Safe, server-authored feature flags for the Operations dashboard.
+
+    This intentionally does not expose the approved command argv lists.  The
+    browser only needs to know whether an app template has any approved job
+    actions and which database engine/data role Rudder itself provisioned.
+    """
+
+    database_engine: str | None = None
+    data_role: str | None = None
+    job_commands_available: bool = False
+
+
 class ServiceOperationsEnvelope(ServiceOperationsStateRead):
     """The canonical operations response: state plus immutable audit history."""
 
+    capabilities: ServiceOperationCapabilitiesRead
     history: list["ServiceOperationRead"]
 
 
