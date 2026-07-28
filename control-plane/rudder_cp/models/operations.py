@@ -57,6 +57,11 @@ class ServiceOperation(SQLModel, table=True):
             "request_hash",
             name="uq_service_operation_service_request_hash",
         ),
+        sa.UniqueConstraint(
+            "service_id",
+            "idempotency_key",
+            name="uq_service_operation_service_idempotency_key",
+        ),
     )
 
     id: uuid.UUID = uuid_pk()
@@ -75,6 +80,10 @@ class ServiceOperation(SQLModel, table=True):
     # Filled by the API when it has a stable hash of the request.  The initial
     # schema keeps it nullable for audit records created by migrations/tools.
     request_hash: str | None = Field(default=None, max_length=64, index=True)
+    # The raw key is persisted separately from its hash so that reusing a key
+    # for a different endpoint or payload can be rejected rather than treated
+    # as an unrelated request. Historical audit records may omit it.
+    idempotency_key: str | None = Field(default=None, max_length=256, index=True)
     requested: dict[str, Any] = Field(
         sa_column=sa.Column(sa.JSON, nullable=False),
     )

@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Response, status
 from sqlmodel import Session
 
 from rudder_cp.db import get_session
-from rudder_cp.models import OperationKind
+from rudder_cp.models import OperationKind, User
+from rudder_cp.routers.auth import CurrentUser
 from rudder_cp.schemas.common import error_responses, translate_errors
 from rudder_cp.schemas.operations import (
     AutoscalingRequest,
@@ -25,6 +26,7 @@ from rudder_cp.schemas.operations import (
     RolloutRequest,
     ScaleOperationRequest,
     ServiceOperationRead,
+    ServiceOperationsIntent,
     StorageResizeRequest,
 )
 from rudder_cp.services import operations as operation_ops
@@ -50,6 +52,7 @@ async def _submit(
     payload: object,
     idempotency_key: str,
     database_only: bool = False,
+    user: User,
 ) -> ServiceOperationRead:
     with translate_errors():
         operation = operation_ops.create_operation(
@@ -59,6 +62,7 @@ async def _submit(
             requested=_dump(payload),
             idempotency_key=idempotency_key,
             database_only=database_only,
+            owner_id=user.id,
         )
     return ServiceOperationRead.model_validate(operation)
 
@@ -70,11 +74,29 @@ async def _submit(
     operation_id="list_service_operations",
 )
 async def list_service_operations(
-    service_id: UUID, session: SessionDep
+    service_id: UUID, session: SessionDep, user: CurrentUser
 ) -> list[ServiceOperationRead]:
     with translate_errors():
-        rows = operation_ops.list_operations(session, service_id)
+        rows = operation_ops.list_operations(session, service_id, owner_id=user.id)
     return [ServiceOperationRead.model_validate(row) for row in rows]
+
+
+@router.patch(
+    "/services/{service_id}/operations",
+    response_model=ServiceOperationsIntent,
+    responses=error_responses(404, 422),
+    operation_id="update_service_operations",
+)
+async def update_service_operations(
+    service_id: UUID,
+    payload: ServiceOperationsIntent,
+    session: SessionDep,
+    user: CurrentUser,
+) -> ServiceOperationsIntent:
+    with translate_errors():
+        return operation_ops.update_operations_intent(
+            session, service_id=service_id, owner_id=user.id, intent=payload
+        )
 
 
 @router.post(
@@ -88,9 +110,10 @@ async def request_scale(
     payload: ScaleOperationRequest,
     idempotency_key: IdempotencyKey,
     session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     with translate_errors():
-        service = operation_ops.get_service(session, service_id)
+        service = operation_ops.get_service(session, service_id, owner_id=user.id)
         requested = operation_ops.normalize_scale_request(service, payload)
         operation = operation_ops.create_operation(
             session,
@@ -98,6 +121,7 @@ async def request_scale(
             kind=OperationKind.SCALE,
             requested=requested,
             idempotency_key=idempotency_key,
+            owner_id=user.id,
         )
     return ServiceOperationRead.model_validate(operation)
 
@@ -109,7 +133,11 @@ async def request_scale(
     responses=error_responses(404, 409, 422),
 )
 async def request_resources(
-    service_id: UUID, payload: ResourceRequest, idempotency_key: IdempotencyKey, session: SessionDep
+    service_id: UUID,
+    payload: ResourceRequest,
+    idempotency_key: IdempotencyKey,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -117,6 +145,7 @@ async def request_resources(
         kind=OperationKind.RESOURCES,
         payload=payload,
         idempotency_key=idempotency_key,
+        user=user,
     )
 
 
@@ -131,6 +160,7 @@ async def request_autoscaling(
     payload: AutoscalingRequest,
     idempotency_key: IdempotencyKey,
     session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -138,6 +168,7 @@ async def request_autoscaling(
         kind=OperationKind.AUTOSCALING,
         payload=payload,
         idempotency_key=idempotency_key,
+        user=user,
     )
 
 
@@ -152,6 +183,7 @@ async def request_placement(
     payload: PlacementRequest,
     idempotency_key: IdempotencyKey,
     session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -159,6 +191,7 @@ async def request_placement(
         kind=OperationKind.PLACEMENT,
         payload=payload,
         idempotency_key=idempotency_key,
+        user=user,
     )
 
 
@@ -169,7 +202,11 @@ async def request_placement(
     responses=error_responses(404, 409, 422),
 )
 async def request_rollout(
-    service_id: UUID, payload: RolloutRequest, idempotency_key: IdempotencyKey, session: SessionDep
+    service_id: UUID,
+    payload: RolloutRequest,
+    idempotency_key: IdempotencyKey,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -177,6 +214,7 @@ async def request_rollout(
         kind=OperationKind.ROLLOUT,
         payload=payload,
         idempotency_key=idempotency_key,
+        user=user,
     )
 
 
@@ -187,7 +225,11 @@ async def request_rollout(
     responses=error_responses(404, 409, 422),
 )
 async def request_rollback(
-    service_id: UUID, payload: RollbackRequest, idempotency_key: IdempotencyKey, session: SessionDep
+    service_id: UUID,
+    payload: RollbackRequest,
+    idempotency_key: IdempotencyKey,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     """Record rollback intent only; the immutable deployment switch is a later reconciler action."""
     return await _submit(
@@ -196,17 +238,29 @@ async def request_rollback(
         kind=OperationKind.ROLLBACK,
         payload=payload,
         idempotency_key=idempotency_key,
+        user=user,
     )
 
 
 @router.post(
     "/services/{service_id}/operations/backups",
+    include_in_schema=False,
+    status_code=202,
+    response_model=ServiceOperationRead,
+    responses=error_responses(404, 409, 422),
+)
+@router.post(
+    "/services/{service_id}/operations/data/backups",
     status_code=202,
     response_model=ServiceOperationRead,
     responses=error_responses(404, 409, 422),
 )
 async def request_backup(
-    service_id: UUID, payload: BackupRequest, idempotency_key: IdempotencyKey, session: SessionDep
+    service_id: UUID,
+    payload: BackupRequest,
+    idempotency_key: IdempotencyKey,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -215,17 +269,29 @@ async def request_backup(
         payload=payload,
         idempotency_key=idempotency_key,
         database_only=True,
+        user=user,
     )
 
 
 @router.post(
     "/services/{service_id}/operations/restores",
+    include_in_schema=False,
+    status_code=202,
+    response_model=ServiceOperationRead,
+    responses=error_responses(404, 409, 422),
+)
+@router.post(
+    "/services/{service_id}/operations/data/restore",
     status_code=202,
     response_model=ServiceOperationRead,
     responses=error_responses(404, 409, 422),
 )
 async def request_restore(
-    service_id: UUID, payload: RestoreRequest, idempotency_key: IdempotencyKey, session: SessionDep
+    service_id: UUID,
+    payload: RestoreRequest,
+    idempotency_key: IdempotencyKey,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -234,11 +300,19 @@ async def request_restore(
         payload=payload,
         idempotency_key=idempotency_key,
         database_only=True,
+        user=user,
     )
 
 
 @router.post(
     "/services/{service_id}/operations/read-replicas",
+    include_in_schema=False,
+    status_code=202,
+    response_model=ServiceOperationRead,
+    responses=error_responses(404, 409, 422),
+)
+@router.post(
+    "/services/{service_id}/operations/data/read-replicas",
     status_code=202,
     response_model=ServiceOperationRead,
     responses=error_responses(404, 409, 422),
@@ -248,6 +322,7 @@ async def request_read_replica(
     payload: ReadReplicaRequest,
     idempotency_key: IdempotencyKey,
     session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -256,11 +331,19 @@ async def request_read_replica(
         payload=payload,
         idempotency_key=idempotency_key,
         database_only=True,
+        user=user,
     )
 
 
 @router.post(
     "/services/{service_id}/operations/storage",
+    include_in_schema=False,
+    status_code=202,
+    response_model=ServiceOperationRead,
+    responses=error_responses(404, 409, 422),
+)
+@router.post(
+    "/services/{service_id}/operations/data/storage",
     status_code=202,
     response_model=ServiceOperationRead,
     responses=error_responses(404, 409, 422),
@@ -270,6 +353,7 @@ async def request_storage(
     payload: StorageResizeRequest,
     idempotency_key: IdempotencyKey,
     session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -278,6 +362,7 @@ async def request_storage(
         payload=payload,
         idempotency_key=idempotency_key,
         database_only=True,
+        user=user,
     )
 
 
@@ -288,7 +373,11 @@ async def request_storage(
     responses=error_responses(404, 409, 422),
 )
 async def request_schedule(
-    service_id: UUID, payload: CronJobRequest, idempotency_key: IdempotencyKey, session: SessionDep
+    service_id: UUID,
+    payload: CronJobRequest,
+    idempotency_key: IdempotencyKey,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -296,11 +385,19 @@ async def request_schedule(
         kind=OperationKind.SCHEDULE,
         payload=payload,
         idempotency_key=idempotency_key,
+        user=user,
     )
 
 
 @router.post(
     "/services/{service_id}/operations/jobs",
+    include_in_schema=False,
+    status_code=202,
+    response_model=ServiceOperationRead,
+    responses=error_responses(404, 409, 422),
+)
+@router.post(
+    "/services/{service_id}/operations/jobs/run",
     status_code=202,
     response_model=ServiceOperationRead,
     responses=error_responses(404, 409, 422),
@@ -310,6 +407,7 @@ async def request_job(
     payload: OneOffJobRequest,
     idempotency_key: IdempotencyKey,
     session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -317,6 +415,7 @@ async def request_job(
         kind=OperationKind.JOB,
         payload=payload,
         idempotency_key=idempotency_key,
+        user=user,
     )
 
 
@@ -331,6 +430,7 @@ async def request_observability(
     payload: ObservabilityRequest,
     idempotency_key: IdempotencyKey,
     session: SessionDep,
+    user: CurrentUser,
 ) -> ServiceOperationRead:
     return await _submit(
         session,
@@ -338,4 +438,26 @@ async def request_observability(
         kind=OperationKind.OBSERVABILITY,
         payload=payload,
         idempotency_key=idempotency_key,
+        user=user,
     )
+
+
+@router.delete(
+    "/services/{service_id}/operations/schedules/{operation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    responses=error_responses(404),
+)
+async def delete_schedule(
+    service_id: UUID,
+    operation_id: UUID,
+    session: SessionDep,
+    user: CurrentUser,
+) -> None:
+    with translate_errors():
+        operation_ops.delete_schedule(
+            session,
+            service_id=service_id,
+            operation_id=operation_id,
+            owner_id=user.id,
+        )
