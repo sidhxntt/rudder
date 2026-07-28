@@ -28,6 +28,7 @@ from rudder_cp.models import (
     Service,
     ServiceManagedCapabilities,
     ServiceOperation,
+    ServiceOperationsState,
     Variable,
     Volume,
 )
@@ -228,6 +229,15 @@ async def purge_service(session: Session, service: Service) -> None:
         select(ServiceOperation).where(ServiceOperation.service_id == service.id)
     ).all():
         session.delete(operation)
+
+    # Current desired/observed operations state is a service-owned aggregate,
+    # not a durable record after the service has been removed. It has no
+    # database-level ON DELETE cascade, so remove it explicitly before the
+    # service parent for PostgreSQL and SQLite parity.
+    for state in session.exec(
+        select(ServiceOperationsState).where(ServiceOperationsState.service_id == service.id)
+    ).all():
+        session.delete(state)
 
     # Trusted import/template capability metadata is also service-owned.  It
     # intentionally has no database cascade so SQLite and PostgreSQL follow

@@ -25,6 +25,7 @@ from rudder_cp.models import (
     Service,
     ServiceManagedCapabilities,
     ServiceOperation,
+    ServiceOperationsState,
     User,
     Volume,
 )
@@ -188,10 +189,10 @@ async def test_deleting_a_service_removes_operation_history_before_the_service(
         assert session.get(ServiceOperation, operation.id) is None
 
 
-async def test_deleting_a_service_removes_managed_capabilities_before_the_service(
+async def test_deleting_a_service_removes_operation_state_and_capabilities_before_the_service(
     engine, settings
 ):
-    """Trusted capability metadata has a service FK and must not block teardown."""
+    """Every operations child must be removed before its service parent."""
     with Session(engine) as session:
         user = User(email="owner@example.com", password_hash="x")
         project = Project(name="shop", owner_id=user.id)
@@ -208,7 +209,12 @@ async def test_deleting_a_service_removes_managed_capabilities_before_the_servic
             database_engine="postgres",
             allowed_job_commands=[["pg_dump"]],
         )
+        operation_state = ServiceOperationsState(
+            service_id=postgres.id,
+            desired={"run": {"replicas": 2}},
+        )
         session.add(capabilities)
+        session.add(operation_state)
         session.commit()
 
         await services.delete_service(
@@ -217,6 +223,7 @@ async def test_deleting_a_service_removes_managed_capabilities_before_the_servic
 
         assert session.get(Service, postgres.id) is None
         assert session.get(ServiceManagedCapabilities, capabilities.id) is None
+        assert session.get(ServiceOperationsState, operation_state.id) is None
 
 
 async def test_deleting_a_live_environment_removes_its_containers_and_routes(engine, settings):
@@ -240,7 +247,12 @@ async def test_deleting_a_live_environment_removes_its_containers_and_routes(eng
             database_engine="postgres",
             allowed_job_commands=[["pg_dump"]],
         )
+        operation_state = ServiceOperationsState(
+            service_id=api.id,
+            desired={"run": {"replicas": 2}},
+        )
         session.add(capabilities)
+        session.add(operation_state)
         session.commit()
 
         await traefik.render_all(session, settings)
@@ -253,6 +265,7 @@ async def test_deleting_a_live_environment_removes_its_containers_and_routes(eng
         assert session.get(Environment, production.id) is None
         assert session.get(Service, api.id) is None
         assert session.get(ServiceManagedCapabilities, capabilities.id) is None
+        assert session.get(ServiceOperationsState, operation_state.id) is None
         assert session.get(Service, staging_api.id) is not None
         assert len(await asyncio.to_thread(_route_files, settings)) == 1
 
@@ -376,7 +389,12 @@ async def test_deleting_a_live_project_removes_its_containers_and_routes(engine,
             database_engine="postgres",
             allowed_job_commands=[["pg_dump"]],
         )
+        operation_state = ServiceOperationsState(
+            service_id=api.id,
+            desired={"run": {"replicas": 2}},
+        )
         session.add(capabilities)
+        session.add(operation_state)
         session.commit()
         await traefik.render_all(session, settings)
 
@@ -387,6 +405,7 @@ async def test_deleting_a_live_project_removes_its_containers_and_routes(engine,
         assert session.get(Project, project.id) is None
         assert session.get(Service, api.id) is None
         assert session.get(ServiceManagedCapabilities, capabilities.id) is None
+        assert session.get(ServiceOperationsState, operation_state.id) is None
         assert session.get(Service, other_api.id) is not None
         assert len(await asyncio.to_thread(_route_files, settings)) == 1
 
