@@ -186,6 +186,27 @@ def test_same_idempotency_key_with_different_payload_does_not_collide(
     assert second.json()["code"] == "conflict"
 
 
+def test_idempotency_key_cannot_be_reused_for_another_operation_kind(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    key = "cross-kind-idempotency-key"
+    autoscaling = client.post(
+        f"/services/{seed['app']}/operations/autoscaling",
+        headers=headers(seed, key),
+        json={"min_replicas": 2, "max_replicas": 4},
+    )
+    assert autoscaling.status_code == 202, autoscaling.text
+    assert autoscaling.json()["kind"] == "autoscaling"
+
+    scale = client.post(
+        f"/services/{seed['app']}/operations/scale",
+        headers=headers(seed, key),
+        json={"replicas": 3},
+    )
+    assert scale.status_code == 409, scale.text
+    assert scale.json()["code"] == "conflict"
+
+
 def test_operations_hide_other_users_services(
     client: TestClient, seed: dict[str, str]
 ) -> None:
