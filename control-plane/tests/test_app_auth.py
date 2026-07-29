@@ -10,6 +10,7 @@ added without protection fails here instead of shipping open.
 """
 
 from collections.abc import Iterator
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -120,6 +121,13 @@ def test_public_routes_stay_public(client: TestClient) -> None:
     assert client.post("/auth/token", json={"email": "a@b.c", "password": "x"}).status_code == 401
 
 
+def test_healthz_reports_the_selected_runtime(client: TestClient) -> None:
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json()["runtime"] == "docker"
+
+
 def test_github_oauth_start_redirects_to_github(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -130,6 +138,56 @@ def test_github_oauth_start_redirects_to_github(
     response = client.get("/auth/github/start", follow_redirects=False)
     assert response.status_code == 307
     assert response.headers["location"].startswith("https://github.com/login/oauth/authorize?")
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["scope"] == ["user:email"]
+
+
+@pytest.mark.asyncio
+async def test_github_oauth_exchange_uses_the_verified_primary_email(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings.github_oauth_client_id = "client-id"
+    settings.github_oauth_client_secret = "client-secret"
+    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
+    oauth = GitHubOAuthClient(settings)
+    state = parse_qs(urlparse(oauth.authorization_url()).query)["state"][0]
+
+    class Response:
+        def __init__(self, payload: object) -> None:
+            self._payload = payload
+            self.is_error = False
+
+        def json(self) -> object:
+            return self._payload
+
+    class Client:
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(self, *_args: object, **_kwargs: object) -> Response:
+            return Response({"access_token": "token"})
+
+        async def get(self, url: str, **_kwargs: object) -> Response:
+            if url.endswith("/user"):
+                return Response({"id": 1234, "login": "octocat", "email": None})
+            return Response(
+                [
+                    {"email": "secondary@example.test", "primary": False, "verified": True},
+                    {"email": "owner@example.test", "primary": True, "verified": True},
+                ]
+            )
+
+    monkeypatch.setattr(
+        "rudder_cp.services.github_oauth.httpx.AsyncClient", lambda **_kwargs: Client()
+    )
+
+    identity = await oauth.exchange("code", state)
+
+    assert identity.email == "owner@example.test"
 
 
 async def _identity(_self: GitHubOAuthClient, _code: str, _state: str) -> GitHubIdentity:

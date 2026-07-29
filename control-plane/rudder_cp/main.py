@@ -23,6 +23,7 @@ from rudder_cp.routers import (
     imports,
     logs,
     nodes,
+    operations,
     projects,
     services,
     variables,
@@ -32,6 +33,7 @@ from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.auth import seed_admin_user
 from rudder_cp.services.github_app import GitHubAppClient
+from rudder_cp.services.monitor import recover_kubernetes_instance_projection
 from rudder_cp.services.reconciler import run_reconciler
 from rudder_cp.services.variables import verify_secret_keys
 from rudder_cp.services.worker import run_worker
@@ -50,6 +52,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = get_engine()
     with Session(engine) as session:
         await seed_admin_user(session)
+        repaired = recover_kubernetes_instance_projection(session, settings)
+        if repaired:
+            log.info("recovered %s stale Kubernetes instance projections", repaired)
 
     stop = asyncio.Event()
     worker = asyncio.create_task(
@@ -65,7 +70,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("deploy worker started")
 
     reconciler = asyncio.create_task(
-        run_reconciler(engine=engine, stop_event=stop, agent_client=app.state.agent),
+        run_reconciler(
+            engine=engine,
+            stop_event=stop,
+            agent_client=app.state.agent,
+            settings=settings,
+        ),
         name="reconciler",
     )
 
@@ -106,7 +116,17 @@ def create_app() -> FastAPI:
     # dependency repeated on each route — one missed decorator would otherwise
     # leave an endpoint open, and `POST /services/{id}/deploy` runs arbitrary
     # code from a git repo.
-    protected = (projects, environments, services, domains, variables, deployments, logs, imports)
+    protected = (
+        projects,
+        environments,
+        services,
+        domains,
+        variables,
+        deployments,
+        logs,
+        imports,
+        operations,
+    )
     for module in protected:
         app.include_router(module.router, dependencies=[Depends(auth_router.get_current_user)])
 
@@ -118,7 +138,11 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:
-        return {"status": "ok", "tls_mode": settings.tls_mode}
+        return {
+            "status": "ok",
+            "tls_mode": settings.tls_mode,
+            "runtime": settings.runtime,
+        }
 
     return app
 

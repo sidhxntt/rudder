@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -58,6 +58,14 @@ import { GitHubImportDialog } from "./github-import-dialog";
 describe("GitHubImportDialog", () => {
   beforeEach(() => {
     hooks.confirm.mutateAsync.mockReset();
+    hooks.confirm.mutateAsync.mockResolvedValue({ import_id: "import-1" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: "ready" }),
+      }),
+    );
   });
 
   it("guides a repository import through source, repository, review, and release confirmation", async () => {
@@ -85,5 +93,50 @@ describe("GitHubImportDialog", () => {
     expect(screen.getByText("Step 4 of 4")).toBeTruthy();
     expect(screen.getByText("Public URLs")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Confirm and deploy" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("ensures the local Kubernetes runtime before creating the first release", async () => {
+    const user = userEvent.setup();
+    render(<GitHubImportDialog />);
+
+    await user.click(screen.getByRole("button", { name: "Import from GitHub" }));
+    await user.click(screen.getByRole("button", { name: "Next: repository" }));
+    await user.click(screen.getByRole("button", { name: "Next: review services" }));
+    await user.click(screen.getByRole("button", { name: "Next: release summary" }));
+    await user.click(screen.getByRole("button", { name: "Confirm and deploy" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/local-kubernetes/bootstrap", {
+        method: "POST",
+      });
+    });
+    await waitFor(() => expect(hooks.confirm.mutateAsync).toHaveBeenCalledOnce());
+  });
+
+  it("shows local Kubernetes preparation before the release request starts", async () => {
+    const user = userEvent.setup();
+    let resolveBootstrap: ((response: { ok: boolean; json: () => Promise<{ status: string }> }) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveBootstrap = resolve;
+          }),
+      ),
+    );
+    render(<GitHubImportDialog />);
+
+    await user.click(screen.getByRole("button", { name: "Import from GitHub" }));
+    await user.click(screen.getByRole("button", { name: "Next: repository" }));
+    await user.click(screen.getByRole("button", { name: "Next: review services" }));
+    await user.click(screen.getByRole("button", { name: "Next: release summary" }));
+    await user.click(screen.getByRole("button", { name: "Confirm and deploy" }));
+
+    expect(await screen.findByRole("button", { name: "Preparing local Kubernetes…" })).toBeTruthy();
+    expect(hooks.confirm.mutateAsync).not.toHaveBeenCalled();
+
+    resolveBootstrap?.({ ok: true, json: async () => ({ status: "ready" }) });
+    await waitFor(() => expect(hooks.confirm.mutateAsync).toHaveBeenCalledOnce());
   });
 });

@@ -1,4 +1,4 @@
-# Phase 4 — Environments
+# Phase 5 — Environments
 
 **Target:** 2 weeks
 
@@ -15,8 +15,8 @@ need multi-host.
 ## Prerequisites
 
 - [ ] Phase 1 verified
-- [ ] Phase 3 verified **if** you want `wg_subnet` allocation on clone. Without
-      Phase 3, clone works but leaves `wg_subnet` null.
+- [ ] Phase 4 verified **if** you want `wg_subnet` allocation on clone. Without
+      Phase 4, clone works but leaves `wg_subnet` null.
 
 ---
 
@@ -61,7 +61,7 @@ domains.
 
 Needs the GitHub webhook to handle `pull_request` events in addition to `push`.
 
-**Note the distinction from Phase 5.5 branch previews.** A PR environment is a
+**Note the distinction from Phase 6.5 branch previews.** A PR environment is a
 full clone with its own database. A branch preview deploys new code against the
 *existing* environment's backing services. Different features, both valid. This
 step builds the first one.
@@ -143,4 +143,4 @@ rudder env list
 - [ ] PR open creates an environment and comments the URL
 - [ ] PR close destroys it and releases the subnet
 - [ ] Replayed webhooks do not error
-- [ ] `README.md` Phase 4 section
+- [ ] `README.md` Phase 5 section

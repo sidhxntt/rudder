@@ -13,6 +13,7 @@ import {
   useGitHubInstallations,
   useGitHubRepositories,
 } from "@/lib/queries";
+import { ensureLocalKubernetesRuntime } from "@/lib/local-kubernetes";
 import type { GitHubImportStep } from "@/lib/types";
 
 type Addon = string;
@@ -123,6 +124,8 @@ export function GitHubImportDialog({
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [importId, setImportId] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>("source");
+  const [isPreparingRuntime, setIsPreparingRuntime] = useState(false);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
   const status = useGitHubImportStatus();
   const templates = useGitHubImportTemplates();
@@ -221,6 +224,7 @@ export function GitHubImportDialog({
       preview.data.services.some(
         (service) => service.role === "web" && selectedPublicServices.includes(service.name),
       ) &&
+      !isPreparingRuntime &&
       !confirm.isPending,
   );
 
@@ -232,6 +236,8 @@ export function GitHubImportDialog({
     setTemplateId(null);
     setImportId(null);
     setStage("source");
+    setIsPreparingRuntime(false);
+    setBootstrapError(null);
     confirm.reset();
   }
 
@@ -249,15 +255,26 @@ export function GitHubImportDialog({
 
   async function startImport() {
     if (!installationId || !repository || !branch) return;
-    const created = await confirm.mutateAsync({
-      installationId,
-      repository,
-      branch,
-      addons: selectedAddons,
-      templateId,
-      publicServices: selectedPublicServices,
-    });
-    setImportId(created.import_id);
+    setBootstrapError(null);
+    setIsPreparingRuntime(true);
+    try {
+      await ensureLocalKubernetesRuntime();
+      const created = await confirm.mutateAsync({
+        installationId,
+        repository,
+        branch,
+        addons: selectedAddons,
+        templateId,
+        publicServices: selectedPublicServices,
+      });
+      setImportId(created.import_id);
+    } catch (error) {
+      setBootstrapError(
+        error instanceof Error ? error.message : "Could not prepare the local Kubernetes runtime.",
+      );
+    } finally {
+      setIsPreparingRuntime(false);
+    }
   }
 
   const sourceTitle = templateId
@@ -511,7 +528,8 @@ export function GitHubImportDialog({
                           </details>
                         </div>
                       ) : <p className="mt-6 text-caption text-status-failed">The release preview is unavailable. Return to services and try again.</p>}
-                      <div className="mt-6 flex items-center justify-between gap-3"><button type="button" onClick={() => setStage("services")} className="rounded-sm border border-hairline px-lg py-sm text-button text-ink hover:border-hairline-strong">Back</button><button type="button" disabled={!canConfirm} onClick={() => void startImport()} className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-40">{confirm.isPending ? "Creating release…" : "Confirm and deploy"}</button></div>
+                      <div className="mt-6 flex items-center justify-between gap-3"><button type="button" onClick={() => setStage("services")} className="rounded-sm border border-hairline px-lg py-sm text-button text-ink hover:border-hairline-strong">Back</button><button type="button" disabled={!canConfirm} onClick={() => void startImport()} className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-40">{isPreparingRuntime ? "Preparing local Kubernetes…" : confirm.isPending ? "Creating release…" : "Confirm and deploy"}</button></div>
+                      {bootstrapError ? <p className="mt-3 text-caption text-status-failed">{bootstrapError}</p> : null}
                       {confirm.isError ? <p className="mt-3 text-caption text-status-failed">{confirm.error.message}</p> : null}
                     </div>
                   ) : null}

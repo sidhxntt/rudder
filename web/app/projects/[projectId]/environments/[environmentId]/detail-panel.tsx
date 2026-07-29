@@ -10,13 +10,15 @@ import { BuildLogs } from "./build-logs";
 import { DeployHistory } from "./deploy-history";
 import { StatusDot } from "./status-dot";
 import { Variables } from "./variables";
+import { Operations } from "./operations";
 
-type Tab = "logs" | "variables" | "deploys";
+type Tab = "logs" | "variables" | "deploys" | "operations";
 
 const TABS: readonly { id: Tab; label: string }[] = [
   { id: "logs", label: "Build logs" },
   { id: "variables", label: "Variables" },
   { id: "deploys", label: "Deploys" },
+  { id: "operations", label: "Operations" },
 ];
 
 export function DetailPanel({
@@ -189,6 +191,7 @@ export function DetailPanel({
           rollbackPending={rollback.isPending || status === "building"}
         />
       ) : null}
+      {tab === "operations" ? <Operations service={service} /> : null}
 
       {!isComposeManaged && deploy.isError ? (
         <p className="border-t border-hairline px-lg py-sm text-micro text-status-failed">

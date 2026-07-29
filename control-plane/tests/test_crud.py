@@ -24,12 +24,13 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from rudder_cp.config import get_settings
 from rudder_cp.db import get_session
-from rudder_cp.models import Deployment, Domain, Environment, Service, User, Variable
+from rudder_cp.models import Deployment, Domain, Environment, Project, Service, User, Variable
 from rudder_cp.routers import domains as domains_router
 from rudder_cp.routers import environments as environments_router
 from rudder_cp.routers import projects as projects_router
 from rudder_cp.routers import services as services_router
 from rudder_cp.schemas.common import install_error_handlers
+from rudder_cp.security import issue_token
 from rudder_cp.services.naming import NAME_PATTERN
 
 BASE_DOMAIN = get_settings().base_domain
@@ -52,7 +53,11 @@ def engine_fixture() -> Iterator[Engine]:
 
 
 @pytest.fixture(name="client")
-def client_fixture(engine: Engine, tmp_path) -> Iterator[TestClient]:
+def client_fixture(
+    engine: Engine, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[TestClient]:
+    monkeypatch.setenv("RUDDER_JWT_SECRET", "crud-service-owner-test-secret-32")
+    get_settings.cache_clear()
     app = FastAPI()
     app.state.settings = get_settings().model_copy(
         update={"traefik_dynamic_dir": str(tmp_path / "dynamic")}
@@ -69,8 +74,14 @@ def client_fixture(engine: Engine, tmp_path) -> Iterator[TestClient]:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
-    with TestClient(app) as client:
-        yield client
+    with Session(engine) as session:
+        owner = session.exec(select(User).where(User.email == "owner@example.com")).one()
+        token = issue_token(owner.id).token
+    try:
+        with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
+            yield client
+    finally:
+        get_settings.cache_clear()
 
 
 # --------------------------------------------------------------------------
@@ -156,6 +167,32 @@ def test_unknown_project_returns_uniform_error(client: TestClient) -> None:
     body = response.json()
     assert set(body) == {"code", "message", "details"}
     assert body["code"] == "not_found"
+
+
+def test_service_routes_hide_other_owners_services(client: TestClient, engine: Engine) -> None:
+    """A valid session for one project owner cannot mutate another owner's service."""
+    with Session(engine) as session:
+        intruder = User(email="other-owner@example.com", password_hash="not-a-real-hash")
+        session.add(intruder)
+        session.commit()
+        foreign_project = Project(name="other-project", owner_id=intruder.id)
+        session.add(foreign_project)
+        session.commit()
+        foreign_environment = Environment(
+            project_id=foreign_project.id,
+            name="production",
+            is_production=True,
+        )
+        session.add(foreign_environment)
+        session.commit()
+        foreign_service = Service(environment_id=foreign_environment.id, name="private-api")
+        session.add(foreign_service)
+        session.commit()
+        foreign_service_id = foreign_service.id
+
+    response = client.patch(f"/services/{foreign_service_id}", json={"name": "taken-over"})
+    assert response.status_code == 404, response.text
+    assert client.get(f"/services/{foreign_service_id}").status_code == 404
 
 
 # --------------------------------------------------------------------------

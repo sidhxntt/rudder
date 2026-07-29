@@ -24,6 +24,7 @@ from rudder_cp.models import (
     GitHubImportService,
     Service,
     ServiceKind,
+    ServiceManagedCapabilities,
     Variable,
     Volume,
 )
@@ -69,6 +70,7 @@ _ADDON_REFERENCE_KEYS = {
     "qdrant": "QDRANT_URL",
 }
 _SERVICE_NAME = re.compile(r"[^a-z0-9-]+")
+_MANAGED_DATABASE_ENGINES = frozenset({"postgres", "mysql", "mariadb", "mongodb"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +473,14 @@ def _managed_postgres(session: Session, environment_id: uuid.UUID) -> Service:
     )
     session.add(service)
     session.flush()
+    session.add(
+        ServiceManagedCapabilities(
+            service_id=service.id,
+            database_engine="postgres",
+            data_role="primary",
+            source="catalog",
+        )
+    )
     session.add(Volume(service_id=service.id, mount_path="/var/lib/postgresql/data"))
     session.commit()
     # ``DATABASE_URL`` is stored on the add-on then referenced by the app, so
@@ -507,6 +517,14 @@ def _managed_redis(session: Session, environment_id: uuid.UUID) -> Service:
     )
     session.add(service)
     session.flush()
+    session.add(
+        ServiceManagedCapabilities(
+            service_id=service.id,
+            database_engine="redis",
+            data_role="primary",
+            source="catalog",
+        )
+    )
     session.add(Volume(service_id=service.id, mount_path="/data"))
     session.commit()
     _set_managed_variable(
@@ -538,6 +556,14 @@ def _managed_catalog_addon(
     )
     session.add(service)
     session.flush()
+    session.add(
+        ServiceManagedCapabilities(
+            service_id=service.id,
+            database_engine=addon if addon in _MANAGED_DATABASE_ENGINES else None,
+            data_role="primary" if addon in _MANAGED_DATABASE_ENGINES else None,
+            source="catalog",
+        )
+    )
     volume = metadata.get("volume")
     if isinstance(volume, tuple):
         session.add(Volume(service_id=service.id, mount_path=str(volume[1])))

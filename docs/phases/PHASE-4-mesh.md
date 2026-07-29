@@ -1,4 +1,4 @@
-# Phase 3 — WireGuard mesh
+# Phase 4 — WireGuard mesh
 
 **Target:** 2–3 weeks
 
@@ -150,4 +150,4 @@ docker exec <app-container> dig +short postgres.internal
 - [ ] IP allocation race test passes
 - [ ] Diagnostic runbook written — the `wg show` → `tcpdump` order above, in
       `../decisions/` or the README. You will need it again.
-- [ ] `README.md` Phase 3 section
+- [ ] `README.md` Phase 4 section

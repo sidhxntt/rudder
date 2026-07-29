@@ -7,6 +7,7 @@ corpse.
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
+from uuid import uuid4
 
 from rudder_cp.config import Settings
 from rudder_cp.models import (
@@ -15,6 +16,7 @@ from rudder_cp.models import (
     Domain,
     DomainTargetType,
     Environment,
+    GitHubImport,
     Instance,
     InstanceStatus,
     Node,
@@ -23,7 +25,10 @@ from rudder_cp.models import (
     User,
 )
 from rudder_cp.services.agent_client import AgentError, ContainerState
-from rudder_cp.services.monitor import reconcile_instances
+from rudder_cp.services.monitor import (
+    reconcile_instances,
+    recover_kubernetes_instance_projection,
+)
 
 
 @pytest.fixture
@@ -75,7 +80,7 @@ def live(engine):
         session.add(instance)
         session.add(domain)
         session.commit()
-        return {"instance_id": instance.id, "domain_id": domain.id}
+        return {"instance_id": instance.id, "domain_id": domain.id, "service_id": service.id}
 
 
 class FakeAgent:
@@ -154,6 +159,59 @@ async def test_instances_of_non_live_deployments_are_left_alone(engine, settings
     agent = FakeAgent(status="stopped")
     assert await reconcile_instances(Session(engine), agent, settings) == 0  # type: ignore[arg-type]
     assert agent.calls == 0
+
+
+async def test_kubernetes_import_pods_are_not_inspected_as_docker_containers(
+    engine, settings, live
+):
+    """A ready pod ID is not a Docker container ID on the Rudder node."""
+    settings.runtime = "kubernetes"
+    with Session(engine) as session:
+        session.add(
+            GitHubImport(
+                installation_id=1,
+                repository="acme/example",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services: {}\n",
+                compose_project_name="monitor-kubernetes-import",
+                project_id=uuid4(),
+                app_service_id=live["service_id"],
+            )
+        )
+        session.commit()
+
+    agent = FakeAgent(error=AgentError("container_not_found: pod IDs are not Docker IDs"))
+    assert await reconcile_instances(Session(engine), agent, settings) == 0  # type: ignore[arg-type]
+    assert agent.calls == 0
+    with Session(engine) as session:
+        assert session.get(Instance, live["instance_id"]).status is InstanceStatus.HEALTHY
+
+
+def test_kubernetes_startup_repairs_only_stale_live_pod_projections(engine, settings, live):
+    settings.runtime = "kubernetes"
+    with Session(engine) as session:
+        session.add(
+            GitHubImport(
+                installation_id=1,
+                repository="acme/example",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services: {}\n",
+                compose_project_name="monitor-kubernetes-repair",
+                project_id=uuid4(),
+                app_service_id=live["service_id"],
+            )
+        )
+        instance = session.get(Instance, live["instance_id"])
+        assert instance is not None
+        instance.status = InstanceStatus.STOPPED
+        session.add(instance)
+        session.commit()
+
+        assert recover_kubernetes_instance_projection(session, settings) == 1
+        session.refresh(instance)
+        assert instance.status is InstanceStatus.HEALTHY
 
 
 def _dir(settings: Settings):

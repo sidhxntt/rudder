@@ -1,0 +1,23 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."kind-registry:5000"]
+      endpoint = ["http://kind-registry:5000"]
+nodes:
+  - role: control-plane
+    # The local control plane runs in Docker and reaches Kind through Docker's
+    # host gateway.  Include that stable hostname in fresh cluster API certs.
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          certSANs:
+            - host.docker.internal
+    extraPortMappings:
+      # Kind owns the canonical local public endpoint.  Docker-only routing
+      # uses a separate development port, so clicking *.localhost always
+      # reaches the Kubernetes ingress in Phase 3.
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP

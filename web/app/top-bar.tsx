@@ -25,8 +25,8 @@ export function TopBar() {
   const isWorkspace = !projectId;
 
   return (
-    <header className="flex h-11 shrink-0 items-center gap-md border-b border-hairline bg-surface-soft px-lg">
-      <div className="flex min-w-0 items-center gap-sm">
+    <header className="flex h-11 shrink-0 items-center gap-sm border-b border-hairline bg-surface-soft px-sm sm:gap-md sm:px-lg">
+      <div className="flex min-w-0 flex-1 items-center gap-sm">
         {isWorkspace ? (
           <span className="truncate text-caption font-medium text-ink">Workspace</span>
         ) : (
@@ -47,7 +47,7 @@ export function TopBar() {
         ) : null}
       </div>
 
-      <div className="ml-auto flex items-center gap-lg text-micro text-ink-mute">
+      <div className="ml-auto flex shrink-0 items-center gap-sm text-micro text-ink-mute sm:gap-lg">
         {environment?.wg_subnet ? (
           <span className="font-mono">{environment.wg_subnet}</span>
         ) : null}
@@ -56,7 +56,9 @@ export function TopBar() {
         </span>
         {session.state.status === "authenticated" ? (
           <span className="flex items-center gap-sm">
-            <span className="truncate text-ink-faint">{session.state.user.email}</span>
+            <span className="hidden max-w-40 truncate text-ink-faint sm:inline">
+              {session.state.user.email}
+            </span>
             <button
               type="button"
               onClick={() => void session.signOut()}

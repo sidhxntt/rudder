@@ -104,7 +104,35 @@ This is deliberately a private lab runtime, not production ingress: services
 have no public cross-host URL yet. Persistent-volume services are not
 automatically duplicated after node loss; see
 [ADR 0003](docs/decisions/0003-phase-2-split-brain-policy.md). The production
-runtime path is [Phase 2.5 Kubernetes](docs/phases/PHASE-2.5-kubernetes-runtime.md).
+runtime path is [Phase 3 Kubernetes](docs/phases/PHASE-3-kubernetes-runtime.md).
+
+## Phase 3 — local Kubernetes runtime
+
+Phase 3 uses Kind locally before moving the same resource model to GKE. Rudder
+maps an imported Compose graph to a dedicated namespace: stateless apps and
+workers become Deployments, stateful dependencies become StatefulSets with
+PVCs, private members receive ClusterIP Services, and only an explicitly public
+app receives an Ingress route. A candidate route is promoted only after every
+member is ready; a failed candidate is removed without changing the existing
+public route.
+
+```bash
+make kind-up
+make kind-control-plane
+make verify-kind
+```
+
+During local UI development, the first confirmed GitHub import now performs
+those first two setup steps automatically: it creates or reuses `rudder-kind`,
+switches the local control plane to the Kubernetes runtime, and waits until
+`/healthz` reports `runtime: "kubernetes"` before creating the release. Later
+imports reuse the existing cluster and do not restart the control plane. Set
+`RUDDER_LOCAL_KUBERNETES_AUTO_BOOTSTRAP=false` to use the manual commands
+instead.
+
+`make verify-kind` creates a disposable `web + worker + PostgreSQL + Redis`
+release, proves ingress reaches only `web`, deliberately fails a new candidate
+without disrupting the live route, then removes its temporary namespace.
 
 ## Notes on the dev stack
 

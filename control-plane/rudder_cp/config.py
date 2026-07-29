@@ -70,6 +70,41 @@ class Settings(BaseSettings):
     buildkit_addr: str = "tcp://registry:1234"
     docker_network: str = "rudder"
 
+    # Phase 3 — the control plane keeps its deployment model while swapping
+    # the execution backend from a Docker agent to Kubernetes.
+    runtime: Literal["docker", "kubernetes"] = "docker"
+    kubernetes_kubeconfig: str = ""
+    kubernetes_namespace_prefix: str = "rudder"
+    kubernetes_ingress_class: str = "nginx"
+    # Kept separate from ``base_domain`` so a local Kind ingress can use
+    # ``localhost`` while a production control plane serves its own UI/API
+    # from a different public domain.
+    kubernetes_local_domain: str = "localhost"
+    kubernetes_readiness_timeout_seconds: int = 180
+    # The UI must not imply that a stateful data operation works until the
+    # execution cluster has the corresponding operator installed.
+    kubernetes_postgres_operator: Literal["off", "cloudnativepg"] = "off"
+
+    # A physical PostgreSQL backup is only exposed when an explicit
+    # S3-compatible target is configured. Keeping this opt-in prevents a
+    # dashboard click from producing an untracked local dump. Production can
+    # point this at S3/GCS-compatible storage; Kind development commonly uses
+    # a private MinIO endpoint.
+    kubernetes_backup_s3_endpoint: str = ""
+    kubernetes_backup_s3_bucket: str = ""
+    kubernetes_backup_s3_access_key: str = ""
+    kubernetes_backup_s3_secret_key: str = ""
+    kubernetes_backup_s3_region: str = "us-east-1"
+
+    @property
+    def kubernetes_backup_configured(self) -> bool:
+        return bool(
+            self.kubernetes_backup_s3_endpoint
+            and self.kubernetes_backup_s3_bucket
+            and self.kubernetes_backup_s3_access_key
+            and self.kubernetes_backup_s3_secret_key
+        )
+
     # D3(b) — the control plane never touches Docker directly, it calls the agent.
     agent_url: str = "http://agent:9000"
     agent_shared_secret: str = "secret"

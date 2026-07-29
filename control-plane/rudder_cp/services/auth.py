@@ -5,8 +5,9 @@ as an argument, and never imports ``fastapi``. The router above it only maps the
 exceptions raised here onto status codes.
 
 There is no signup or user CRUD. Password access is seeded from ``.env``;
-GitHub OAuth access creates local users linked solely by GitHub's immutable
-numeric ID, never by an email address or mutable login name.
+GitHub OAuth access resolves returning users by GitHub's immutable numeric ID.
+On a first login only, GitHub's verified primary email may link that identity
+to an existing password-only local account.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from rudder_cp.config import Settings, get_settings
-from rudder_cp.models import User
+from rudder_cp.models import Project, User
 from rudder_cp.security import (
     InvalidToken,
     IssuedToken,
@@ -136,10 +137,11 @@ async def find_or_create_github_user(
     """Find a user by immutable GitHub ID, or create one for a first OAuth login.
 
     GitHub login names and emails may change, so only the numeric GitHub ID is
-    used to link an existing account. Email is only profile data: it is
-    canonicalized, and a value already owned by a different local account is
-    never used to merge identities or overwrite that account. New OAuth users
-    use a deterministic non-deliverable fallback in that case.
+    used to find an existing OAuth identity. For a first OAuth login, the
+    client supplies GitHub's verified primary email and can therefore attach
+    that durable GitHub ID to a password-only account with the same email.
+    New OAuth users use a deterministic non-deliverable fallback when there is
+    no verified email to link.
 
     The unique GitHub-ID constraint makes concurrent first callbacks safe. If
     an insert races, the loop re-reads the winning identity; if only an email
@@ -152,24 +154,51 @@ async def find_or_create_github_user(
     for _ in range(GITHUB_USER_WRITE_ATTEMPTS):
         user = session.exec(select(User).where(User.github_id == github_id)).first()
         if user is not None:
-            user.github_login = login
             owner = _email_owner(session, canonical_email) if canonical_email else None
+            if (
+                owner is not None
+                and owner.id != user.id
+                and owner.github_id is None
+                and user.email == _github_fallback_email(github_id)
+            ):
+                # Older OAuth callbacks could only see `/user`, so a private
+                # GitHub email created this placeholder account. Once the
+                # verified primary email is available, move its project graph
+                # to the matching local account and retire the placeholder.
+                projects = session.exec(select(Project).where(Project.owner_id == user.id)).all()
+                for project in projects:
+                    project.owner_id = owner.id
+                session.delete(user)
+                # `github_id` is unique. Flush the project reassignments and
+                # deletion first so assigning that ID to the local account is
+                # valid on databases that enforce uniqueness per statement.
+                session.flush()
+                owner.github_id = github_id
+                owner.github_login = login
+                user = owner
+            else:
+                user.github_login = login
             if owner is None or owner.id == user.id:
                 if canonical_email is not None:
                     user.email = canonical_email
         else:
             owner = _email_owner(session, canonical_email) if canonical_email else None
-            user = User(
-                email=(
-                    canonical_email
-                    if canonical_email is not None and owner is None
-                    else _fallback_email(session, github_id)
-                ),
-                password_hash=hash_password(secrets.token_urlsafe(48)),
-                github_id=github_id,
-                github_login=login,
-            )
-            session.add(user)
+            if owner is not None and owner.github_id is None:
+                owner.github_id = github_id
+                owner.github_login = login
+                user = owner
+            else:
+                user = User(
+                    email=(
+                        canonical_email
+                        if canonical_email is not None and owner is None
+                        else _fallback_email(session, github_id)
+                    ),
+                    password_hash=hash_password(secrets.token_urlsafe(48)),
+                    github_id=github_id,
+                    github_login=login,
+                )
+                session.add(user)
 
         try:
             session.commit()

@@ -15,6 +15,7 @@ from rudder_cp.security import JWT_ALGORITHM
 _AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 _TOKEN_URL = "https://github.com/login/oauth/access_token"
 _PROFILE_URL = "https://api.github.com/user"
+_EMAILS_URL = "https://api.github.com/user/emails"
 _STATE_AUDIENCE = "github-oauth-state"
 
 
@@ -27,6 +28,24 @@ class GitHubIdentity:
     id: int
     login: str
     email: str | None
+
+
+def _verified_primary_email(payload: object) -> str | None:
+    """Return only GitHub's verified primary email from the OAuth API response."""
+    if not isinstance(payload, list):
+        return None
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        email = item.get("email")
+        if (
+            item.get("primary") is True
+            and item.get("verified") is True
+            and isinstance(email, str)
+            and email.strip()
+        ):
+            return email.strip()
+    return None
 
 
 class GitHubOAuthClient:
@@ -55,6 +74,7 @@ class GitHubOAuthClient:
             {
                 "client_id": self.settings.github_oauth_client_id,
                 "redirect_uri": self.settings.github_oauth_redirect_uri,
+                "scope": "user:email",
                 "state": state,
             }
         )
@@ -92,9 +112,22 @@ class GitHubOAuthClient:
                     "Authorization": f"Bearer {token.json()['access_token']}",
                 },
             )
+            emails = await client.get(
+                _EMAILS_URL,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {token.json()['access_token']}",
+                },
+            )
         if profile.is_error:
             raise GitHubOAuthError("GitHub profile lookup failed.")
+        if emails.is_error:
+            raise GitHubOAuthError("GitHub verified email lookup failed.")
         value = profile.json()
         if not isinstance(value.get("id"), int) or not isinstance(value.get("login"), str):
             raise GitHubOAuthError("GitHub returned an incomplete profile.")
-        return GitHubIdentity(id=value["id"], login=value["login"], email=value.get("email"))
+        return GitHubIdentity(
+            id=value["id"],
+            login=value["login"],
+            email=_verified_primary_email(emails.json()),
+        )

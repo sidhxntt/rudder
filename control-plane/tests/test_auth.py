@@ -27,7 +27,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 import rudder_cp.models  # noqa: F401  -- registers every table on the metadata
 from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
-from rudder_cp.models import User
+from rudder_cp.models import Project, User
 from rudder_cp.routers import auth as auth_router
 from rudder_cp.schemas.auth import UserRead
 from rudder_cp.security import (
@@ -238,7 +238,7 @@ async def test_find_or_create_github_user_normalizes_email_case_and_whitespace(
     assert updated.email == "octocat@github.test"
 
 
-async def test_find_or_create_github_user_does_not_link_or_collide_on_email(
+async def test_find_or_create_github_user_links_existing_local_user_with_verified_github_email(
     session: Session,
 ) -> None:
     password_user = User(email="claimed@github.test", password_hash="not-a-real-hash")
@@ -252,9 +252,39 @@ async def test_find_or_create_github_user_does_not_link_or_collide_on_email(
         email=" Claimed@GitHub.Test ",
     )
 
-    assert github_user.id != password_user.id
-    assert github_user.email == "github-456@oauth.rudder.invalid"
-    assert password_user.github_id is None
+    assert github_user.id == password_user.id
+    assert github_user.email == "claimed@github.test"
+    assert github_user.github_id == 456
+    assert github_user.github_login == "new-octocat"
+
+
+async def test_github_login_repairs_a_placeholder_identity_after_verified_email_becomes_available(
+    session: Session,
+) -> None:
+    local_user = User(email="owner@github.test", password_hash="not-a-real-hash")
+    placeholder_user = User(
+        email="github-456@oauth.rudder.invalid",
+        password_hash="not-a-real-hash",
+        github_id=456,
+        github_login="octocat",
+    )
+    session.add_all((local_user, placeholder_user))
+    session.commit()
+    project = Project(name="placeholder-project", owner_id=placeholder_user.id)
+    session.add(project)
+    session.commit()
+
+    linked = await auth_service.find_or_create_github_user(
+        session,
+        github_id=456,
+        login="octocat",
+        email="owner@github.test",
+    )
+
+    assert linked.id == local_user.id
+    assert linked.github_id == 456
+    assert session.get(User, placeholder_user.id) is None
+    assert session.get(Project, project.id).owner_id == local_user.id
 
 
 async def test_find_or_create_github_user_keeps_existing_email_when_another_user_claims_it(

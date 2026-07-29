@@ -238,3 +238,92 @@ export type BuildOutcome = "succeeded" | "failed";
 
 /** Derived, not stored. `Service` has no status column in the PRD data model. */
 export type ServiceStatus = "live" | "building" | "failed" | "draining" | "unknown";
+
+/** Durable Kubernetes operations intent and its latest observed result. */
+export type OperationStatus =
+  | "pending"
+  | "progressing"
+  | "healthy"
+  | "degraded"
+  | "failed"
+  | "cancelled";
+
+export type OperationKind =
+  | "configure"
+  | "scale"
+  | "resources"
+  | "autoscaling"
+  | "placement"
+  | "rollout"
+  | "rollback"
+  | "backup"
+  | "restore"
+  | "read_replica"
+  | "storage"
+  | "schedule"
+  | "job"
+  | "observability";
+
+export interface ServiceOperation {
+  id: string;
+  service_id: string;
+  kind: OperationKind;
+  status: OperationStatus;
+  requested: Record<string, unknown>;
+  observed: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface ServiceOperationsEnvelope {
+  desired: Record<string, unknown>;
+  observed: Record<string, unknown>;
+  version: number;
+  pending_reconciliation: boolean;
+  updated_at: string;
+  history: ServiceOperation[];
+  /** Safe server-authored flags; command arguments and secrets are never exposed. */
+  capabilities: ServiceOperationCapabilities;
+  /** HTTP ETag used for safe compare-and-swap configuration patches. */
+  etag: string | null;
+}
+
+export interface ServiceOperationCapabilities {
+  database_engine: string | null;
+  data_role: string | null;
+  job_commands_available: boolean;
+  /** Only true when the control plane can expand this service's PVC safely. */
+  storage_expansion_available?: boolean;
+  /** Legacy combined flag. New clients must check each data action separately. */
+  backup_restore_available?: boolean;
+  /** Only true when Rudder has a configured physical backup destination. */
+  backup_available?: boolean;
+  /** Only true when Rudder supports a safe recovery-cluster cutover. */
+  restore_available?: boolean;
+  /** Only true when the configured primary supports managed SQL replicas. */
+  read_replicas_available?: boolean;
+}
+
+export interface ServiceOperationsState {
+  desired: Record<string, unknown>;
+  observed: Record<string, unknown>;
+  version: number;
+  pending_reconciliation: boolean;
+  updated_at: string;
+  etag: string | null;
+}
+
+export interface ResourceOperationRequest {
+  cpu_request?: string;
+  cpu_limit?: string;
+  memory_request_mb?: number;
+  memory_limit_mb?: number;
+}
+
+export interface AutoscalingOperationRequest {
+  min_replicas: number;
+  max_replicas: number;
+  target_cpu_percent?: number;
+  target_memory_percent?: number;
+}

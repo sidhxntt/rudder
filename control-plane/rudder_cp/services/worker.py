@@ -19,6 +19,10 @@ from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.deploy import run_deployment
 from rudder_cp.services.imports import app_dependency_state
 from rudder_cp.services.monitor import reconcile_instances
+from rudder_cp.services.operation_dispatch import (
+    queue_pending_operation_reconciliations,
+    reconcile_pending_rollbacks,
+)
 
 log = logging.getLogger("rudder_cp.worker")
 
@@ -131,6 +135,12 @@ async def tick(
 ) -> int:
     """Run every currently queued deployment. Returns how many were attempted."""
     with Session(engine) as session:
+        # Operation intent is durable and deliberately separate from source
+        # deploys.  Turn it into a queued immutable-image release before we
+        # select work, and restore requested immutable releases directly.  No
+        # path here imports the build service or checks out a repository.
+        await reconcile_pending_rollbacks(session, settings=settings)
+        queue_pending_operation_reconciliations(session)
         queued = session.exec(
             select(Deployment)
             .where(Deployment.status == DeploymentStatus.QUEUED)

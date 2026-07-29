@@ -1,10 +1,13 @@
 import asyncio
 import logging
+from uuid import UUID
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from rudder_cp.config import Settings
+from rudder_cp.models.github_import import GitHubImport
 from rudder_cp.models import Deployment, Instance, Node, Volume
 from rudder_cp.models.base import DeploymentStatus, NodeStatus
 from rudder_cp.models.base import InstanceStatus as ModelInstanceStatus
@@ -14,14 +17,14 @@ log = logging.getLogger(__name__)
 
 
 async def run_reconciler(
-    engine: Engine, stop_event: asyncio.Event, agent_client: AgentClient
+    engine: Engine, stop_event: asyncio.Event, agent_client: AgentClient, settings: Settings
 ) -> None:
     """Runs the reconciler loop until the stop event is set."""
     log.info("reconciler started")
     while not stop_event.is_set():
         try:
             with Session(engine) as session:
-                await reconcile_state(session, agent_client)
+                await reconcile_state(session, agent_client, settings=settings)
         except Exception as e:
             log.error(f"Error in reconciler loop: {e}", exc_info=True)
 
@@ -33,7 +36,9 @@ async def run_reconciler(
     log.info("reconciler stopped")
 
 
-async def reconcile_state(db: Session, agent_client: AgentClient) -> None:
+async def reconcile_state(
+    db: Session, agent_client: AgentClient, *, settings: Settings | None = None
+) -> None:
     """Periodically checks that the state of running containers on each node
     matches the state of Instance rows in the database.
 
@@ -42,14 +47,17 @@ async def reconcile_state(db: Session, agent_client: AgentClient) -> None:
     - Marks Instances as UNREACHABLE if they are not in the node's last report.
     - Deletes containers that are on a node but not in the database.
     """
-    await _reconcile_unresponsive_nodes(db)
-    await _reconcile_running_instances(db, agent_client)
-    _queue_replacements_for_lost_instances(db)
+    kubernetes_release_owners = _kubernetes_release_owners(db, settings)
+    await _reconcile_unresponsive_nodes(db, kubernetes_release_owners)
+    await _reconcile_running_instances(db, agent_client, kubernetes_release_owners)
+    _queue_replacements_for_lost_instances(db, kubernetes_release_owners)
 
     db.commit()
 
 
-async def _reconcile_unresponsive_nodes(db: Session) -> None:
+async def _reconcile_unresponsive_nodes(
+    db: Session, kubernetes_release_owners: set[UUID]
+) -> None:
     """Finds nodes that have missed their heartbeat and marks them UNREACHABLE."""
     # TODO: Make threshold configurable
     unresponsive_threshold = datetime.now(UTC) - timedelta(seconds=30)
@@ -65,11 +73,18 @@ async def _reconcile_unresponsive_nodes(db: Session) -> None:
 
         instances_on_node_stmt = select(Instance).where(Instance.node_id == node.id)
         for instance in db.exec(instances_on_node_stmt):
+            deployment = db.get(Deployment, instance.deployment_id)
+            if deployment is not None and deployment.service_id in kubernetes_release_owners:
+                # The Kind/Kubernetes control plane, not the Docker node
+                # heartbeat, owns pod liveness.
+                continue
             instance.status = ModelInstanceStatus.UNREACHABLE
             db.add(instance)
 
 
-def _queue_replacements_for_lost_instances(db: Session) -> None:
+def _queue_replacements_for_lost_instances(
+    db: Session, kubernetes_release_owners: set[UUID]
+) -> None:
     """Recreate a release when its last healthy instance was lost with a node.
 
     A replacement is a normal queued deployment, so it follows the existing
@@ -77,14 +92,17 @@ def _queue_replacements_for_lost_instances(db: Session) -> None:
     against existing in-flight deployments keeps a continuously unreachable
     node from creating one release per reconciliation tick.
     """
-    lost = db.exec(
+    statement = (
         select(Instance)
         .join(Deployment, Deployment.id == Instance.deployment_id)  # type: ignore[arg-type]
         .where(
             Instance.status == ModelInstanceStatus.UNREACHABLE,
             Deployment.status == DeploymentStatus.LIVE,
         )
-    ).all()
+    )
+    if kubernetes_release_owners:
+        statement = statement.where(Deployment.service_id.not_in(kubernetes_release_owners))
+    lost = db.exec(statement).all()
     for instance in lost:
         deployment = db.get(Deployment, instance.deployment_id)
         if deployment is None:
@@ -132,7 +150,11 @@ def _queue_replacements_for_lost_instances(db: Session) -> None:
             )
 
 
-async def _reconcile_running_instances(db: Session, agent_client: AgentClient) -> None:
+async def _reconcile_running_instances(
+    db: Session,
+    agent_client: AgentClient,
+    kubernetes_release_owners: set[UUID],
+) -> None:
     """Compares the Instances that should be running on each node with the set
     of containers reported by that node's agent.
     """
@@ -159,6 +181,14 @@ async def _reconcile_running_instances(db: Session, agent_client: AgentClient) -
             Instance.node_id == node.id,
             Instance.status != ModelInstanceStatus.STOPPED,
         )
+        if kubernetes_release_owners:
+            desired_instances_stmt = (
+                desired_instances_stmt.join(
+                    Deployment, Deployment.id == Instance.deployment_id  # type: ignore[arg-type]
+                ).where(
+                    Deployment.service_id.not_in(kubernetes_release_owners)
+                )
+            )
         desired_by_container_id = {
             instance.container_id: instance
             for instance in db.exec(desired_instances_stmt)
@@ -220,3 +250,10 @@ def _same_container_id(left: str, right: str) -> bool:
         and len(right) >= 12
         and (left.startswith(right) or right.startswith(left))
     )
+
+
+def _kubernetes_release_owners(db: Session, settings: Settings | None) -> set[UUID]:
+    """Return imported release owner services that Kubernetes, not agents, owns."""
+    if settings is None or settings.runtime != "kubernetes":
+        return set()
+    return set(db.exec(select(GitHubImport.app_service_id)).all())
