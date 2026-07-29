@@ -27,6 +27,20 @@ class RuntimeSettings:
     ingress_class: str = "nginx"
     readiness_timeout_seconds: int = 180
     readiness_poll_seconds: float = 2.0
+    backup_s3_endpoint: str = ""
+    backup_s3_bucket: str = ""
+    backup_s3_access_key: str = ""
+    backup_s3_secret_key: str = ""
+    backup_s3_region: str = "us-east-1"
+
+    @property
+    def backup_configured(self) -> bool:
+        return bool(
+            self.backup_s3_endpoint
+            and self.backup_s3_bucket
+            and self.backup_s3_access_key
+            and self.backup_s3_secret_key
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +84,21 @@ class AutoscalerSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class DisruptionBudgetSpec:
+    """One voluntary disruption at a time for an HA stateless workload."""
+
+    name: str
+    workload_name: str
+    labels: Mapping[str, str]
+    min_available: int | None = None
+    max_unavailable: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.min_available is None) == (self.max_unavailable is None):
+            raise ValueError("a disruption budget needs exactly one availability limit")
+
+
+@dataclass(frozen=True, slots=True)
 class CronJobSpec:
     name: str
     schedule: str
@@ -99,6 +128,34 @@ class ServiceSpec:
     workload_name: str
     port: int | None
     labels: Mapping[str, str]
+    # A managed database's stable Rudder service is an alias to the operator's
+    # endpoint rather than a selector for a Rudder-owned Pod.
+    external_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CloudNativePostgresSpec:
+    """The deliberately small CNPG contract Rudder can safely operate."""
+
+    name: str
+    service_name: str
+    app_database: str
+    app_user: str
+    app_password: str
+    storage_size_mb: int
+    instances: int
+    labels: Mapping[str, str]
+    backup_retention_days: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CloudNativePostgresBackupSpec:
+    """One physical CNPG backup stored at the configured private object store."""
+
+    name: str
+    cluster_name: str
+    retention_days: int
+    labels: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +181,23 @@ class KubernetesApi(Protocol):
 
     async def apply_service(self, namespace: str, spec: ServiceSpec) -> None: ...
 
+    async def apply_cloudnative_postgres(
+        self, namespace: str, spec: CloudNativePostgresSpec
+    ) -> None: ...
+
+    async def apply_cloudnative_postgres_backup(
+        self, namespace: str, spec: CloudNativePostgresBackupSpec
+    ) -> None: ...
+
+    async def wait_cloudnative_postgres_backup(
+        self,
+        namespace: str,
+        spec: CloudNativePostgresBackupSpec,
+        *,
+        timeout_seconds: int,
+        poll_seconds: float,
+    ) -> bool: ...
+
     async def apply_workload(self, namespace: str, spec: WorkloadSpec) -> None: ...
 
     async def expand_stateful_storage(self, namespace: str, spec: WorkloadSpec) -> None: ...
@@ -131,6 +205,10 @@ class KubernetesApi(Protocol):
     async def apply_autoscaler(self, namespace: str, spec: AutoscalerSpec) -> None: ...
 
     async def delete_autoscaler(self, namespace: str, name: str) -> None: ...
+
+    async def apply_disruption_budget(
+        self, namespace: str, spec: DisruptionBudgetSpec
+    ) -> None: ...
 
     async def apply_cron_job(self, namespace: str, spec: CronJobSpec) -> None: ...
 
@@ -148,6 +226,15 @@ class KubernetesApi(Protocol):
         self,
         namespace: str,
         spec: WorkloadSpec,
+        *,
+        timeout_seconds: int,
+        poll_seconds: float,
+    ) -> str: ...
+
+    async def wait_cloudnative_postgres_ready(
+        self,
+        namespace: str,
+        spec: CloudNativePostgresSpec,
         *,
         timeout_seconds: int,
         poll_seconds: float,
@@ -189,7 +276,7 @@ class KubernetesRuntime:
         await self.api.ensure_guardrails(release.namespace, labels)
 
         try:
-            workloads: list[tuple[ComposeService, WorkloadSpec]] = []
+            workloads: list[tuple[ComposeService, WorkloadSpec | CloudNativePostgresSpec]] = []
             operation_observed: dict[str, dict[str, object]] = {}
             for member in release.services:
                 # Immutable app candidates receive release-qualified names so
@@ -210,6 +297,109 @@ class KubernetesRuntime:
                     # stable, non-candidate label instead.
                     member_labels["rudder.release"] = "stateful"
                 operation_config, member_observed = _operation_config(member.operations)
+                member_labels = {**member_labels, "rudder.workload": resource_name}
+
+                # Only catalog-authored managed PostgreSQL is rendered as a
+                # CloudNativePG Cluster.  A similarly named service from a
+                # repository stays on the generic StatefulSet path below.
+                if member.managed_database_engine == "postgres":
+                    password = member.environment.get("POSTGRES_PASSWORD")
+                    if not isinstance(password, str) or not password:
+                        raise ValueError(
+                            f"Managed PostgreSQL service {member.name} has no credential."
+                        )
+                    postgres = CloudNativePostgresSpec(
+                        name=resource_name,
+                        service_name=member.name,
+                        app_database=_environment_text(member.environment, "POSTGRES_DB", "app"),
+                        app_user=_environment_text(member.environment, "POSTGRES_USER", "rudder"),
+                        app_password=password,
+                        storage_size_mb=operation_config["storage_size_mb"],
+                        instances=1 + operation_config["read_replicas"],
+                        labels=member_labels,
+                        backup_retention_days=(
+                            _int(operation_config["backup"].get("retention_days"), 7)
+                            if operation_config["backup"] is not None
+                            else None
+                        ),
+                    )
+                    await progress(
+                        f"kubernetes: applying managed PostgreSQL cluster for {member.name}\n"
+                    )
+                    await self.api.apply_cloudnative_postgres(release.namespace, postgres)
+                    await progress(
+                        f"kubernetes: creating private primary endpoint for {member.name}\n"
+                    )
+                    await self.api.apply_service(
+                        release.namespace,
+                        ServiceSpec(
+                            name=resource_name,
+                            workload_name=resource_name,
+                            port=member.port,
+                            labels=member_labels,
+                            external_name=f"{resource_name}-rw",
+                        ),
+                    )
+                    await self.api.apply_service(
+                        release.namespace,
+                        ServiceSpec(
+                            name=dns_label(f"{resource_name}-read"),
+                            workload_name=resource_name,
+                            port=member.port,
+                            labels=member_labels,
+                            external_name=f"{resource_name}-ro",
+                        ),
+                    )
+                    member_observed["read_replicas"] = {
+                        "status": "configured",
+                        "replicas": operation_config["read_replicas"],
+                        "endpoint": f"{dns_label(f'{resource_name}-read')}:{member.port or 5432}",
+                    }
+                    member_observed["storage"] = {
+                        "status": "configured",
+                        "size_mb": operation_config["storage_size_mb"],
+                    }
+                    workloads.append((member, postgres))
+                    backup = operation_config["backup"]
+                    if backup is not None:
+                        if not self.settings.backup_configured:
+                            raise RuntimeError(
+                                "PostgreSQL backup was requested without an S3-compatible "
+                                "backup destination configured."
+                            )
+                        backup_id = backup.get("operation_id")
+                        if not isinstance(backup_id, str) or not backup_id:
+                            raise RuntimeError(
+                                "PostgreSQL backup intent has no operation identity."
+                            )
+                        backup_spec = CloudNativePostgresBackupSpec(
+                            name=dns_label(f"{resource_name}-backup-{backup_id}"),
+                            cluster_name=resource_name,
+                            retention_days=_int(backup.get("retention_days"), 7),
+                            labels={
+                                **member_labels,
+                                "rudder.operation": dns_label(backup_id),
+                            },
+                        )
+                        await progress(
+                            f"kubernetes: requesting physical PostgreSQL backup for {member.name}\n"
+                        )
+                        await self.api.apply_cloudnative_postgres_backup(
+                            release.namespace, backup_spec
+                        )
+                        completed = await self.api.wait_cloudnative_postgres_backup(
+                            release.namespace,
+                            backup_spec,
+                            timeout_seconds=self.settings.readiness_timeout_seconds,
+                            poll_seconds=self.settings.readiness_poll_seconds,
+                        )
+                        member_observed["backup"] = {
+                            "status": "completed" if completed else "failed",
+                            "name": backup_spec.name,
+                            "retention_days": backup_spec.retention_days,
+                        }
+                    operation_observed[member.name] = member_observed
+                    continue
                 workload = WorkloadSpec(
                     name=resource_name,
                     service_name=member.name,
@@ -234,7 +424,6 @@ class KubernetesRuntime:
                 # later intent reconciliation can remove only the stale HPA /
                 # CronJobs for this immutable release.  A disabled feature is
                 # a deletion, not merely an omitted future render.
-                member_labels = {**member_labels, "rudder.workload": resource_name}
                 workload = WorkloadSpec(
                     name=workload.name,
                     service_name=workload.service_name,
@@ -274,6 +463,45 @@ class KubernetesRuntime:
                 kind = "StatefulSet" if member.stateful else "Deployment"
                 await progress(f"kubernetes: applying {kind} for {member.name}\n")
                 await self.api.apply_workload(release.namespace, workload)
+                requested_max_unavailable = operation_config["max_unavailable"]
+                if (
+                    not member.stateful
+                    and (
+                        workload.anti_affinity
+                        or workload.topology_spread
+                        or requested_max_unavailable is not None
+                    )
+                    and workload.ready_replicas >= 2
+                ):
+                    # Anti-affinity/spread is useful only when voluntary
+                    # disruptions cannot drain every replica at once. Keep at
+                    # least N-1 available; min_available is never zero here.
+                    await progress(
+                        f"kubernetes: applying disruption budget for {member.name}\n"
+                    )
+                    budget = DisruptionBudgetSpec(
+                        name=dns_label(f"{resource_name}-pdb"),
+                        workload_name=resource_name,
+                        labels=member_labels,
+                        max_unavailable=requested_max_unavailable,
+                        min_available=(
+                            None
+                            if requested_max_unavailable is not None
+                            else max(1, workload.ready_replicas - 1)
+                        ),
+                    )
+                    await self.api.apply_disruption_budget(
+                        release.namespace,
+                        budget,
+                    )
+                    member_observed["availability"] = {
+                        "status": "applied",
+                        **(
+                            {"max_unavailable": budget.max_unavailable}
+                            if budget.max_unavailable is not None
+                            else {"min_available": budget.min_available}
+                        ),
+                    }
                 if member.stateful and operation_config["storage_expansion_requested"]:
                     await progress(f"kubernetes: expanding persistent storage for {member.name}\n")
                     await self.api.expand_stateful_storage(release.namespace, workload)
@@ -328,7 +556,11 @@ class KubernetesRuntime:
                         continue
                     await progress(f"kubernetes: applying scheduled Job for {member.name}\n")
                     cron_job = CronJobSpec(
-                        name=dns_label(f"{resource_name}-schedule-{schedule_id}"),
+                        # CronJob appends its own Job/pod suffix, so the API
+                        # reserves a stricter 52-character name limit.
+                        name=dns_label(
+                            f"{resource_name}-schedule-{schedule_id}", max_length=52
+                        ),
                         schedule=str(spec.get("cron", "")),
                         image=member.image,
                         command=command,
@@ -378,17 +610,29 @@ class KubernetesRuntime:
             pod_ids: dict[str, str] = {}
             for member, workload in workloads:
                 await progress(f"kubernetes: waiting for {member.name} readiness\n")
-                pod_ids[member.name] = await self.api.wait_ready(
-                    release.namespace,
-                    workload,
-                    timeout_seconds=self.settings.readiness_timeout_seconds,
-                    poll_seconds=self.settings.readiness_poll_seconds,
-                )
+                if isinstance(workload, CloudNativePostgresSpec):
+                    pod_ids[member.name] = await self.api.wait_cloudnative_postgres_ready(
+                        release.namespace,
+                        workload,
+                        timeout_seconds=self.settings.readiness_timeout_seconds,
+                        poll_seconds=self.settings.readiness_poll_seconds,
+                    )
+                else:
+                    pod_ids[member.name] = await self.api.wait_ready(
+                        release.namespace,
+                        workload,
+                        timeout_seconds=self.settings.readiness_timeout_seconds,
+                        poll_seconds=self.settings.readiness_poll_seconds,
+                    )
                 await progress(f"kubernetes: {member.name} is ready\n")
 
             public_hosts: dict[str, str] = {}
             for member, workload in workloads:
-                if not member.public or member.port is None:
+                if (
+                    not member.public
+                    or member.port is None
+                    or isinstance(workload, CloudNativePostgresSpec)
+                ):
                     continue
                 host = member.public_host or (
                     f"{dns_label(member.name)}-{release.namespace}.{self.settings.local_domain}"
@@ -427,6 +671,11 @@ class KubernetesRuntime:
 
 def _int(value: object, default: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _environment_text(environment: Mapping[str, str], key: str, default: str) -> str:
+    value = environment.get(key)
+    return value if isinstance(value, str) and value else default
 
 
 def _command(value: object) -> tuple[str, ...] | None:
@@ -485,6 +734,14 @@ def _operation_config(
         if isinstance(selector_raw, Mapping)
         else {}
     )
+    requested_max_unavailable = placement.get("max_unavailable")
+    max_unavailable = (
+        requested_max_unavailable
+        if isinstance(requested_max_unavailable, int)
+        and not isinstance(requested_max_unavailable, bool)
+        and requested_max_unavailable > 0
+        else None
+    )
     autoscaling_raw = operations.get("autoscaling")
     autoscaling = autoscaling_raw if isinstance(autoscaling_raw, Mapping) else None
     replicas = operations.get("replicas")
@@ -540,10 +797,22 @@ def _operation_config(
     storage_size_mb = 1024
     storage_expansion_requested = False
     if isinstance(storage_raw, Mapping):
+        current_size_mb = storage_raw.get("current_size_mb")
+        if isinstance(current_size_mb, int) and current_size_mb >= storage_size_mb:
+            storage_size_mb = current_size_mb
         requested_size_mb = storage_raw.get("requested_size_mb")
         if isinstance(requested_size_mb, int) and requested_size_mb >= storage_size_mb:
+            previous_size_mb = storage_size_mb
             storage_size_mb = requested_size_mb
-            storage_expansion_requested = requested_size_mb > 1024
+            storage_expansion_requested = requested_size_mb > previous_size_mb
+    read_replicas_raw = operations.get("read_replicas")
+    read_replicas = 0
+    if isinstance(read_replicas_raw, Mapping):
+        requested_replicas = read_replicas_raw.get("replicas")
+        if isinstance(requested_replicas, int) and not isinstance(requested_replicas, bool):
+            read_replicas = max(0, requested_replicas)
+    backup_raw = operations.get("backups")
+    backup = dict(backup_raw) if isinstance(backup_raw, Mapping) else None
     return (
         {
             "replicas": replicas,
@@ -552,10 +821,13 @@ def _operation_config(
             "node_selector": node_selector,
             "anti_affinity": placement.get("anti_affinity") is True,
             "topology_spread": placement.get("topology_spread") is True,
+            "max_unavailable": max_unavailable,
             "rolling_update": rolling_update,
             "prometheus_enabled": prometheus_enabled,
             "storage_size_mb": storage_size_mb,
             "storage_expansion_requested": storage_expansion_requested,
+            "read_replicas": read_replicas,
+            "backup": backup,
             "autoscaling": autoscaling,
             "schedules": schedules,
             "job": job_raw if isinstance(job_raw, Mapping) else None,
@@ -577,9 +849,11 @@ class AsyncKubernetesApi:
         self.core = client.CoreV1Api(self.api_client)
         self.apps = client.AppsV1Api(self.api_client)
         self.autoscaling = client.AutoscalingV2Api(self.api_client)
+        self.policy = client.PolicyV1Api(self.api_client)
         self.batch = client.BatchV1Api(self.api_client)
         self.networking = client.NetworkingV1Api(self.api_client)
         self.storage = client.StorageV1Api(self.api_client)
+        self.custom = client.CustomObjectsApi(self.api_client)
 
     @classmethod
     async def from_kubeconfig(
@@ -682,13 +956,17 @@ class AsyncKubernetesApi:
             if spec.port is not None
             else []
         )
+        service_spec = client.V1ServiceSpec(
+            type="ExternalName" if spec.external_name else "ClusterIP",
+            ports=ports,
+        )
+        if spec.external_name:
+            service_spec.external_name = spec.external_name
+        else:
+            service_spec.selector = {"rudder.workload": spec.workload_name}
         body = client.V1Service(
             metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
-            spec=client.V1ServiceSpec(
-                type="ClusterIP",
-                selector={"rudder.workload": spec.workload_name},
-                ports=ports,
-            ),
+            spec=service_spec,
         )
         await self._create_or_replace(
             self.core.read_namespaced_service,
@@ -699,6 +977,202 @@ class AsyncKubernetesApi:
             namespace=namespace,
         )
 
+    async def apply_cloudnative_postgres(
+        self, namespace: str, spec: CloudNativePostgresSpec
+    ) -> None:
+        """Create/update one CNPG primary cluster with private standby pods.
+
+        CNPG owns the database Pods, storage lifecycle, failover and its
+        ``-rw``/``-ro`` services. Rudder only supplies the small declarative
+        cluster contract; no database credential is ever placed in a log.
+        """
+        secret_name = dns_label(f"{spec.name}-app-user")
+        secret = client.V1Secret(
+            metadata=client.V1ObjectMeta(name=secret_name, labels=dict(spec.labels)),
+            type="kubernetes.io/basic-auth",
+            data={
+                "username": base64.b64encode(spec.app_user.encode("utf-8")).decode("ascii"),
+                "password": base64.b64encode(spec.app_password.encode("utf-8")).decode("ascii"),
+            },
+        )
+        await self._create_or_replace(
+            self.core.read_namespaced_secret,
+            self.core.create_namespaced_secret,
+            self.core.replace_namespaced_secret,
+            secret_name,
+            secret,
+            namespace=namespace,
+        )
+        body: dict[str, object] = {
+            "apiVersion": "postgresql.cnpg.io/v1",
+            "kind": "Cluster",
+            "metadata": {"name": spec.name, "labels": dict(spec.labels)},
+            "spec": {
+                "instances": spec.instances,
+                "storage": {"size": f"{spec.storage_size_mb}Mi"},
+                "bootstrap": {
+                    "initdb": {
+                        "database": spec.app_database,
+                        "owner": spec.app_user,
+                        "secret": {"name": secret_name},
+                    }
+                },
+            },
+        }
+        if self.settings.backup_configured:
+            backup_secret_name = dns_label(f"{spec.name}-backup-s3")
+            backup_secret = client.V1Secret(
+                metadata=client.V1ObjectMeta(
+                    name=backup_secret_name, labels=dict(spec.labels)
+                ),
+                type="Opaque",
+                data={
+                    "ACCESS_KEY_ID": base64.b64encode(
+                        self.settings.backup_s3_access_key.encode("utf-8")
+                    ).decode("ascii"),
+                    "ACCESS_SECRET_KEY": base64.b64encode(
+                        self.settings.backup_s3_secret_key.encode("utf-8")
+                    ).decode("ascii"),
+                    "REGION": base64.b64encode(
+                        self.settings.backup_s3_region.encode("utf-8")
+                    ).decode("ascii"),
+                },
+            )
+            await self._create_or_replace(
+                self.core.read_namespaced_secret,
+                self.core.create_namespaced_secret,
+                self.core.replace_namespaced_secret,
+                backup_secret_name,
+                backup_secret,
+                namespace=namespace,
+            )
+            cluster_backup = body["spec"]
+            assert isinstance(cluster_backup, dict)
+            cluster_backup["backup"] = {
+                "retentionPolicy": f"{spec.backup_retention_days or 7}d",
+                "barmanObjectStore": {
+                    "destinationPath": (
+                        f"s3://{self.settings.backup_s3_bucket}/rudder/{namespace}/{spec.name}"
+                    ),
+                    "endpointURL": self.settings.backup_s3_endpoint,
+                    "s3Credentials": {
+                        "accessKeyId": {"name": backup_secret_name, "key": "ACCESS_KEY_ID"},
+                        "secretAccessKey": {
+                            "name": backup_secret_name,
+                            "key": "ACCESS_SECRET_KEY",
+                        },
+                        "region": {"name": backup_secret_name, "key": "REGION"},
+                    },
+                    "wal": {"compression": "gzip"},
+                },
+            }
+        try:
+            existing = await self.custom.get_namespaced_custom_object(
+                group="postgresql.cnpg.io",
+                version="v1",
+                namespace=namespace,
+                plural="clusters",
+                name=spec.name,
+            )
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+            await self.custom.create_namespaced_custom_object(
+                group="postgresql.cnpg.io",
+                version="v1",
+                namespace=namespace,
+                plural="clusters",
+                body=body,
+            )
+            return
+        metadata = existing.get("metadata", {}) if isinstance(existing, dict) else {}
+        if isinstance(metadata, dict) and isinstance(metadata.get("resourceVersion"), str):
+            body["metadata"] = {
+                "name": spec.name,
+                "labels": dict(spec.labels),
+                "resourceVersion": metadata["resourceVersion"],
+            }
+        await self.custom.replace_namespaced_custom_object(
+            group="postgresql.cnpg.io",
+            version="v1",
+            namespace=namespace,
+            plural="clusters",
+            name=spec.name,
+            body=body,
+        )
+
+    async def apply_cloudnative_postgres_backup(
+        self, namespace: str, spec: CloudNativePostgresBackupSpec
+    ) -> None:
+        body: dict[str, object] = {
+            "apiVersion": "postgresql.cnpg.io/v1",
+            "kind": "Backup",
+            "metadata": {"name": spec.name, "labels": dict(spec.labels)},
+            "spec": {
+                "cluster": {"name": spec.cluster_name},
+                "method": "barmanObjectStore",
+            },
+        }
+        try:
+            existing = await self.custom.get_namespaced_custom_object(
+                group="postgresql.cnpg.io",
+                version="v1",
+                namespace=namespace,
+                plural="backups",
+                name=spec.name,
+            )
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+            await self.custom.create_namespaced_custom_object(
+                group="postgresql.cnpg.io",
+                version="v1",
+                namespace=namespace,
+                plural="backups",
+                body=body,
+            )
+            return
+        metadata = existing.get("metadata", {}) if isinstance(existing, dict) else {}
+        if isinstance(metadata, dict) and isinstance(metadata.get("resourceVersion"), str):
+            body["metadata"] = {
+                "name": spec.name,
+                "labels": dict(spec.labels),
+                "resourceVersion": metadata["resourceVersion"],
+            }
+        await self.custom.replace_namespaced_custom_object(
+            group="postgresql.cnpg.io",
+            version="v1",
+            namespace=namespace,
+            plural="backups",
+            name=spec.name,
+            body=body,
+        )
+
+    async def wait_cloudnative_postgres_backup(
+        self,
+        namespace: str,
+        spec: CloudNativePostgresBackupSpec,
+        *,
+        timeout_seconds: int,
+        poll_seconds: float,
+    ) -> bool:
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            backup = await self.custom.get_namespaced_custom_object(
+                group="postgresql.cnpg.io",
+                version="v1",
+                namespace=namespace,
+                plural="backups",
+                name=spec.name,
+            )
+            status = backup.get("status", {}) if isinstance(backup, dict) else {}
+            phase = status.get("phase") if isinstance(status, dict) else None
+            if phase == "completed":
+                return True
+            if phase in {"failed", "error"}:
+                return False
+            await asyncio.sleep(poll_seconds)
+        return False
     async def apply_workload(self, namespace: str, spec: WorkloadSpec) -> None:
         secret_name = dns_label(f"{spec.name}-env")
         if spec.environment:
@@ -907,6 +1381,31 @@ class AsyncKubernetesApi:
             if exc.status != 404:
                 raise
 
+    async def apply_disruption_budget(
+        self, namespace: str, spec: DisruptionBudgetSpec
+    ) -> None:
+        budget: dict[str, object] = {
+            "selector": client.V1LabelSelector(
+                match_labels={"rudder.workload": spec.workload_name}
+            )
+        }
+        if spec.max_unavailable is not None:
+            budget["max_unavailable"] = spec.max_unavailable
+        else:
+            budget["min_available"] = spec.min_available
+        body = client.V1PodDisruptionBudget(
+            metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
+            spec=client.V1PodDisruptionBudgetSpec(**budget),
+        )
+        await self._create_or_replace(
+            self.policy.read_namespaced_pod_disruption_budget,
+            self.policy.create_namespaced_pod_disruption_budget,
+            self.policy.replace_namespaced_pod_disruption_budget,
+            spec.name,
+            body,
+            namespace=namespace,
+        )
+
     async def apply_cron_job(self, namespace: str, spec: CronJobSpec) -> None:
         body = client.V1CronJob(
             metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
@@ -1010,6 +1509,82 @@ class AsyncKubernetesApi:
             await asyncio.sleep(poll_seconds)
         raise RuntimeError(f"Kubernetes workload {spec.service_name} did not become ready.")
 
+    async def wait_cloudnative_postgres_ready(
+        self,
+        namespace: str,
+        spec: CloudNativePostgresSpec,
+        *,
+        timeout_seconds: int,
+        poll_seconds: float,
+    ) -> str:
+        """Wait for an operator-reported CNPG instance and a Ready primary Pod.
+
+        CloudNativePG normally exposes a ``Ready=True`` Cluster condition.  In
+        local Kind, however, its optional TLS status probe can be unable to
+        reach the Pod IP while PostgreSQL and Kubernetes readiness are both
+        healthy.  ``readyInstances`` plus the elected primary Pod's Ready
+        condition remains a concrete, data-plane readiness boundary in that
+        situation; it is never a mere process-running check.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            cluster = await self.custom.get_namespaced_custom_object(
+                group="postgresql.cnpg.io",
+                version="v1",
+                namespace=namespace,
+                plural="clusters",
+                name=spec.name,
+            )
+            status = cluster.get("status", {}) if isinstance(cluster, dict) else {}
+            ready_instances = status.get("readyInstances", 0) if isinstance(status, dict) else 0
+            conditions = status.get("conditions", []) if isinstance(status, dict) else []
+            ready_condition = any(
+                isinstance(condition, dict)
+                and condition.get("type") == "Ready"
+                and condition.get("status") == "True"
+                for condition in conditions
+            )
+            primary_name = status.get("currentPrimary") if isinstance(status, dict) else None
+            enough_instances = (
+                isinstance(ready_instances, int) and ready_instances >= spec.instances
+            )
+
+            # Prefer the elected primary because it proves the write endpoint
+            # behind ``<cluster>-rw`` has a Kubernetes-ready target.  This also
+            # avoids waiting forever on Kind's CNPG status-probe limitation.
+            if enough_instances and isinstance(primary_name, str) and primary_name:
+                try:
+                    primary = await self.core.read_namespaced_pod_status(
+                        primary_name, namespace
+                    )
+                except client.exceptions.ApiException:
+                    primary = None
+                primary_conditions = (
+                    primary.status.conditions if primary and primary.status else []
+                )
+                primary_ready = any(
+                    condition.type == "Ready" and condition.status == "True"
+                    for condition in (primary_conditions or [])
+                )
+                primary_uid = primary.metadata.uid if primary and primary.metadata else None
+                if primary_ready:
+                    return primary_uid or primary_name
+
+            # Retain the operator's canonical Ready condition as a fallback
+            # for versions that have not yet populated ``currentPrimary``.
+            if enough_instances and ready_condition:
+                pods = await self.core.list_namespaced_pod(
+                    namespace, label_selector=f"cnpg.io/cluster={spec.name}"
+                )
+                if pods.items and pods.items[0].metadata and pods.items[0].metadata.uid:
+                    return pods.items[0].metadata.uid
+                return spec.name
+            await asyncio.sleep(poll_seconds)
+        raise RuntimeError(
+            f"Managed PostgreSQL cluster {spec.service_name} did not become ready. "
+            "Verify that the CloudNativePG operator is installed and healthy."
+        )
+
     async def promote_public_service(self, namespace: str, spec: PublicRouteSpec) -> None:
         body = client.V1Ingress(
             metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
@@ -1056,6 +1631,9 @@ class AsyncKubernetesApi:
             namespace, label_selector=selector, body=delete_options
         )
         await self.autoscaling.delete_collection_namespaced_horizontal_pod_autoscaler(
+            namespace, label_selector=selector, body=delete_options
+        )
+        await self.policy.delete_collection_namespaced_pod_disruption_budget(
             namespace, label_selector=selector, body=delete_options
         )
         await self.batch.delete_collection_namespaced_job(

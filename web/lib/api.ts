@@ -410,7 +410,12 @@ export function requestAutoscaling(
 
 export function requestPlacement(
   serviceId: string,
-  payload: { node_selector: Record<string, string>; topology_spread: boolean; anti_affinity: boolean },
+  payload: {
+    node_selector: Record<string, string>;
+    topology_spread: boolean;
+    anti_affinity: boolean;
+    max_unavailable?: number;
+  },
 ): Promise<ServiceOperation> {
   return submitServiceOperation(serviceId, "/placement", payload);
 }

@@ -15,8 +15,9 @@ nodes:
           certSANs:
             - host.docker.internal
     extraPortMappings:
-      # Docker's normal Rudder/Traefik dev stack owns :80. Keep Kind isolated
-      # on :8081; ingress routes still use *.localhost hostnames.
+      # Kind owns the canonical local public endpoint.  Docker-only routing
+      # uses a separate development port, so clicking *.localhost always
+      # reaches the Kubernetes ingress in Phase 3.
       - containerPort: 80
-        hostPort: 8081
+        hostPort: 80
         protocol: TCP

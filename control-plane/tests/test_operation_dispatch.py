@@ -17,6 +17,7 @@ from rudder_cp.config import Settings
 from rudder_cp.models import (
     Deployment,
     DeploymentStatus,
+    Domain,
     Environment,
     GitHubImport,
     GitHubImportService,
@@ -31,7 +32,7 @@ from rudder_cp.models import (
     ServiceOperationsState,
     User,
 )
-from rudder_cp.services import operation_dispatch
+from rudder_cp.services import operation_dispatch, rollbacks
 
 
 @pytest.fixture
@@ -56,6 +57,7 @@ def _imported_app(session: Session) -> tuple[Service, Node]:
         name="app",
         source_repo="owner/app",
         source_branch="main",
+        container_port=8080,
     )
     session.add(app)
     session.commit()
@@ -78,6 +80,14 @@ def _imported_app(session: Session) -> tuple[Service, Node]:
             compose_service="app",
             role="app",
             is_public=True,
+        )
+    )
+    session.add(
+        Domain(
+            hostname="app.production.localhost",
+            environment_id=environment.id,
+            service_id=app.id,
+            is_system=True,
         )
     )
     session.commit()
@@ -179,3 +189,75 @@ async def test_pending_rollback_repoints_a_healthy_immutable_release_without_bui
         assert operation.observed["mechanism"] == "immutable_route_restore"
         assert len(session.exec(select(Deployment)).all()) == 2
         render.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_rollback_repoints_only_the_stable_ingress(
+    engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Kubernetes rollback must switch the existing route without rebuilding."""
+    with Session(engine) as session:
+        app, node = _imported_app(session)
+        source = Deployment(
+            service_id=app.id,
+            status=DeploymentStatus.SUPERSEDED,
+            image_tag="registry.local/app:old",
+        )
+        current = Deployment(
+            service_id=app.id,
+            status=DeploymentStatus.LIVE,
+            image_tag="registry.local/app:new",
+        )
+        session.add_all((source, current))
+        session.commit()
+        session.add(
+            Instance(
+                deployment_id=source.id,
+                node_id=node.id,
+                container_id="old-healthy",
+                status=InstanceStatus.HEALTHY,
+            )
+        )
+        session.commit()
+
+        class FakeKubernetesApi:
+            def __init__(self) -> None:
+                self.routes = []
+                self.closed = False
+
+            async def promote_public_service(self, namespace, spec) -> None:
+                self.routes.append((namespace, spec))
+
+            async def close(self) -> None:
+                self.closed = True
+
+        api = FakeKubernetesApi()
+
+        async def from_kubeconfig(*_args, **_kwargs):
+            return api
+
+        render = AsyncMock()
+        monkeypatch.setattr(
+            "rudder_cp.services.rollbacks.AsyncKubernetesApi.from_kubeconfig",
+            from_kubeconfig,
+        )
+        monkeypatch.setattr("rudder_cp.services.rollbacks.traefik.render_all", render)
+
+        restored = await rollbacks.restore_immutable_deployment(
+            session,
+            deployment_id=source.id,
+            settings=Settings(runtime="kubernetes", secret_keys=""),
+        )
+
+        assert restored.id == source.id
+        assert source.status is DeploymentStatus.LIVE
+        assert current.status is DeploymentStatus.SUPERSEDED
+        assert api.closed is True
+        assert len(api.routes) == 1
+        namespace, route = api.routes[0]
+        assert namespace.startswith("rudder-")
+        assert route.host == "app.production.localhost"
+        assert route.name == "route-app"
+        assert route.backend_service_name == f"app-{str(source.id)[:8]}"
+        assert route.backend_port == 8080
+        render.assert_not_awaited()

@@ -350,6 +350,12 @@ def _desired_after_operation(
             }
         )
         next_desired["schedules"] = schedules
+    elif kind is OperationKind.BACKUP:
+        # Backups are transient actions, unlike storage/replica intent. Keep
+        # their audit identity in desired state so the Kubernetes runtime can
+        # create exactly one CNPG Backup CRD and the reconciler can clear it
+        # after observing completion.
+        next_desired["backups"] = {**deepcopy(requested), "operation_id": str(operation_id)}
     elif kind in mapping:
         next_desired[mapping[kind]] = deepcopy(requested)
     return next_desired

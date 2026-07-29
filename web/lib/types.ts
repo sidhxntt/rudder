@@ -295,8 +295,12 @@ export interface ServiceOperationCapabilities {
   job_commands_available: boolean;
   /** Only true when the control plane can expand this service's PVC safely. */
   storage_expansion_available?: boolean;
-  /** Only true when the configured data engine supports Rudder backup/restore. */
+  /** Legacy combined flag. New clients must check each data action separately. */
   backup_restore_available?: boolean;
+  /** Only true when Rudder has a configured physical backup destination. */
+  backup_available?: boolean;
+  /** Only true when Rudder supports a safe recovery-cluster cutover. */
+  restore_available?: boolean;
   /** Only true when the configured primary supports managed SQL replicas. */
   read_replicas_available?: boolean;
 }

@@ -8,10 +8,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Response, status
 from sqlmodel import Session
 
+from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import OperationKind, User
 from rudder_cp.routers.auth import CurrentUser
-from rudder_cp.schemas.common import error_responses, translate_errors
+from rudder_cp.schemas.common import InvalidRequestError, error_responses, translate_errors
 from rudder_cp.schemas.operations import (
     AutoscalingRequest,
     BackupRequest,
@@ -48,6 +49,60 @@ def _dump(payload: object) -> dict[str, object]:
 
 def _state_read(state: object) -> ServiceOperationsStateRead:
     return ServiceOperationsStateRead.model_validate(state)
+
+
+def _cnpg_controls_available(
+    session: Session, *, service_id: UUID, user: User, settings: Settings
+) -> bool:
+    """Return true only for the database runtime that can perform the action.
+
+    UI capability flags are useful guidance, but the API must enforce the same
+    boundary.  Otherwise a caller could persist replica/storage intent for an
+    arbitrary Compose Postgres container that Rudder cannot operate safely.
+    """
+    capabilities = operation_ops.get_managed_capabilities(
+        session, service_id, owner_id=user.id
+    )
+    return bool(
+        capabilities is not None
+        and capabilities.database_engine == "postgres"
+        and capabilities.data_role == "primary"
+        and capabilities.source == "catalog"
+        and settings.runtime == "kubernetes"
+        and settings.kubernetes_postgres_operator == "cloudnativepg"
+    )
+
+
+def _require_cnpg_controls(
+    session: Session, *, service_id: UUID, user: User, settings: Settings
+) -> None:
+    if not _cnpg_controls_available(
+        session, service_id=service_id, user=user, settings=settings
+    ):
+        raise InvalidRequestError(
+            "Read replicas and storage expansion require a catalog-managed PostgreSQL "
+            "service on Kubernetes with CloudNativePG enabled."
+        )
+
+
+def _backup_controls_available(
+    session: Session, *, service_id: UUID, user: User, settings: Settings
+) -> bool:
+    return _cnpg_controls_available(
+        session, service_id=service_id, user=user, settings=settings
+    ) and settings.kubernetes_backup_configured
+
+
+def _require_backup_controls(
+    session: Session, *, service_id: UUID, user: User, settings: Settings
+) -> None:
+    if not _backup_controls_available(
+        session, service_id=service_id, user=user, settings=settings
+    ):
+        raise InvalidRequestError(
+            "Backups require catalog-managed PostgreSQL on Kubernetes with CloudNativePG "
+            "and a configured S3-compatible backup destination."
+        )
 
 
 def _version_from_if_match(value: str) -> int:
@@ -99,6 +154,7 @@ async def list_service_operations(
     user: CurrentUser,
     response: Response,
     format: Literal["envelope", "list"] = "list",
+    settings: Annotated[Settings, Depends(get_settings)] = None,
 ) -> ServiceOperationsEnvelope | list[ServiceOperationRead]:
     with translate_errors():
         rows = operation_ops.list_operations(session, service_id, owner_id=user.id)
@@ -110,6 +166,15 @@ async def list_service_operations(
     capabilities = operation_ops.get_managed_capabilities(
         session, service_id, owner_id=user.id
     )
+    cnpg_available = bool(
+        capabilities is not None
+        and capabilities.database_engine == "postgres"
+        and capabilities.data_role == "primary"
+        and capabilities.source == "catalog"
+        and settings is not None
+        and settings.runtime == "kubernetes"
+        and settings.kubernetes_postgres_operator == "cloudnativepg"
+    )
     return ServiceOperationsEnvelope(
         **_state_read(state).model_dump(),
         capabilities=ServiceOperationCapabilitiesRead(
@@ -120,9 +185,19 @@ async def list_service_operations(
             # operator advertises them. Keeping these explicit, rather than
             # inferring them from a Docker image name, prevents the UI from
             # offering operations that only persist intent today.
-            storage_expansion_available=False,
+            storage_expansion_available=cnpg_available,
+            # Restore remains intentionally false: a safe physical recovery
+            # needs a new recovery cluster and explicit cutover, not an
+            # in-place overwrite of a live primary. Backup is independently
+            # available and is surfaced to newer clients below.
             backup_restore_available=False,
-            read_replicas_available=False,
+            backup_available=bool(
+                cnpg_available
+                and settings is not None
+                and settings.kubernetes_backup_configured
+            ),
+            restore_available=False,
+            read_replicas_available=cnpg_available,
         ),
         history=history,
     )
@@ -322,7 +397,9 @@ async def request_backup(
     idempotency_key: IdempotencyKey,
     session: SessionDep,
     user: CurrentUser,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ServiceOperationRead:
+    _require_backup_controls(session, service_id=service_id, user=user, settings=settings)
     return await _submit(
         session,
         service_id=service_id,
@@ -353,15 +430,11 @@ async def request_restore(
     idempotency_key: IdempotencyKey,
     session: SessionDep,
     user: CurrentUser,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ServiceOperationRead:
-    return await _submit(
-        session,
-        service_id=service_id,
-        kind=OperationKind.RESTORE,
-        payload=payload,
-        idempotency_key=idempotency_key,
-        database_only=True,
-        user=user,
+    del settings
+    raise InvalidRequestError(
+        "Restore is unavailable until an object-storage backup backend is configured."
     )
 
 
@@ -384,7 +457,9 @@ async def request_read_replica(
     idempotency_key: IdempotencyKey,
     session: SessionDep,
     user: CurrentUser,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ServiceOperationRead:
+    _require_cnpg_controls(session, service_id=service_id, user=user, settings=settings)
     return await _submit(
         session,
         service_id=service_id,
@@ -415,7 +490,9 @@ async def request_storage(
     idempotency_key: IdempotencyKey,
     session: SessionDep,
     user: CurrentUser,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ServiceOperationRead:
+    _require_cnpg_controls(session, service_id=service_id, user=user, settings=settings)
     return await _submit(
         session,
         service_id=service_id,

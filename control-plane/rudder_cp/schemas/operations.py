@@ -136,6 +136,10 @@ class PlacementRequest(_OperationRequest):
     node_selector: dict[str, str] = Field(default_factory=dict)
     topology_spread: bool = False
     anti_affinity: bool = False
+    # ``maxUnavailable`` is the safest manual PDB surface: it stays valid as
+    # an HPA changes replica count and does not require the browser to guess a
+    # workload's current desired replicas.
+    max_unavailable: int | None = Field(default=None, ge=1, le=100)
 
     @field_validator("node_selector")
     @classmethod
@@ -169,6 +173,12 @@ class RollbackRequest(_OperationRequest):
 
 class BackupRequest(_OperationRequest):
     retention_days: int = Field(default=7, ge=1, le=365)
+
+
+class BackupIntent(BackupRequest):
+    """A single, auditable on-demand backup request awaiting execution."""
+
+    operation_id: uuid.UUID
 
 
 class RestoreRequest(_OperationRequest):
@@ -283,7 +293,7 @@ class ServiceOperationsIntent(_OperationRequest):
     autoscaling: AutoscalingRequest | None = None
     placement: PlacementRequest | None = None
     rollout: RolloutRequest | None = None
-    backups: BackupRequest | None = None
+    backups: BackupIntent | None = None
     restore: RestoreRequest | None = None
     read_replicas: ReadReplicaRequest | None = None
     storage: StorageResizeRequest | None = None
@@ -335,6 +345,10 @@ class ServiceOperationCapabilitiesRead(BaseModel):
     # object-store backup target). Browsers must default-deny when omitted.
     storage_expansion_available: bool = False
     backup_restore_available: bool = False
+    # Kept separate from the historical combined flag: a physical backup can
+    # be safely implemented before Rudder has a recovery-cluster cutover.
+    backup_available: bool = False
+    restore_available: bool = False
     read_replicas_available: bool = False
 
 

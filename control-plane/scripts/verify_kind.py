@@ -34,14 +34,20 @@ from rudder_cp.models import (
     Instance,
     Node,
     NodeStatus,
+    OperationKind,
+    OperationStatus,
     Project,
     Service,
+    ServiceManagedCapabilities,
+    ServiceOperation,
+    ServiceOperationsState,
     User,
     Volume,
 )
 from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, RuntimeSettings
 from rudder_cp.runtime.models import dns_label
 from rudder_cp.services.deploy import run_deployment
+from rudder_cp.services.operation_dispatch import reconcile_pending_rollbacks
 
 
 async def main() -> None:
@@ -99,6 +105,18 @@ async def _verify_imported_release(temp_dir: Path, suffix: str) -> None:
                 raise RuntimeError("imported Kubernetes release did not record every workload")
         await _wait_for_ingress(host)
         await _assert_private_services_have_no_ingress(api, namespace)
+        app_controls_deployment_id = await _assert_app_workload_controls(
+            engine, settings, store, api, release
+        )
+        await _assert_autoscaling_and_jobs(engine, settings, store, api, release)
+        await _assert_managed_postgres_controls(engine, settings, store, api, release)
+        await _assert_immutable_kubernetes_restore(
+            engine,
+            settings,
+            api,
+            release,
+            target_deployment_id=app_controls_deployment_id,
+        )
         await _assert_failed_candidate_preserves_live_route(
             engine, settings, store, api, namespace, host, release.service_id
         )
@@ -115,11 +133,19 @@ async def _verify_imported_release(temp_dir: Path, suffix: str) -> None:
 
 
 class ImportedRelease:
-    def __init__(self, namespace: str, host: str, deployment_id: uuid.UUID, service_id: uuid.UUID):
+    def __init__(
+        self,
+        namespace: str,
+        host: str,
+        deployment_id: uuid.UUID,
+        service_id: uuid.UUID,
+        postgres_service_id: uuid.UUID,
+    ):
         self.namespace = namespace
         self.host = host
         self.deployment_id = deployment_id
         self.service_id = service_id
+        self.postgres_service_id = postgres_service_id
 
 
 def _create_imported_release(engine, suffix: str) -> ImportedRelease:
@@ -234,6 +260,14 @@ def _create_imported_release(engine, suffix: str) -> ImportedRelease:
                 ),
             ]
         )
+        session.add(
+            ServiceManagedCapabilities(
+                service_id=postgres.id,
+                database_engine="postgres",
+                data_role="primary",
+                source="catalog",
+            )
+        )
         deployment = Deployment(
             service_id=web.id,
             image_tag="nginx:1.27-alpine",
@@ -248,6 +282,7 @@ def _create_imported_release(engine, suffix: str) -> ImportedRelease:
             "web.production.localhost",
             deployment.id,
             web.id,
+            postgres.id,
         )
 
 
@@ -279,6 +314,400 @@ async def _assert_private_services_have_no_ingress(api: AsyncKubernetesApi, name
         raise RuntimeError(
             f"private services unexpectedly received ingress routes: {sorted(hosts)}"
         )
+
+
+async def _assert_app_workload_controls(
+    engine,
+    settings: Settings,
+    store: BuildLogStore,
+    api: AsyncKubernetesApi,
+    release: ImportedRelease,
+) -> uuid.UUID:
+    """Exercise the manual application controls exposed by the dashboard.
+
+    This is an immutable-image deployment: changing the app's size/resources
+    must render a new Kubernetes candidate, retain the public URL, and never
+    invoke a source build.
+    """
+    desired = {
+        "replicas": 2,
+        "resources": {
+            "cpu_request": "200m",
+            "cpu_limit": "500m",
+            "memory_request_mb": 128,
+            "memory_limit_mb": 256,
+        },
+        "placement": {
+            "anti_affinity": True,
+            "topology_spread": True,
+            "max_unavailable": 1,
+        },
+        "rollout": {"strategy": "rolling"},
+        "observability": {"prometheus": True, "grafana": True},
+    }
+    with Session(engine) as session:
+        session.add(
+            ServiceOperationsState(
+                service_id=release.service_id,
+                desired=desired,
+                pending_reconciliation=True,
+                version=1,
+            )
+        )
+        session.add_all(
+            [
+                ServiceOperation(
+                    service_id=release.service_id,
+                    kind=OperationKind.SCALE,
+                    requested={"replicas": 2},
+                ),
+                ServiceOperation(
+                    service_id=release.service_id,
+                    kind=OperationKind.RESOURCES,
+                    requested=desired["resources"],
+                ),
+                ServiceOperation(
+                    service_id=release.service_id,
+                    kind=OperationKind.PLACEMENT,
+                    requested=desired["placement"],
+                ),
+                ServiceOperation(
+                    service_id=release.service_id,
+                    kind=OperationKind.ROLLOUT,
+                    requested=desired["rollout"],
+                ),
+                ServiceOperation(
+                    service_id=release.service_id,
+                    kind=OperationKind.OBSERVABILITY,
+                    requested=desired["observability"],
+                ),
+            ]
+        )
+        candidate = Deployment(
+            service_id=release.service_id,
+            image_tag="nginx:1.27-alpine",
+            commit_sha="kind-e2e-workload-controls",
+            status=DeploymentStatus.QUEUED,
+        )
+        session.add(candidate)
+        session.commit()
+        candidate_id = candidate.id
+
+    with Session(engine) as session:
+        outcome = await run_deployment(
+            candidate_id,
+            session=session,
+            engine=engine,
+            agent=object(),
+            store=store,
+            settings=settings,
+            builder=_builder_must_not_run,
+        )
+        if outcome.status is not DeploymentStatus.LIVE:
+            raise RuntimeError(outcome.detail or "application controls did not go live")
+        operations = list(
+            session.exec(
+                select(ServiceOperation).where(ServiceOperation.service_id == release.service_id)
+            ).all()
+        )
+        if {operation.status for operation in operations} != {OperationStatus.HEALTHY}:
+            raise RuntimeError("application controls did not become healthy")
+
+    workload_name = dns_label(f"web-{str(candidate_id)[:8]}")
+    workload = await api.apps.read_namespaced_deployment(workload_name, release.namespace)
+    container = workload.spec.template.spec.containers[0]
+    if workload.spec.replicas != 2:
+        raise RuntimeError("manual app replica count was not applied")
+    if container.resources.requests != {"cpu": "200m", "memory": "128Mi"}:
+        raise RuntimeError("manual app resource requests were not applied")
+    if container.resources.limits != {"cpu": "500m", "memory": "256Mi"}:
+        raise RuntimeError("manual app resource limits were not applied")
+    annotations = workload.spec.template.metadata.annotations or {}
+    if annotations.get("prometheus.io/scrape") != "true":
+        raise RuntimeError("Prometheus scrape annotation was not applied")
+    if workload.spec.template.spec.affinity is None:
+        raise RuntimeError("manual app anti-affinity was not applied")
+    if not workload.spec.template.spec.topology_spread_constraints:
+        raise RuntimeError("manual app topology spreading was not applied")
+    disruption_budget = await api.policy.read_namespaced_pod_disruption_budget(
+        dns_label(f"{workload_name}-pdb"), release.namespace
+    )
+    if disruption_budget.spec.max_unavailable != 1:
+        raise RuntimeError("manual high-availability disruption budget was not applied")
+    await _wait_for_ingress(release.host)
+    return candidate_id
+
+
+async def _assert_managed_postgres_controls(
+    engine,
+    settings: Settings,
+    store: BuildLogStore,
+    api: AsyncKubernetesApi,
+    release: ImportedRelease,
+) -> None:
+    """Exercise the same immutable-image reconciliation used by the UI.
+
+    A catalog-managed PostgreSQL service is rendered as a CNPG Cluster.  This
+    deliberately verifies private read replicas, only-upward storage
+    expansion, and (when the caller configured a private object store) a real
+    CloudNativePG physical backup.
+    """
+    with Session(engine) as session:
+        state = ServiceOperationsState(
+            service_id=release.postgres_service_id,
+            desired={
+                "read_replicas": {"replicas": 1, "public": False},
+                "storage": {"current_size_mb": 1024, "requested_size_mb": 2048},
+            },
+            pending_reconciliation=True,
+            version=1,
+        )
+        operations = [
+            ServiceOperation(
+                service_id=release.postgres_service_id,
+                kind=OperationKind.READ_REPLICA,
+                requested={"replicas": 1, "public": False},
+            ),
+            ServiceOperation(
+                service_id=release.postgres_service_id,
+                kind=OperationKind.STORAGE,
+                requested={"current_size_mb": 1024, "requested_size_mb": 2048},
+            ),
+        ]
+        if settings.kubernetes_backup_configured:
+            backup = ServiceOperation(
+                service_id=release.postgres_service_id,
+                kind=OperationKind.BACKUP,
+                requested={"retention_days": 7},
+            )
+            session.add(backup)
+            session.flush()
+            state.desired = {
+                **state.desired,
+                "backups": {"operation_id": str(backup.id), "retention_days": 7},
+            }
+        session.add(state)
+        session.add_all(operations)
+        candidate = Deployment(
+            service_id=release.service_id,
+            image_tag="nginx:1.27-alpine",
+            commit_sha="kind-e2e-managed-postgres",
+            status=DeploymentStatus.QUEUED,
+        )
+        session.add(candidate)
+        session.commit()
+        candidate_id = candidate.id
+
+    with Session(engine) as session:
+        outcome = await run_deployment(
+            candidate_id,
+            session=session,
+            engine=engine,
+            agent=object(),
+            store=store,
+            settings=settings,
+            builder=_builder_must_not_run,
+        )
+        if outcome.status is not DeploymentStatus.LIVE:
+            raise RuntimeError(
+                outcome.detail or "managed PostgreSQL reconciliation did not go live"
+            )
+        operations = list(
+            session.exec(
+                select(ServiceOperation).where(
+                    ServiceOperation.service_id == release.postgres_service_id
+                )
+            ).all()
+        )
+        if {operation.status for operation in operations} != {OperationStatus.HEALTHY}:
+            raise RuntimeError("managed PostgreSQL operations did not become healthy")
+
+    cluster = await api.custom.get_namespaced_custom_object(
+        group="postgresql.cnpg.io",
+        version="v1",
+        namespace=release.namespace,
+        plural="clusters",
+        name="postgres",
+    )
+    if not isinstance(cluster, dict) or cluster.get("spec", {}).get("instances") != 2:
+        raise RuntimeError("managed PostgreSQL read-replica count was not applied")
+    if cluster.get("spec", {}).get("storage", {}).get("size") != "2048Mi":
+        raise RuntimeError("managed PostgreSQL storage expansion was not applied")
+    if settings.kubernetes_backup_configured:
+        backups = await api.custom.list_namespaced_custom_object(
+            group="postgresql.cnpg.io",
+            version="v1",
+            namespace=release.namespace,
+            plural="backups",
+        )
+        backup_items = backups.get("items", []) if isinstance(backups, dict) else []
+        if not any(
+            isinstance(item, dict)
+            and item.get("spec", {}).get("cluster", {}).get("name") == "postgres"
+            and item.get("status", {}).get("phase") == "completed"
+            for item in backup_items
+        ):
+            raise RuntimeError("managed PostgreSQL physical backup did not complete")
+
+
+async def _assert_autoscaling_and_jobs(
+    engine,
+    settings: Settings,
+    store: BuildLogStore,
+    api: AsyncKubernetesApi,
+    release: ImportedRelease,
+) -> None:
+    """Exercise HPA, scheduled work, and a bounded one-off Job on Kind.
+
+    The HPA becomes the only replica authority (the manual replica setting is
+    cleared), while the application image remains immutable.  The one-off Job
+    must complete before the candidate can be promoted; the CronJob merely
+    renders its recurring schedule and never waits for clock time in CI.
+    """
+    with Session(engine) as session:
+        state = session.exec(
+            select(ServiceOperationsState).where(
+                ServiceOperationsState.service_id == release.service_id
+            )
+        ).one()
+        schedule = ServiceOperation(
+            service_id=release.service_id,
+            kind=OperationKind.SCHEDULE,
+            requested={
+                "cron": "*/5 * * * *",
+                "command": ["/bin/sh", "-c", "echo scheduled"],
+                "timeout_seconds": 60,
+                "retries": 0,
+                "concurrency_policy": "forbid",
+            },
+        )
+        session.add(schedule)
+        session.flush()
+        # Keep the primitive identifier after this session closes.  The
+        # verifier must not later dereference an expired SQLModel instance.
+        schedule_id = schedule.id
+        autoscaling = {
+            "min_replicas": 2,
+            "max_replicas": 3,
+            "target_cpu_percent": 75,
+        }
+        job = {
+            "command": ["/bin/sh", "-c", "echo one-off"],
+            "timeout_seconds": 60,
+            "retries": 0,
+        }
+        state.desired = {
+            "autoscaling": autoscaling,
+            "schedules": [{"operation_id": str(schedule_id), "spec": schedule.requested}],
+            "last_job": job,
+        }
+        state.pending_reconciliation = True
+        state.version += 1
+        session.add_all(
+            [
+                state,
+                ServiceOperation(
+                    service_id=release.service_id,
+                    kind=OperationKind.AUTOSCALING,
+                    requested=autoscaling,
+                ),
+                ServiceOperation(
+                    service_id=release.service_id,
+                    kind=OperationKind.JOB,
+                    requested=job,
+                ),
+            ]
+        )
+        candidate = Deployment(
+            service_id=release.service_id,
+            image_tag="nginx:1.27-alpine",
+            commit_sha="kind-e2e-autoscaling-and-jobs",
+            status=DeploymentStatus.QUEUED,
+        )
+        session.add(candidate)
+        session.commit()
+        candidate_id = candidate.id
+
+    with Session(engine) as session:
+        outcome = await run_deployment(
+            candidate_id,
+            session=session,
+            engine=engine,
+            agent=object(),
+            store=store,
+            settings=settings,
+            builder=_builder_must_not_run,
+        )
+        if outcome.status is not DeploymentStatus.LIVE:
+            raise RuntimeError(outcome.detail or "HPA and Job controls did not go live")
+        operations = list(
+            session.exec(
+                select(ServiceOperation).where(
+                    ServiceOperation.service_id == release.service_id,
+                    ServiceOperation.kind.in_(  # type: ignore[attr-defined]
+                        [OperationKind.AUTOSCALING, OperationKind.SCHEDULE, OperationKind.JOB]
+                    ),
+                )
+            ).all()
+        )
+        if len(operations) != 3 or {operation.status for operation in operations} != {
+            OperationStatus.HEALTHY
+        }:
+            raise RuntimeError("HPA and Job controls did not become healthy")
+
+    workload_name = dns_label(f"web-{str(candidate_id)[:8]}")
+    hpa = await api.autoscaling.read_namespaced_horizontal_pod_autoscaler(
+        dns_label(f"{workload_name}-hpa"), release.namespace
+    )
+    if hpa.spec.min_replicas != 2 or hpa.spec.max_replicas != 3:
+        raise RuntimeError("HorizontalPodAutoscaler limits were not applied")
+    cron_name = dns_label(f"{workload_name}-schedule-{schedule_id}", max_length=52)
+    cron = await api.batch.read_namespaced_cron_job(cron_name, release.namespace)
+    if cron.spec.schedule != "*/5 * * * *":
+        raise RuntimeError("scheduled Job was not applied")
+    job_status = await api.batch.read_namespaced_job_status(
+        dns_label(f"{workload_name}-job"), release.namespace
+    )
+    if (job_status.status.succeeded or 0) < 1:
+        raise RuntimeError("one-off Job did not complete")
+    await _wait_for_ingress(release.host)
+
+
+async def _assert_immutable_kubernetes_restore(
+    engine,
+    settings: Settings,
+    api: AsyncKubernetesApi,
+    release: ImportedRelease,
+    *,
+    target_deployment_id: uuid.UUID,
+) -> None:
+    """Restore a superseded release by changing only the stable Ingress target."""
+    with Session(engine) as session:
+        target = session.get(Deployment, target_deployment_id)
+        if target is None or target.status is not DeploymentStatus.SUPERSEDED:
+            raise RuntimeError("Kubernetes rollback target was not retained as immutable history")
+        session.add(
+            ServiceOperation(
+                service_id=release.service_id,
+                kind=OperationKind.ROLLBACK,
+                requested={"deployment_id": str(target_deployment_id)},
+            )
+        )
+        session.commit()
+        restored = await reconcile_pending_rollbacks(session, settings=settings)
+        if restored != 1:
+            raise RuntimeError("immutable Kubernetes rollback was not reconciled")
+        session.refresh(target)
+        if target.status is not DeploymentStatus.LIVE:
+            raise RuntimeError("immutable Kubernetes rollback did not restore the target")
+
+    ingress = await api.networking.read_namespaced_ingress("route-web", release.namespace)
+    backend = ingress.spec.rules[0].http.paths[0].backend.service
+    expected_backend = dns_label(f"web-{str(target_deployment_id)[:8]}")
+    if backend.name != expected_backend:
+        raise RuntimeError("immutable Kubernetes rollback rebuilt instead of repointing ingress")
+    if await asyncio.to_thread(_request_status, release.host) != 200:
+        raise RuntimeError("immutable Kubernetes rollback did not preserve the public route")
 
 
 async def _assert_failed_candidate_preserves_live_route(

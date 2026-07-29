@@ -128,12 +128,12 @@ export function Operations({ service }: { service: Service }) {
   const databaseEngine = capabilities?.database_engine ?? null;
   const managedDatabase = service.kind === "database" && databaseEngine !== null;
   const sqlDatabase = managedDatabase && ["postgres", "mysql", "mariadb"].includes(databaseEngine);
-  const backupRestoreAvailable = managedDatabase && Boolean(capabilities?.backup_restore_available);
+  const backupAvailable = managedDatabase && Boolean(capabilities?.backup_available);
   const readReplicasAvailable =
     sqlDatabase && capabilities?.data_role === "primary" && Boolean(capabilities?.read_replicas_available);
   const storageExpansionAvailable = managedDatabase && Boolean(capabilities?.storage_expansion_available);
   const dataOperationsAvailable =
-    backupRestoreAvailable || readReplicasAvailable || storageExpansionAvailable;
+    backupAvailable || readReplicasAvailable || storageExpansionAvailable;
   const jobCommandsAvailable = isApp && Boolean(capabilities?.job_commands_available);
 
   const [replicaValue, setReplicaValue] = useState(String(number(desired.replicas, service.replica_count)));
@@ -156,6 +156,11 @@ export function Operations({ service }: { service: Service }) {
   );
   const [topologySpread, setTopologySpread] = useState(Boolean(desiredPlacement.topology_spread));
   const [antiAffinity, setAntiAffinity] = useState(Boolean(desiredPlacement.anti_affinity));
+  const [maxUnavailable, setMaxUnavailable] = useState(
+    desiredPlacement.max_unavailable === undefined || desiredPlacement.max_unavailable === null
+      ? ""
+      : String(desiredPlacement.max_unavailable),
+  );
   const [retentionDays, setRetentionDays] = useState("7");
   const [readReplicas, setReadReplicas] = useState("1");
   const [storageCurrent, setStorageCurrent] = useState("");
@@ -288,7 +293,9 @@ export function Operations({ service }: { service: Service }) {
           <Section title="Jobs & placement">
             <Field label="Node selector (key=value, comma separated)"><input aria-label="Node selector" className={inputClass} value={nodeSelector} onChange={(event) => setNodeSelector(event.target.value)} /></Field>
             <div className="mt-sm flex gap-md text-micro text-ink-mute"><label><input type="checkbox" checked={topologySpread} onChange={(event) => setTopologySpread(event.target.checked)} /> spread across nodes</label><label><input type="checkbox" checked={antiAffinity} onChange={(event) => setAntiAffinity(event.target.checked)} /> anti-affinity</label></div>
-            <button type="button" className={`${buttonClass} mt-sm`} disabled={placement.isPending} onClick={() => { const selector = Object.fromEntries(nodeSelector.split(",").map((part) => part.trim()).filter(Boolean).map((part) => { const [key, ...value] = part.split("="); return [key.trim(), value.join("=").trim()]; })); placement.mutate({ node_selector: selector, topology_spread: topologySpread, anti_affinity: antiAffinity }); }}>Apply placement</button>
+            <Field label="Maximum unavailable during maintenance"><input aria-label="Maximum unavailable during maintenance" className={`${inputClass} mt-sm`} inputMode="numeric" min="1" placeholder="automatic" value={maxUnavailable} onChange={(event) => setMaxUnavailable(event.target.value)} /></Field>
+            <button type="button" className={`${buttonClass} mt-sm`} disabled={placement.isPending} onClick={() => { const selector = Object.fromEntries(nodeSelector.split(",").map((part) => part.trim()).filter(Boolean).map((part) => { const [key, ...value] = part.split("="); return [key.trim(), value.join("=").trim()]; })); placement.mutate({ node_selector: selector, topology_spread: topologySpread, anti_affinity: antiAffinity, max_unavailable: maxUnavailable ? Number(maxUnavailable) : undefined }); }}>Apply placement</button>
+            <p className="pt-xs text-micro text-ink-faint">For HA app workloads only. Leave blank to let Rudder keep at least N−1 replicas available.</p>
             {jobCommandsAvailable ? (
               <>
                 <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="One-off command (must be approved by the service template)"><input aria-label="One-off command" className={inputClass} placeholder="npm run migrate" value={jobCommand} onChange={(event) => setJobCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={runJob.isPending || !jobCommand.trim()} onClick={() => runJob.mutate({ command: jobCommand.trim().split(/\s+/) })}>Run job</button></div>
@@ -312,7 +319,7 @@ export function Operations({ service }: { service: Service }) {
             </p>
           ) : null}
 
-          {backupRestoreAvailable ? (
+          {backupAvailable ? (
             <div className="mt-sm grid grid-cols-2 gap-sm">
               <Field label="Backup retention (days)">
                 <input

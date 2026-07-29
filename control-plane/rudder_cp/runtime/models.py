@@ -34,6 +34,10 @@ class ComposeService:
     public_host: str | None = None
     stateful: bool = False
     volume_mount_path: str | None = None
+    # Set only by Rudder's trusted managed-service catalog.  A repository
+    # Compose member called "postgres" is still just a user-owned container;
+    # it must never be silently transformed into an operator-managed database.
+    managed_database_engine: str | None = None
     # A validated snapshot of ServiceOperationsState.desired.  It is attached
     # to the release instead of read by this runtime so Kubernetes rendering
     # remains deterministic for an immutable deployment candidate.

@@ -20,6 +20,8 @@ const hooks = vi.hoisted(() => {
           job_commands_available: false,
           storage_expansion_available: false,
           backup_restore_available: false,
+          backup_available: false,
+          restore_available: false,
           read_replicas_available: false,
         },
         history: [
@@ -93,6 +95,8 @@ describe("Operations", () => {
       job_commands_available: false,
       storage_expansion_available: false,
       backup_restore_available: false,
+      backup_available: false,
+      restore_available: false,
       read_replicas_available: false,
     };
   });
@@ -117,6 +121,22 @@ describe("Operations", () => {
     await user.click(screen.getByRole("button", { name: "Apply scale" }));
 
     expect(hooks.mutation.mutate).toHaveBeenCalledWith(3);
+  });
+
+  it("submits a manual disruption budget for an HA application", async () => {
+    const user = userEvent.setup();
+    render(<Operations service={app} />);
+
+    const field = screen.getByRole("textbox", { name: "Maximum unavailable during maintenance" });
+    await user.type(field, "1");
+    await user.click(screen.getByRole("button", { name: "Apply placement" }));
+
+    expect(hooks.mutation.mutate).toHaveBeenCalledWith({
+      node_selector: {},
+      topology_spread: false,
+      anti_affinity: false,
+      max_unavailable: 1,
+    });
   });
 
   it("requires confirmation before restoring an immutable deployment", async () => {
@@ -152,6 +172,8 @@ describe("Operations", () => {
       job_commands_available: false,
       storage_expansion_available: false,
       backup_restore_available: false,
+      backup_available: false,
+      restore_available: false,
       read_replicas_available: false,
     };
     render(<Operations service={{ ...app, kind: "database" }} />);
@@ -170,6 +192,8 @@ describe("Operations", () => {
       job_commands_available: false,
       storage_expansion_available: true,
       backup_restore_available: true,
+      backup_available: true,
+      restore_available: false,
       read_replicas_available: true,
     };
     render(<Operations service={{ ...app, kind: "database" }} />);

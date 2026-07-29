@@ -23,12 +23,6 @@ from rudder_cp.models import (
 )
 from rudder_cp.models.base import utc_now
 
-_DATABASE_OPERATOR_KINDS = {
-    OperationKind.BACKUP,
-    OperationKind.RESTORE,
-    OperationKind.READ_REPLICA,
-}
-
 
 def mark_runtime_operations_progressing(session: Session, *, service_ids: list[UUID]) -> int:
     """Record that a release has begun applying pending intent.
@@ -79,9 +73,9 @@ def reconcile_runtime_operations(
     """Move pending operation audit rows to their observed terminal state.
 
     Kubernetes workload readiness has already succeeded before this function is
-    called. A database operator is not part of Rudder's local Kind runtime, so
-    SQL replication/backup/restore requests remain durable but are explicitly
-    degraded instead of being silently reported as healthy.
+    called. Operator-backed outcomes are only healthy when the runtime returns
+    a matching observed state; unavailable features remain explicitly degraded
+    instead of being silently reported as healthy.
     """
     state = session.exec(
         select(ServiceOperationsState).where(ServiceOperationsState.service_id == service_id)
@@ -98,6 +92,7 @@ def reconcile_runtime_operations(
         )
     ).all()
     counts = {"healthy": 0, "degraded": 0, "failed": 0}
+    completed_backup_ids: set[str] = set()
     for operation in rows:
         status, observed, error = _observe_operation(operation, runtime_observed)
         operation.status = status
@@ -107,6 +102,8 @@ def reconcile_runtime_operations(
         session.add(operation)
         if status is OperationStatus.HEALTHY:
             counts["healthy"] += 1
+            if operation.kind is OperationKind.BACKUP:
+                completed_backup_ids.add(str(operation.id))
         elif status is OperationStatus.DEGRADED:
             counts["degraded"] += 1
         else:
@@ -119,6 +116,13 @@ def reconcile_runtime_operations(
         if counts["degraded"]
         else "healthy"
     )
+    # A backup is a one-shot action, not durable desired configuration. Once
+    # the matching CNPG Backup CRD reaches a terminal state, remove it so an
+    # unrelated later scale/resource release cannot execute it again.
+    if completed_backup_ids and isinstance(state.desired.get("backups"), Mapping):
+        requested_id = state.desired["backups"].get("operation_id")
+        if isinstance(requested_id, str) and requested_id in completed_backup_ids:
+            state.desired = {key: value for key, value in state.desired.items() if key != "backups"}
     state.pending_reconciliation = False
     state.observed = {
         **state.observed,
@@ -189,13 +193,34 @@ def mark_runtime_operations_failed(
 def _observe_operation(
     operation: ServiceOperation, runtime_observed: Mapping[str, Any]
 ) -> tuple[OperationStatus, dict[str, Any], str | None]:
-    if operation.kind in _DATABASE_OPERATOR_KINDS:
+    if operation.kind is OperationKind.READ_REPLICA:
+        read_replicas = runtime_observed.get("read_replicas")
+        if isinstance(read_replicas, Mapping) and read_replicas.get("status") == "configured":
+            return OperationStatus.HEALTHY, {"runtime": dict(runtime_observed)}, None
         reason = (
-            f"{operation.kind.value.replace('_', ' ')} requires a compatible database "
-            "operator; no database operator is installed in this cluster"
+            "read replica requires a compatible database operator; no configured "
+            "read-replica runtime was observed"
         )
         return OperationStatus.DEGRADED, {"status": "degraded", "reason": reason}, reason
+    if operation.kind is OperationKind.BACKUP:
+        backup = runtime_observed.get("backup")
+        if isinstance(backup, Mapping) and backup.get("status") == "completed":
+            return OperationStatus.HEALTHY, {"runtime": dict(runtime_observed)}, None
+        if isinstance(backup, Mapping) and backup.get("status") == "failed":
+            return (
+                OperationStatus.FAILED,
+                {"runtime": dict(runtime_observed)},
+                "PostgreSQL backup failed",
+            )
+        reason = "PostgreSQL backup did not reach a terminal CloudNativePG state"
+        return OperationStatus.DEGRADED, {"status": "degraded", "reason": reason}, reason
+    if operation.kind is OperationKind.RESTORE:
+        reason = "restore requires a dedicated recovery-cluster cutover and is not enabled"
+        return OperationStatus.DEGRADED, {"status": "degraded", "reason": reason}, reason
     if operation.kind is OperationKind.STORAGE:
+        storage = runtime_observed.get("storage")
+        if isinstance(storage, Mapping) and storage.get("status") == "configured":
+            return OperationStatus.HEALTHY, {"runtime": dict(runtime_observed)}, None
         reason = (
             "persistent-volume expansion is not enabled until Rudder verifies the "
             "StorageClass allows volume expansion"

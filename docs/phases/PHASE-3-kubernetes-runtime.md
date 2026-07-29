@@ -54,6 +54,36 @@ This is the required first delivery for Phase 3. It verifies resource
 translation, readiness gating, private discovery, ingress, instance recording,
 and failure cleanup without treating a laptop cluster as production.
 
+### Local operations controls verified on Kind
+
+The local acceptance path also exercises the controls exposed in Rudder's
+service detail panel. They reconcile from durable desired state to Kubernetes
+objects; a requested value is never displayed as healthy until the release has
+passed readiness.
+
+- stateless replica count, CPU/RAM requests and limits, rolling updates, node
+  selectors, preferred anti-affinity, topology spread, and a PodDisruptionBudget
+  for HA workloads. Operators may set its safe `maxUnavailable` value; leaving
+  it unset preserves Rudder's automatic `N - 1` availability policy;
+- HPA min/max bounds, recurring CronJobs, and allowlisted one-off Jobs;
+- immutable rollback by repointing the stable Ingress to a previous healthy
+  workload — no source build, image rebuild, or restored-pod restart;
+- catalog-managed PostgreSQL through CloudNativePG: private read endpoints,
+  read-replica count, and only-upward storage expansion;
+- Prometheus scrape annotations and Grafana integration intent. Rudder does
+  not silently install a public observability stack for a tenant namespace.
+- on-demand physical PostgreSQL backups through CloudNativePG only when a
+  private S3-compatible endpoint, bucket, and credentials are configured.
+  Credentials are written to a namespace Secret and never logs; each backup is
+  one-shot and clears from desired state after the operator completes it.
+
+PostgreSQL backup remains hidden until an engine-specific, object-storage
+target is configured. Restore remains hidden even then: safe physical recovery
+must create and validate a separate recovery Cluster before an explicit
+application cutover, never overwrite a live primary in place. GKE production
+must provide a bucket, workload identity, retention policy, encryption, and a
+tested CloudNativePG recovery flow before restore is advertised.
+
 ## Step 2 — GKE Standard production target
 
 Move the proven adapter to a regional GKE Standard cluster with private nodes,
@@ -82,9 +112,12 @@ environment.
 3. A new image revision becomes routable only after its readiness probe passes.
 4. A deliberately failing revision is recorded as failed while the previous
    live URL continues to serve traffic.
-5. Deleting a project removes its namespace-owned workloads and routes while
+5. The Kind acceptance script verifies workload controls, HPA, CronJob,
+   one-off Job, PostgreSQL read replicas/storage expansion, HA disruption
+   budget, immutable route rollback, and failed-candidate route preservation.
+6. Deleting a project removes its namespace-owned workloads and routes while
    retaining Rudder deployment history according to the retention policy.
-6. Resource-quota and network-policy tests prove one tenant cannot exhaust or
+7. Resource-quota and network-policy tests prove one tenant cannot exhaust or
    access another tenant's resources.
 
 ## Relationship to Phase 4

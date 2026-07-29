@@ -75,6 +75,66 @@ def test_runtime_reconciliation_marks_applied_and_unsupported_operations_truthfu
         assert "database operator" in (replica.error_message or "")
 
 
+def test_runtime_reconciliation_marks_cnpg_replica_and_storage_operations_healthy() -> None:
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        user = User(email="cnpg-operations@example.com", password_hash="test")
+        session.add(user)
+        session.flush()
+        project = Project(owner_id=user.id, name="shop")
+        session.add(project)
+        session.flush()
+        environment = Environment(project_id=project.id, name="production")
+        session.add(environment)
+        session.flush()
+        service = Service(environment_id=environment.id, name="postgres")
+        session.add(service)
+        session.flush()
+        state = ServiceOperationsState(
+            service_id=service.id,
+            desired={"read_replicas": {"replicas": 2}, "storage": {"size_mb": 2048}},
+            pending_reconciliation=True,
+            version=2,
+        )
+        replica = ServiceOperation(
+            service_id=service.id,
+            kind=OperationKind.READ_REPLICA,
+            requested={"replicas": 2, "public": False},
+        )
+        storage = ServiceOperation(
+            service_id=service.id,
+            kind=OperationKind.STORAGE,
+            requested={"size_mb": 2048},
+        )
+        session.add_all([state, replica, storage])
+        session.commit()
+
+        mark_runtime_operations_progressing(session, service_ids=[service.id])
+        outcome = reconcile_runtime_operations(
+            session,
+            service_id=service.id,
+            runtime_observed={
+                "read_replicas": {
+                    "status": "configured",
+                    "replicas": 2,
+                    "endpoint": "postgres-read:5432",
+                },
+                "storage": {"status": "configured", "size_mb": 2048},
+            },
+        )
+
+        session.refresh(state)
+        session.refresh(replica)
+        session.refresh(storage)
+        assert outcome == {"healthy": 2, "degraded": 0, "failed": 0}
+        assert state.observed["reconciliation"]["status"] == "healthy"
+        assert replica.status is OperationStatus.HEALTHY
+        assert storage.status is OperationStatus.HEALTHY
+        assert replica.observed["runtime"]["read_replicas"]["endpoint"] == "postgres-read:5432"
+        assert storage.observed["runtime"]["storage"]["size_mb"] == 2048
+
+
 def test_runtime_reconciliation_marks_started_operations_failed_when_release_fails() -> None:
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine)

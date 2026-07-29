@@ -4,6 +4,8 @@ import pytest
 
 from rudder_cp.runtime.kubernetes import (
     AsyncKubernetesApi,
+    CloudNativePostgresBackupSpec,
+    CloudNativePostgresSpec,
     KubernetesRuntime,
     RuntimeSettings,
     WorkloadSpec,
@@ -44,6 +46,27 @@ class FakeKubernetesApi:
     async def apply_workload(self, namespace: str, spec: object) -> None:
         self.calls.append(("workload", spec))
 
+    async def apply_cloudnative_postgres(
+        self, namespace: str, spec: object
+    ) -> None:
+        self.calls.append(("cloudnative-postgres", spec))
+
+    async def apply_cloudnative_postgres_backup(
+        self, namespace: str, spec: object
+    ) -> None:
+        self.calls.append(("cloudnative-postgres-backup", spec))
+
+    async def wait_cloudnative_postgres_backup(
+        self,
+        namespace: str,
+        spec: object,
+        *,
+        timeout_seconds: int,
+        poll_seconds: float,
+    ) -> bool:
+        self.calls.append(("cloudnative-postgres-backup-ready", spec))
+        return True
+
     async def expand_stateful_storage(self, namespace: str, spec: object) -> None:
         self.calls.append(("storage", spec))
 
@@ -52,6 +75,9 @@ class FakeKubernetesApi:
 
     async def delete_autoscaler(self, namespace: str, name: str) -> None:
         self.calls.append(("delete-autoscaler", name))
+
+    async def apply_disruption_budget(self, namespace: str, spec: object) -> None:
+        self.calls.append(("pdb", spec))
 
     async def apply_cron_job(self, namespace: str, spec: object) -> None:
         self.calls.append(("cronjob", spec))
@@ -80,6 +106,17 @@ class FakeKubernetesApi:
     ) -> str:
         self.calls.append(("ready", spec))
         return f"pod-{spec.name}"
+
+    async def wait_cloudnative_postgres_ready(
+        self,
+        namespace: str,
+        spec: object,
+        *,
+        timeout_seconds: int,
+        poll_seconds: float,
+    ) -> str:
+        self.calls.append(("cloudnative-postgres-ready", spec))
+        return f"pod-{spec.name}-1"
 
     async def promote_public_service(self, namespace: str, spec: object) -> None:
         self.calls.append(("ingress", spec))
@@ -119,6 +156,112 @@ async def test_runtime_creates_private_stateful_service_and_public_web_after_rea
     )
     assert result.pod_ids == {"web": "pod-web-aabbccdd", "postgres": "pod-postgres"}
     assert result.public_hosts == {"web": "web-rudder-shop-production.localhost"}
+
+
+@pytest.mark.asyncio
+async def test_rudder_managed_postgres_becomes_a_private_cnpg_cluster_with_standbys() -> None:
+    """Read replicas are PostgreSQL standbys, never generic Postgres copies."""
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(api, RuntimeSettings(local_domain="localhost"))
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="postgres",
+                image="postgres:16-alpine",
+                port=5432,
+                stateful=True,
+                volume_mount_path="/var/lib/postgresql/data",
+                managed_database_engine="postgres",
+                environment={
+                    "POSTGRES_DB": "app",
+                    "POSTGRES_USER": "rudder",
+                    "POSTGRES_PASSWORD": "not-in-logs",
+                },
+                operations={
+                    "storage": {"current_size_mb": 1024, "requested_size_mb": 2048},
+                    "read_replicas": {"replicas": 2},
+                },
+            ),
+        ),
+    )
+
+    result = await runtime.apply(release, project_id="project", environment_id="environment")
+
+    postgres = next(value for name, value in api.calls if name == "cloudnative-postgres")
+    assert isinstance(postgres, CloudNativePostgresSpec)
+    assert postgres.name == "postgres"
+    assert postgres.instances == 3  # primary + two private read replicas
+    assert postgres.storage_size_mb == 2048
+    assert postgres.app_database == "app"
+    assert postgres.app_user == "rudder"
+    assert not [value for name, value in api.calls if name == "workload"]
+    aliases = [value for name, value in api.calls if name == "service"]
+    assert [(alias.name, alias.external_name) for alias in aliases] == [
+        ("postgres", "postgres-rw"),
+        ("postgres-read", "postgres-ro"),
+    ]
+    assert result.pod_ids == {"postgres": "pod-postgres-1"}
+    assert result.operation_observed["postgres"]["read_replicas"] == {
+        "status": "configured",
+        "replicas": 2,
+        "endpoint": "postgres-read:5432",
+    }
+
+
+@pytest.mark.asyncio
+async def test_rudder_managed_postgres_executes_one_physical_cnpg_backup() -> None:
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(
+        api,
+        RuntimeSettings(
+            backup_s3_endpoint="http://minio:9000",
+            backup_s3_bucket="rudder-backups",
+            backup_s3_access_key="minio",
+            backup_s3_secret_key="not-in-logs",
+        ),
+    )
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="postgres",
+                image="postgres:16-alpine",
+                port=5432,
+                stateful=True,
+                volume_mount_path="/var/lib/postgresql/data",
+                managed_database_engine="postgres",
+                environment={
+                    "POSTGRES_DB": "app",
+                    "POSTGRES_USER": "rudder",
+                    "POSTGRES_PASSWORD": "not-in-logs",
+                },
+                operations={
+                    "backups": {
+                        "operation_id": "01234567-89ab-cdef-0123-456789abcdef",
+                        "retention_days": 14,
+                    }
+                },
+            ),
+        ),
+    )
+
+    result = await runtime.apply(release, project_id="project", environment_id="environment")
+
+    postgres = next(value for name, value in api.calls if name == "cloudnative-postgres")
+    assert isinstance(postgres, CloudNativePostgresSpec)
+    assert postgres.backup_retention_days == 14
+    backup = next(value for name, value in api.calls if name == "cloudnative-postgres-backup")
+    assert isinstance(backup, CloudNativePostgresBackupSpec)
+    assert backup.cluster_name == "postgres"
+    assert backup.retention_days == 14
+    assert result.operation_observed["postgres"]["backup"] == {
+        "status": "completed",
+        "name": backup.name,
+        "retention_days": 14,
+    }
 
 
 @pytest.mark.asyncio
@@ -292,6 +435,7 @@ async def test_runtime_renders_app_operations_as_workload_hpa_and_jobs() -> None
                         "node_selector": {"nodepool": "workers"},
                         "topology_spread": True,
                         "anti_affinity": True,
+                        "max_unavailable": 1,
                     },
                     "rollout": {"strategy": "rolling"},
                     "observability": {"prometheus": True, "grafana": True},
@@ -330,12 +474,17 @@ async def test_runtime_renders_app_operations_as_workload_hpa_and_jobs() -> None
     assert workload.topology_spread is True
     assert workload.prometheus_enabled is True
     assert workload.rolling_update == {"max_surge": "25%", "max_unavailable": 0}
+    disruption_budget = next(value for name, value in api.calls if name == "pdb")
+    assert disruption_budget.max_unavailable == 1
+    assert disruption_budget.workload_name == workload.name
     autoscaler = next(value for name, value in api.calls if name == "autoscaler")
     assert autoscaler.min_replicas == 2
     assert autoscaler.max_replicas == 5
     assert autoscaler.target_cpu_percent == 70
     assert autoscaler.target_memory_percent == 80
     assert [name for name, _ in api.calls if name == "cronjob"] == ["cronjob"]
+    cron_job = next(value for name, value in api.calls if name == "cronjob")
+    assert len(cron_job.name) <= 52
     assert [name for name, _ in api.calls if name == "job"] == ["job"]
     assert result.operation_observed["worker"]["observability"] == {
         "prometheus": "enabled",
@@ -394,6 +543,54 @@ async def test_wait_ready_accepts_scale_to_zero_without_querying_pods() -> None:
     )
 
     assert await api.wait_ready("rudder", spec, timeout_seconds=1, poll_seconds=0.1) == "worker"
+
+
+@pytest.mark.asyncio
+async def test_cnpg_wait_accepts_ready_database_pod_when_operator_probe_is_unavailable() -> None:
+    """Kind can block CNPG's TLS status probe even after PostgreSQL is ready.
+
+    ``readyInstances`` is an operator-reported readiness count.  We additionally
+    require the elected primary Pod's Kubernetes Ready condition before allowing
+    the public application route to be promoted.
+    """
+
+    class Custom:
+        async def get_namespaced_custom_object(self, **_kwargs):
+            return {
+                "status": {
+                    "readyInstances": 1,
+                    "currentPrimary": "postgres-1",
+                    "conditions": [{"type": "Ready", "status": "False"}],
+                }
+            }
+
+    class Core:
+        async def read_namespaced_pod_status(self, name: str, namespace: str):
+            assert (name, namespace) == ("postgres-1", "rudder")
+            return SimpleNamespace(
+                metadata=SimpleNamespace(uid="postgres-primary-uid"),
+                status=SimpleNamespace(
+                    conditions=[SimpleNamespace(type="Ready", status="True")]
+                ),
+            )
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.custom = Custom()
+    api.core = Core()
+    spec = CloudNativePostgresSpec(
+        name="postgres",
+        service_name="postgres",
+        app_database="app",
+        app_user="rudder",
+        app_password="secret",
+        storage_size_mb=1024,
+        instances=1,
+        labels={},
+    )
+
+    assert await api.wait_cloudnative_postgres_ready(
+        "rudder", spec, timeout_seconds=1, poll_seconds=0.1
+    ) == "postgres-primary-uid"
 
 
 @pytest.mark.asyncio

@@ -301,30 +301,49 @@ def test_canonical_operation_families_create_typed_records(
     client: TestClient, seed: dict[str, str]
 ) -> None:
     cases = (
-        ("app", "/operations/rollout", {"strategy": "blue_green"}),
-        ("app", "/operations/placement", {"topology_spread": True}),
-        ("primary", "/operations/data/backups", {"retention_days": 14}),
+        ("app", "/operations/rollout", {"strategy": "blue_green"}, 202),
+        (
+            "app",
+            "/operations/placement",
+            {"topology_spread": True, "max_unavailable": 1},
+            202,
+        ),
+        ("primary", "/operations/data/backups", {"retention_days": 14}, 422),
         (
             "primary",
             "/operations/data/restore",
             {"backup_id": "00000000-0000-0000-0000-000000000002", "acknowledge_data_loss": True},
+            422,
         ),
-        ("primary", "/operations/data/read-replicas", {"replicas": 1}),
+        ("primary", "/operations/data/read-replicas", {"replicas": 1}, 422),
         (
             "primary",
             "/operations/data/storage",
             {"current_size_mb": 1024, "requested_size_mb": 2048},
+            422,
         ),
-        ("app", "/operations/jobs/run", {"command": ["python", "manage.py", "migrate"]}),
-        ("app", "/operations/observability", {"prometheus": True, "grafana": True}),
+        ("app", "/operations/jobs/run", {"command": ["python", "manage.py", "migrate"]}, 202),
+        ("app", "/operations/observability", {"prometheus": True, "grafana": True}, 202),
     )
-    for index, (service, path, payload) in enumerate(cases):
+    for index, (service, path, payload, expected_status) in enumerate(cases):
         response = client.post(
             f"/services/{seed[service]}{path}",
             headers=headers(seed, f"canonical-{index}"),
             json=payload,
         )
-        assert response.status_code == 202, response.text
+        assert response.status_code == expected_status, response.text
+
+
+def test_placement_rejects_an_unsafe_disruption_budget(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    response = client.post(
+        f"/services/{seed['app']}/operations/placement",
+        headers=headers(seed, "placement-pdb-zero"),
+        json={"max_unavailable": 0},
+    )
+
+    assert response.status_code == 422, response.text
 
 
 def test_schedule_can_be_created_and_deleted(
@@ -552,6 +571,8 @@ def test_operations_envelope_exposes_only_safe_server_managed_capabilities(
         "job_commands_available": True,
         "storage_expansion_available": False,
         "backup_restore_available": False,
+        "backup_available": False,
+        "restore_available": False,
         "read_replicas_available": False,
     }
     assert database_response.json()["capabilities"] == {
@@ -562,9 +583,67 @@ def test_operations_envelope_exposes_only_safe_server_managed_capabilities(
         # the active runtime has a real operator/backend for them.
         "storage_expansion_available": False,
         "backup_restore_available": False,
+        "backup_available": False,
+        "restore_available": False,
         "read_replicas_available": False,
     }
     assert "allowed_job_commands" not in app_response.json()["capabilities"]
+
+
+def test_operations_envelope_enables_cnpg_replica_and_storage_controls(
+    client: TestClient, engine: Engine, seed: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with Session(engine) as session:
+        capability = session.exec(
+            sa.select(ServiceManagedCapabilities).where(
+                ServiceManagedCapabilities.service_id == UUID(seed["primary"])
+            )
+        ).scalar_one()
+        capability.source = "catalog"
+        session.add(capability)
+        session.commit()
+    monkeypatch.setenv("RUDDER_RUNTIME", "kubernetes")
+    monkeypatch.setenv("RUDDER_KUBERNETES_POSTGRES_OPERATOR", "cloudnativepg")
+    monkeypatch.setenv("RUDDER_KUBERNETES_BACKUP_S3_ENDPOINT", "http://minio:9000")
+    monkeypatch.setenv("RUDDER_KUBERNETES_BACKUP_S3_BUCKET", "rudder-backups")
+    monkeypatch.setenv("RUDDER_KUBERNETES_BACKUP_S3_ACCESS_KEY", "minio")
+    monkeypatch.setenv("RUDDER_KUBERNETES_BACKUP_S3_SECRET_KEY", "test-secret")
+    get_settings.cache_clear()
+
+    response = client.get(
+        f"/services/{seed['primary']}/operations?format=envelope",
+        headers=headers(seed),
+    )
+
+    assert response.status_code == 200, response.text
+    capabilities = response.json()["capabilities"]
+    assert capabilities["storage_expansion_available"] is True
+    assert capabilities["read_replicas_available"] is True
+    # Backup is operator-backed only with an explicit object store. Restore is
+    # still default-deny until a recovery-cluster cutover is implemented.
+    assert capabilities["backup_available"] is True
+    assert capabilities["backup_restore_available"] is False
+    assert capabilities["restore_available"] is False
+
+    replica = client.post(
+        f"/services/{seed['primary']}/operations/data/read-replicas",
+        headers=headers(seed, "cnpg-read-replica"),
+        json={"replicas": 1},
+    )
+    storage = client.post(
+        f"/services/{seed['primary']}/operations/data/storage",
+        headers=headers(seed, "cnpg-storage"),
+        json={"current_size_mb": 1024, "requested_size_mb": 2048},
+    )
+    backup = client.post(
+        f"/services/{seed['primary']}/operations/data/backups",
+        headers=headers(seed, "cnpg-backup"),
+        json={"retention_days": 7},
+    )
+    assert replica.status_code == 202, replica.text
+    assert storage.status_code == 202, storage.text
+    assert backup.status_code == 202, backup.text
+    assert backup.json()["requested"] == {"retention_days": 7}
 
 
 def test_patch_deep_merges_nested_intent_and_rejects_stale_version(
@@ -903,7 +982,7 @@ def test_user_writable_build_config_cannot_grant_privileged_operation_capabiliti
 @pytest.mark.parametrize(
     ("image", "expected_status"),
     (
-        ("postgres:16-alpine", 202),
+        ("postgres:16-alpine", 422),
         ("redis:7-alpine", 422),
         ("mongo:7", 422),
         ("custom:latest", 422),

@@ -216,7 +216,12 @@ export function useAutoscalingOperation(serviceId: string | undefined) {
 export function usePlacementOperation(serviceId: string | undefined) {
   return useOperationMutation(
     serviceId,
-    (id, payload: { node_selector: Record<string, string>; topology_spread: boolean; anti_affinity: boolean }) =>
+    (id, payload: {
+      node_selector: Record<string, string>;
+      topology_spread: boolean;
+      anti_affinity: boolean;
+      max_unavailable?: number;
+    }) =>
       api.requestPlacement(id, payload),
   );
 }

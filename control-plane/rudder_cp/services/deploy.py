@@ -38,6 +38,7 @@ from rudder_cp.models import (
     Node,
     NodeStatus,
     Service,
+    ServiceManagedCapabilities,
     ServiceOperationsState,
     Volume,
 )
@@ -645,6 +646,19 @@ async def _deploy_imported_kubernetes(
                     ServiceOperationsState.service_id == member_service.id
                 )
             ).first()
+            capability = session.exec(
+                select(ServiceManagedCapabilities).where(
+                    ServiceManagedCapabilities.service_id == member_service.id
+                )
+            ).first()
+            managed_database_engine = (
+                "postgres"
+                if capability is not None
+                and capability.source == "catalog"
+                and capability.database_engine == "postgres"
+                and capability.data_role == "primary"
+                else None
+            )
             members.append(
                 KubernetesComposeService(
                     name=mapping.compose_service,
@@ -657,6 +671,7 @@ async def _deploy_imported_kubernetes(
                     stateful=mapping.role
                     in {"database", "cache", "broker", "search", "storage"},
                     volume_mount_path=volume.mount_path if volume is not None else None,
+                    managed_database_engine=managed_database_engine,
                     operations=operations_state.desired if operations_state is not None else {},
                 )
             )
@@ -667,6 +682,11 @@ async def _deploy_imported_kubernetes(
             local_domain=settings.kubernetes_local_domain,
             ingress_class=settings.kubernetes_ingress_class,
             readiness_timeout_seconds=settings.kubernetes_readiness_timeout_seconds,
+            backup_s3_endpoint=settings.kubernetes_backup_s3_endpoint,
+            backup_s3_bucket=settings.kubernetes_backup_s3_bucket,
+            backup_s3_access_key=settings.kubernetes_backup_s3_access_key,
+            backup_s3_secret_key=settings.kubernetes_backup_s3_secret_key,
+            backup_s3_region=settings.kubernetes_backup_s3_region,
         )
         api = await AsyncKubernetesApi.from_kubeconfig(
             runtime_settings,

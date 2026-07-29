@@ -32,6 +32,7 @@ from rudder_cp.models import (
     NodeStatus,
     Project,
     Service,
+    ServiceManagedCapabilities,
     User,
     Volume,
 )
@@ -254,6 +255,10 @@ class FakeKubernetesApi:
         self.calls.append(("workload", spec.name))
         self.workloads[spec.service_name] = spec
 
+    async def apply_cloudnative_postgres(self, namespace: str, spec) -> None:
+        self.calls.append(("cloudnative-postgres", spec.name))
+        self.workloads[spec.service_name] = spec
+
     async def apply_autoscaler(self, namespace: str, spec) -> None:
         self.calls.append(("autoscaler", spec.name))
 
@@ -280,6 +285,12 @@ class FakeKubernetesApi:
         if spec.service_name == self.fail_service:
             raise RuntimeError(f"{spec.service_name} image pull failed")
         return f"pod-{spec.name}"
+
+    async def wait_cloudnative_postgres_ready(self, namespace: str, spec, **_kwargs) -> str:
+        self.calls.append(("cloudnative-postgres-ready", spec.name))
+        if spec.service_name == self.fail_service:
+            raise RuntimeError(f"{spec.service_name} image pull failed")
+        return f"pod-{spec.name}-1"
 
     async def promote_public_service(self, namespace: str, spec) -> None:
         self.calls.append(("ingress", spec.name))
@@ -366,6 +377,34 @@ def _configure_kubernetes_import(engine, service: Service) -> None:
             ]
         )
         session.commit()
+
+
+async def test_imported_kubernetes_uses_cnpg_only_for_catalog_managed_postgres(
+    engine, service, settings, monkeypatch
+):
+    _configure_kubernetes_import(engine, service)
+    with Session(engine) as session:
+        postgres = session.exec(select(Service).where(Service.name == "postgres")).one()
+        session.add(
+            ServiceManagedCapabilities(
+                service_id=postgres.id,
+                database_engine="postgres",
+                data_role="primary",
+                source="catalog",
+            )
+        )
+        session.commit()
+
+    settings.runtime = "kubernetes"
+    api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, api)
+
+    outcome = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    assert ("cloudnative-postgres", "postgres") in api.calls
+    assert ("cloudnative-postgres-ready", "postgres") in api.calls
+    assert "postgres" not in {value for name, value in api.calls if name == "workload"}
 
 
 def _use_kubernetes_api(monkeypatch, *apis: FakeKubernetesApi) -> None:
