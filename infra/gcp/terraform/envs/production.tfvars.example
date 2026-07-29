@@ -1,0 +1,12 @@
+# Copy to production.tfvars locally. Do not commit an operator's source IP,
+# credentials, Terraform backend values, or any secret material.
+project_id   = "invytt-2483d"
+region       = "asia-south1"
+cluster_name = "rudder-gke"
+
+operator_authorized_cidrs = [
+  {
+    cidr_block   = "203.0.113.10/32"
+    display_name = "replace-with-operator-public-ip"
+  },
+]
