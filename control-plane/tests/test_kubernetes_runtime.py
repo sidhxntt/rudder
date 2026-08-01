@@ -1,16 +1,30 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from kubernetes_asyncio.client import ApiException
 
 from rudder_cp.runtime.kubernetes import (
     AsyncKubernetesApi,
     CloudNativePostgresBackupSpec,
+    CloudNativePostgresScheduledBackupSpec,
     CloudNativePostgresSpec,
+    JobSpec,
     KubernetesRuntime,
     RuntimeSettings,
     WorkloadSpec,
 )
 from rudder_cp.runtime.models import ComposeService, KubernetesRelease
+
+
+class RecordingBackupIdentityBroker:
+    """Test double for the separately-authorised GKE backup broker."""
+
+    def __init__(self) -> None:
+        self.bindings: list[tuple[str, str]] = []
+
+    async def ensure_cnpg_binding(self, *, namespace: str, service_account_name: str) -> None:
+        self.bindings.append((namespace, service_account_name))
 
 
 def test_release_names_are_dns_safe_and_namespace_scoped() -> None:
@@ -40,6 +54,11 @@ class FakeKubernetesApi:
     async def ensure_guardrails(self, namespace: str, labels: dict[str, str]) -> None:
         self.calls.append(("guardrails", namespace))
 
+    async def ensure_cnpg_backup_service_account(
+        self, namespace: str, *, name: str, labels: dict[str, str]
+    ) -> None:
+        self.calls.append(("cnpg-backup-service-account", (namespace, name, labels)))
+
     async def apply_service(self, namespace: str, spec: object) -> None:
         self.calls.append(("service", spec))
 
@@ -55,6 +74,11 @@ class FakeKubernetesApi:
         self, namespace: str, spec: object
     ) -> None:
         self.calls.append(("cloudnative-postgres-backup", spec))
+
+    async def apply_cloudnative_postgres_scheduled_backup(
+        self, namespace: str, spec: object
+    ) -> None:
+        self.calls.append(("cloudnative-postgres-scheduled-backup", spec))
 
     async def wait_cloudnative_postgres_backup(
         self,
@@ -159,6 +183,186 @@ async def test_runtime_creates_private_stateful_service_and_public_web_after_rea
 
 
 @pytest.mark.asyncio
+async def test_runtime_gke_placement_overrides_a_service_request_for_system_pool() -> None:
+    """Customer release intent cannot place a Pod on the system pool."""
+
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(
+        api,
+        RuntimeSettings(
+            workload_node_selector={"rudder.pool": "platform"},
+            workload_tolerations=(
+                {
+                    "key": "rudder.pool",
+                    "operator": "Equal",
+                    "value": "platform",
+                    "effect": "NoSchedule",
+                },
+            ),
+        ),
+    )
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="web",
+                image="registry/web@sha256:1",
+                port=3000,
+                operations={"placement": {"node_selector": {"rudder.pool": "system"}}},
+            ),
+        ),
+    )
+
+    await runtime.apply(release, project_id="project", environment_id="environment")
+
+    workload = next(value for name, value in api.calls if name == "workload")
+    assert workload.node_selector == {"rudder.pool": "platform"}
+    assert workload.tolerations == (
+        {
+            "key": "rudder.pool",
+            "operator": "Equal",
+            "value": "platform",
+            "effect": "NoSchedule",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_workload_template_renders_the_platform_toleration() -> None:
+    """The Kubernetes Pod template must tolerate the platform NoSchedule taint."""
+
+    class Apps:
+        read_namespaced_deployment = object()
+        create_namespaced_deployment = object()
+        replace_namespaced_deployment = object()
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.apps = Apps()
+    api.core = SimpleNamespace()
+    rendered: list[object] = []
+
+    async def create_or_replace(*args, **_kwargs) -> None:
+        rendered.append(args[4])
+
+    api._create_or_replace = create_or_replace
+    spec = WorkloadSpec(
+        name="web",
+        service_name="web",
+        image="registry/web@sha256:1",
+        port=3000,
+        command=None,
+        environment={},
+        labels={},
+        stateful=False,
+        volume_mount_path=None,
+        node_selector={"rudder.pool": "platform"},
+        tolerations=(
+            {
+                "key": "rudder.pool",
+                "operator": "Equal",
+                "value": "platform",
+                "effect": "NoSchedule",
+            },
+        ),
+    )
+
+    await api.apply_workload("rudder-shop", spec)
+
+    pod_spec = rendered[0].spec.template.spec
+    assert pod_spec.node_selector == {"rudder.pool": "platform"}
+    assert len(pod_spec.tolerations) == 1
+    assert pod_spec.tolerations[0].to_dict() == {
+        "effect": "NoSchedule",
+        "key": "rudder.pool",
+        "operator": "Equal",
+        "toleration_seconds": None,
+        "value": "platform",
+    }
+
+
+@pytest.mark.asyncio
+async def test_guardrails_default_deny_egress_except_dns_and_same_environment() -> None:
+    """An environment may only talk to its own services plus cluster DNS.
+
+    A namespace-scoped ingress policy alone does not stop a compromised Pod
+    from initiating traffic to another namespace or the public internet.  The
+    generated guardrail must therefore select both Ingress and Egress and keep
+    its only egress exceptions deliberately small.
+    """
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.core = SimpleNamespace(
+        read_namespaced_resource_quota=object(),
+        create_namespaced_resource_quota=object(),
+        replace_namespaced_resource_quota=object(),
+        read_namespaced_limit_range=object(),
+        create_namespaced_limit_range=object(),
+        replace_namespaced_limit_range=object(),
+    )
+    api.networking = SimpleNamespace(
+        read_namespaced_network_policy=object(),
+        create_namespaced_network_policy=object(),
+        replace_namespaced_network_policy=object(),
+    )
+    rendered: dict[str, object] = {}
+
+    async def create_or_replace(_read, _create, _replace, name, body, *, namespace) -> None:
+        assert namespace == "rudder-shop"
+        rendered[name] = body
+
+    api._create_or_replace = create_or_replace
+
+    await api.ensure_guardrails("rudder-shop", {"rudder.environment": "environment-id"})
+
+    policy = rendered["rudder-private-network"]
+    assert policy.spec.policy_types == ["Ingress", "Egress"]
+    assert policy.spec.egress is not None
+
+    same_environment = policy.spec.egress[0].to[0]
+    assert same_environment.namespace_selector.match_labels == {
+        "rudder.environment": "environment-id"
+    }
+
+    dns = policy.spec.egress[1]
+    assert dns.to[0].namespace_selector.match_labels == {
+        "kubernetes.io/metadata.name": "kube-system"
+    }
+    assert {(port.protocol, port.port) for port in dns.ports} == {("TCP", 53), ("UDP", 53)}
+    assert all(rule.to for rule in policy.spec.egress)
+
+
+@pytest.mark.asyncio
+async def test_failed_candidate_cleanup_never_deletes_persistent_volume_claims() -> None:
+    """Normal release cleanup must preserve state, including failed releases."""
+    api = object.__new__(AsyncKubernetesApi)
+    api.apps = SimpleNamespace(
+        delete_collection_namespaced_deployment=AsyncMock(),
+        delete_collection_namespaced_stateful_set=AsyncMock(),
+    )
+    api.autoscaling = SimpleNamespace(
+        delete_collection_namespaced_horizontal_pod_autoscaler=AsyncMock()
+    )
+    api.policy = SimpleNamespace(delete_collection_namespaced_pod_disruption_budget=AsyncMock())
+    api.batch = SimpleNamespace(
+        delete_collection_namespaced_job=AsyncMock(),
+        delete_collection_namespaced_cron_job=AsyncMock(),
+    )
+    api.core = SimpleNamespace(
+        delete_collection_namespaced_service=AsyncMock(),
+        delete_collection_namespaced_secret=AsyncMock(),
+        # The assertion is intentionally made on the mock itself rather than
+        # relying on absent attributes: this guards against a future cleanup
+        # implementation reintroducing PVC deletion.
+        delete_collection_namespaced_persistent_volume_claim=AsyncMock(),
+    )
+
+    await api.delete_release("rudder-shop-production", "candidate-release")
+
+    api.core.delete_collection_namespaced_persistent_volume_claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_rudder_managed_postgres_becomes_a_private_cnpg_cluster_with_standbys() -> None:
     """Read replicas are PostgreSQL standbys, never generic Postgres copies."""
     api = FakeKubernetesApi()
@@ -207,6 +411,160 @@ async def test_rudder_managed_postgres_becomes_a_private_cnpg_cluster_with_stand
         "status": "configured",
         "replicas": 2,
         "endpoint": "postgres-read:5432",
+    }
+
+
+@pytest.mark.asyncio
+async def test_runtime_gke_placement_also_applies_to_managed_postgres_and_jobs() -> None:
+    """All generated customer Pod types must tolerate the shared pool taint."""
+
+    placement = {"rudder.pool": "platform"}
+    tolerations = (
+        {
+            "key": "rudder.pool",
+            "operator": "Equal",
+            "value": "platform",
+            "effect": "NoSchedule",
+        },
+    )
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(
+        api,
+        RuntimeSettings(workload_node_selector=placement, workload_tolerations=tolerations),
+    )
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="postgres",
+                image="postgres:16-alpine",
+                port=5432,
+                stateful=True,
+                volume_mount_path="/var/lib/postgresql/data",
+                managed_database_engine="postgres",
+                environment={"POSTGRES_PASSWORD": "not-in-logs"},
+            ),
+            ComposeService(
+                name="worker",
+                image="registry/worker@sha256:1",
+                operations={
+                    "schedules": [
+                        {
+                            "operation_id": "daily",
+                            "spec": {"cron": "0 0 * * *", "command": ["python", "daily.py"]},
+                        }
+                    ],
+                    "last_job": {"command": ["python", "once.py"]},
+                },
+            ),
+        ),
+    )
+
+    await runtime.apply(release, project_id="project", environment_id="environment")
+
+    postgres = next(value for name, value in api.calls if name == "cloudnative-postgres")
+    cron_job = next(value for name, value in api.calls if name == "cronjob")
+    job = next(value for name, value in api.calls if name == "job")
+    for spec in (postgres, cron_job, job):
+        assert spec.node_selector == placement
+        assert spec.tolerations == tolerations
+
+
+def test_job_template_renders_the_platform_toleration() -> None:
+    """CronJob and Job Pod templates receive the same taint toleration."""
+
+    api = object.__new__(AsyncKubernetesApi)
+    toleration = {
+        "key": "rudder.pool",
+        "operator": "Equal",
+        "value": "platform",
+        "effect": "NoSchedule",
+    }
+    template = api._job_template(
+        JobSpec(
+            name="worker-job",
+            image="registry/worker@sha256:1",
+            command=("python", "worker.py"),
+            environment={},
+            labels={},
+            timeout_seconds=60,
+            retries=0,
+            node_selector={"rudder.pool": "platform"},
+            tolerations=(toleration,),
+        )
+    )
+
+    assert template.spec.node_selector == {"rudder.pool": "platform"}
+    assert template.spec.tolerations[0].to_dict()["effect"] == "NoSchedule"
+
+
+@pytest.mark.asyncio
+async def test_cnpg_template_renders_the_platform_placement() -> None:
+    """Managed PostgreSQL Pods receive the shared-pool affinity contract."""
+
+    class Core:
+        async def read_namespaced_secret(self, **_kwargs):
+            raise ApiException(status=404)
+
+        async def create_namespaced_secret(self, **_kwargs) -> None:
+            return None
+
+        async def replace_namespaced_secret(self, **_kwargs) -> None:
+            raise AssertionError("a new Secret should be created")
+
+    class Custom:
+        def __init__(self) -> None:
+            self.body: dict[str, object] | None = None
+
+        async def get_namespaced_custom_object(self, **_kwargs):
+            raise ApiException(status=404)
+
+        async def create_namespaced_custom_object(self, **kwargs) -> None:
+            self.body = kwargs["body"]
+
+        async def replace_namespaced_custom_object(self, **_kwargs) -> None:
+            raise AssertionError("a new cluster should be created")
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.settings = RuntimeSettings()
+    api.core = Core()
+    api.custom = custom = Custom()
+    await api.apply_cloudnative_postgres(
+        "rudder-shop",
+        CloudNativePostgresSpec(
+            name="postgres",
+            service_name="postgres",
+            app_database="app",
+            app_user="rudder",
+            app_password="not-in-logs",
+            storage_size_mb=1024,
+            instances=1,
+            labels={},
+            node_selector={"rudder.pool": "platform"},
+            tolerations=(
+                {
+                    "key": "rudder.pool",
+                    "operator": "Equal",
+                    "value": "platform",
+                    "effect": "NoSchedule",
+                },
+            ),
+        ),
+    )
+
+    assert custom.body is not None
+    affinity = custom.body["spec"]["affinity"]
+    assert affinity == {
+        "nodeSelector": {"rudder.pool": "platform"},
+        "tolerations": [
+            {
+                "key": "rudder.pool",
+                "operator": "Equal",
+                "value": "platform",
+                "effect": "NoSchedule",
+            }
+        ],
     }
 
 
@@ -262,6 +620,268 @@ async def test_rudder_managed_postgres_executes_one_physical_cnpg_backup() -> No
         "name": backup.name,
         "retention_days": 14,
     }
+
+
+@pytest.mark.asyncio
+async def test_rudder_managed_postgres_creates_a_durable_cnpg_backup_schedule() -> None:
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(
+        api,
+        RuntimeSettings(
+            backup_s3_endpoint="http://minio:9000",
+            backup_s3_bucket="rudder-backups",
+            backup_s3_access_key="minio",
+            backup_s3_secret_key="not-in-logs",
+            backup_schedule="0 0 2 * * *",
+        ),
+    )
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="postgres",
+                image="postgres:16-alpine",
+                port=5432,
+                stateful=True,
+                volume_mount_path="/var/lib/postgresql/data",
+                managed_database_engine="postgres",
+                environment={
+                    "POSTGRES_DB": "app",
+                    "POSTGRES_USER": "rudder",
+                    "POSTGRES_PASSWORD": "not-in-logs",
+                },
+            ),
+        ),
+    )
+
+    result = await runtime.apply(release, project_id="project", environment_id="environment")
+
+    postgres = next(value for name, value in api.calls if name == "cloudnative-postgres")
+    assert isinstance(postgres, CloudNativePostgresSpec)
+    assert postgres.backup_retention_days == 7
+    scheduled = next(
+        value for name, value in api.calls if name == "cloudnative-postgres-scheduled-backup"
+    )
+    assert isinstance(scheduled, CloudNativePostgresScheduledBackupSpec)
+    assert scheduled.name == "postgres-scheduled-backup"
+    assert scheduled.cluster_name == "postgres"
+    assert scheduled.schedule == "0 0 2 * * *"
+    assert result.operation_observed["postgres"]["scheduled_backup"] == {
+        "status": "configured",
+        "name": "postgres-scheduled-backup",
+        "schedule": "0 0 2 * * *",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gke_cnpg_backup_binds_only_its_environment_service_account() -> None:
+    """A GCS-enabled CNPG release cannot skip its per-environment identity binding."""
+
+    api = FakeKubernetesApi()
+    broker = RecordingBackupIdentityBroker()
+    runtime = KubernetesRuntime(
+        api,
+        RuntimeSettings(
+            backup_gcs_bucket="rudder-backups",
+            backup_gcp_service_account="rudder-backup@example.iam.gserviceaccount.com",
+        ),
+        backup_identity_broker=broker,
+    )
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="postgres",
+                image="postgres:16-alpine",
+                port=5432,
+                stateful=True,
+                volume_mount_path="/var/lib/postgresql/data",
+                managed_database_engine="postgres",
+                environment={
+                    "POSTGRES_DB": "app",
+                    "POSTGRES_USER": "rudder",
+                    "POSTGRES_PASSWORD": "not-in-logs",
+                },
+            ),
+        ),
+    )
+
+    await runtime.apply(release, project_id="project", environment_id="environment")
+
+    assert broker.bindings == [("rudder-shop-production", "postgres")]
+    names = [name for name, _value in api.calls]
+    assert names.index("cnpg-backup-service-account") < names.index("cloudnative-postgres")
+    assert names.index("cloudnative-postgres") > names.index("guardrails")
+
+
+@pytest.mark.asyncio
+async def test_cnpg_gke_backup_uses_workload_identity_without_a_credential_secret() -> None:
+    """GKE backups use CNPG's native identity mode, never a static key Secret."""
+
+    class Core:
+        def __init__(self) -> None:
+            self.created: list[object] = []
+
+        async def read_namespaced_secret(self, **_kwargs):
+            raise ApiException(status=404)
+
+        async def create_namespaced_secret(self, *, namespace: str, body: object) -> None:
+            assert namespace == "rudder-shop-production"
+            self.created.append(body)
+
+        async def replace_namespaced_secret(self, **_kwargs) -> None:
+            raise AssertionError("no existing Secret is expected")
+
+    class Custom:
+        def __init__(self) -> None:
+            self.created: object | None = None
+
+        async def get_namespaced_custom_object(self, **_kwargs):
+            raise ApiException(status=404)
+
+        async def create_namespaced_custom_object(self, **kwargs) -> None:
+            self.created = kwargs["body"]
+
+        async def replace_namespaced_custom_object(self, **_kwargs) -> None:
+            raise AssertionError("no existing CNPG cluster is expected")
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.settings = RuntimeSettings(
+        backup_gcs_bucket="rudder-backups",
+        backup_gcp_service_account="rudder-backup@example.iam.gserviceaccount.com",
+    )
+    api.core = core = Core()
+    api.custom = custom = Custom()
+    spec = CloudNativePostgresSpec(
+        name="postgres",
+        service_name="postgres",
+        app_database="app",
+        app_user="rudder",
+        app_password="not-in-logs",
+        storage_size_mb=1024,
+        instances=1,
+        labels={"rudder.service": "postgres"},
+        backup_retention_days=14,
+    )
+
+    await api.apply_cloudnative_postgres("rudder-shop-production", spec)
+
+    assert len(core.created) == 1  # only the application-user Secret
+    assert isinstance(custom.created, dict)
+    rendered = custom.created["spec"]
+    assert rendered["backup"] == {
+        "retentionPolicy": "14d",
+        "barmanObjectStore": {
+            "destinationPath": "gs://rudder-backups/rudder/rudder-shop-production/postgres",
+            "googleCredentials": {"gkeEnvironment": True},
+            "wal": {"compression": "gzip"},
+        },
+    }
+    assert rendered["serviceAccountTemplate"] == {
+        "metadata": {
+            "annotations": {
+                "iam.gke.io/gcp-service-account": "rudder-backup@example.iam.gserviceaccount.com"
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_cnpg_scheduled_backup_uses_the_operator_cron_contract() -> None:
+    class Custom:
+        def __init__(self) -> None:
+            self.created: object | None = None
+
+        async def get_namespaced_custom_object(self, **_kwargs):
+            raise ApiException(status=404)
+
+        async def create_namespaced_custom_object(self, **kwargs) -> None:
+            self.created = kwargs
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.custom = custom = Custom()
+    spec = CloudNativePostgresScheduledBackupSpec(
+        name="postgres-scheduled-backup",
+        cluster_name="postgres",
+        schedule="0 0 2 * * *",
+        labels={"rudder.service": "postgres"},
+    )
+
+    await api.apply_cloudnative_postgres_scheduled_backup("rudder-shop-production", spec)
+
+    assert custom.created == {
+        "group": "postgresql.cnpg.io",
+        "version": "v1",
+        "namespace": "rudder-shop-production",
+        "plural": "scheduledbackups",
+        "body": {
+            "apiVersion": "postgresql.cnpg.io/v1",
+            "kind": "ScheduledBackup",
+            "metadata": {
+                "name": "postgres-scheduled-backup",
+                "labels": {"rudder.service": "postgres"},
+            },
+            "spec": {
+                "schedule": "0 0 2 * * *",
+                "backupOwnerReference": "self",
+                "cluster": {"name": "postgres"},
+                "method": "barmanObjectStore",
+            },
+        },
+    }
+
+
+async def test_cnpg_does_not_attach_unverified_gke_backup_identity() -> None:
+    """An operator must explicitly mark the KSA↔GSA binding ready first."""
+
+    class Core:
+        async def read_namespaced_secret(self, **_kwargs):
+            raise ApiException(status=404)
+
+        async def create_namespaced_secret(self, **_kwargs) -> None:
+            return None
+
+        async def replace_namespaced_secret(self, **_kwargs) -> None:
+            raise AssertionError("no existing Secret is expected")
+
+    class Custom:
+        def __init__(self) -> None:
+            self.created: object | None = None
+
+        async def get_namespaced_custom_object(self, **_kwargs):
+            raise ApiException(status=404)
+
+        async def create_namespaced_custom_object(self, **kwargs) -> None:
+            self.created = kwargs["body"]
+
+        async def replace_namespaced_custom_object(self, **_kwargs) -> None:
+            raise AssertionError("no existing CNPG cluster is expected")
+
+    api = object.__new__(AsyncKubernetesApi)
+    # A raw GCS account value must not make it into a release until the
+    # platform marks its exact Workload Identity binding ready.
+    api.settings = RuntimeSettings()
+    api.core = Core()
+    api.custom = custom = Custom()
+    spec = CloudNativePostgresSpec(
+        name="postgres",
+        service_name="postgres",
+        app_database="app",
+        app_user="rudder",
+        app_password="not-in-logs",
+        storage_size_mb=1024,
+        instances=1,
+        labels={"rudder.service": "postgres"},
+        backup_retention_days=14,
+    )
+
+    await api.apply_cloudnative_postgres("rudder-shop-production", spec)
+
+    assert isinstance(custom.created, dict)
+    assert "backup" not in custom.created["spec"]
+    assert "serviceAccountTemplate" not in custom.created["spec"]
 
 
 @pytest.mark.asyncio
@@ -349,6 +969,38 @@ async def test_runtime_uses_reviewed_public_domain_for_ingress() -> None:
     ingress = next(value for name, value in api.calls if name == "ingress")
     assert ingress.host == "shop.production.localhost"
     assert result.public_hosts == {"web": "shop.production.localhost"}
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_a_stable_cert_manager_secret_for_a_public_route() -> None:
+    """A production route must request HTTPS without changing its URL per release."""
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(
+        api,
+        RuntimeSettings(
+            local_domain="rudder.invytt.com",
+            certificate_issuer="rudder-letsencrypt-prod",
+        ),
+    )
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(
+                name="web",
+                image="registry/web@sha256:1",
+                port=3000,
+                public=True,
+                public_host="shop.production.rudder.invytt.com",
+            ),
+        ),
+    )
+
+    await runtime.apply(release, project_id="project", environment_id="environment")
+
+    ingress = next(value for name, value in api.calls if name == "ingress")
+    assert ingress.tls_secret_name == "route-web-tls"
+    assert ingress.certificate_issuer == "rudder-letsencrypt-prod"
 
 
 @pytest.mark.asyncio

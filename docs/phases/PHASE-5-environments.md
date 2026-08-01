@@ -15,8 +15,12 @@ need multi-host.
 ## Prerequisites
 
 - [ ] Phase 1 verified
-- [ ] Phase 4 verified **if** you want `wg_subnet` allocation on clone. Without
-      Phase 4, clone works but leaves `wg_subnet` null.
+- [ ] Phase 3 verified **if** you want cloned environments to land in their own
+      Kubernetes namespace. Clone is pure graph copy and works on the Docker
+      runtime too; it just has no namespace isolation there.
+
+`wg_subnet` is **not** a prerequisite. It is a deprecated dead column and clone
+must leave it null — see [ADR 0004](../decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md).
 
 ---
 
@@ -43,7 +47,9 @@ Copy into a new Environment:
 - All Volumes, **empty**. Never copy volume data.
 - System Domains, regenerated for the new environment's hostname
 
-Allocate a new `wg_subnet`.
+On the Kubernetes runtime, the clone gets its own environment namespace with the
+same default-deny NetworkPolicy, ResourceQuota, and LimitRange as any other
+environment. Allocate no subnet — `wg_subnet` stays null.
 
 Do **not** copy: Deployments, Instances, build logs, metrics. A cloned
 environment has no deploy history and nothing running until it's deployed.
@@ -86,9 +92,11 @@ delete on failure.
 database into staging, where someone will then write to it thinking it's
 disposable. Volumes clone as empty. No option, no flag.
 
-**Subnet leaks on destroy.** Destroying an environment must release its
-`wg_subnet` back to the pool. Miss this and you exhaust the space silently over
-months of PR environments.
+**Namespace leaks on destroy.** Destroying an environment must delete its
+Kubernetes namespace, its PVCs, and its Ingress/certificate. Miss this and PR
+environments silently accumulate quota, disk, and load-balancer cost over months.
+Verify the namespace is actually gone, not just marked `Terminating` — a stuck
+finalizer keeps the name reserved and the next clone of the same PR fails.
 
 **PR environment cost.** Every open PR is a full copy of production's compute.
 Ten open PRs is ten environments. Decide a cap and enforce it with a clear error,

@@ -1,0 +1,12 @@
+# ingress-nginx is installed by bootstrap-platform.sh with a version-pinned
+# Helm chart. This file records the required release contract for review.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rudder-ingress-contract
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/part-of: rudder
+data:
+  ingressClass: nginx
+  externalTrafficPolicy: Local

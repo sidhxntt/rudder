@@ -16,7 +16,17 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TYPE instance_status ADD VALUE IF NOT EXISTS 'unreachable'")
+    # SQLite stores the original SQLAlchemy enum as a plain text column, so
+    # there is no database enum type to alter.  Keeping the migration a no-op
+    # there lets the local/CI migration path exercise the same revision chain
+    # as the CloudNativePG (PostgreSQL) production path.
+    if op.get_bind().dialect.name != "postgresql":
+        return
+
+    # PostgreSQL enum additions must run outside Alembic's transaction on
+    # older supported PostgreSQL versions.
+    with op.get_context().autocommit_block():
+        op.execute("ALTER TYPE instance_status ADD VALUE IF NOT EXISTS 'unreachable'")
 
 
 def downgrade() -> None:

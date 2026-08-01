@@ -39,29 +39,16 @@ variable "services_cidr" {
   default     = "10.112.0.0/20"
 }
 
-variable "master_ipv4_cidr_block" {
-  description = "Private control-plane range. It must not overlap any VPC range."
-  type        = string
-  default     = "172.20.0.0/28"
-}
-
-variable "operator_authorized_cidrs" {
-  description = "CIDRs allowed to reach the public GKE control-plane endpoint during bootstrap."
-  type = list(object({
-    cidr_block   = string
-    display_name = string
-  }))
-
-  validation {
-    condition     = length(var.operator_authorized_cidrs) > 0
-    error_message = "At least one explicitly reviewed operator CIDR is required; do not expose the GKE API to all addresses."
-  }
-}
-
 variable "node_machine_type" {
   description = "Machine type used by the initial bounded node pools."
   type        = string
   default     = "e2-standard-2"
+}
+
+variable "enable_workloads_pool" {
+  description = "Create the regional workloads pool after project-wide CPUS_ALL_REGIONS quota is at least 18 vCPUs."
+  type        = bool
+  default     = false
 }
 
 variable "dns_zone_name" {

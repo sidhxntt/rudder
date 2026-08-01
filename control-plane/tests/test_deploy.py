@@ -590,6 +590,59 @@ async def test_imported_kubernetes_release_waits_for_every_member_before_public_
     assert "kubernetes: promoted public route for app" in contents
 
 
+async def test_gke_import_creates_an_accounting_projection_without_an_agent_node(
+    engine, service, settings, monkeypatch
+):
+    """GKE owns pod placement; imported releases must not require a Phase 2 VM."""
+    _configure_kubernetes_import(engine, service)
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        app.build_config = {"compose_service": "app"}
+        session.add(app)
+        for node in session.exec(select(Node)).all():
+            session.delete(node)
+        session.commit()
+
+    settings.runtime = "kubernetes"
+    settings.kubernetes_target = "gke"
+    settings.kubernetes_public_domain = "apps.rudder.example"
+    settings.registry = "asia-south1-docker.pkg.dev/invytt-2483d/rudder"
+    api = FakeKubernetesApi()
+
+    async def use_gke_target(_settings):
+        return api
+
+    monkeypatch.setattr(deploy_service, "load_kubernetes_client", use_gke_target)
+
+    with Session(engine) as session:
+        deployment = Deployment(
+            service_id=service.id,
+            image_tag=(
+                "asia-south1-docker.pkg.dev/invytt-2483d/rudder/app"
+                "@sha256:" + "a" * 64
+            ),
+            commit_sha="abc123",
+            status=DeploymentStatus.QUEUED,
+        )
+        session.add(deployment)
+        session.commit()
+        deployment_id = deployment.id
+
+    outcome = await _run(engine, deployment_id, FakeAgent(), settings, _failing_builder)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    with Session(engine) as session:
+        node = session.exec(select(Node).where(Node.hostname == "gke-runtime")).one()
+        assert node.reported_state == {"runtime": "kubernetes", "accounting_only": True}
+        assert {
+            instance.node_id
+            for instance in session.exec(
+                select(Instance).where(Instance.deployment_id == outcome.deployment_id)
+            )
+        } == {node.id}
+
+
 async def test_imported_kubernetes_release_uses_its_persisted_public_domain(
     engine, service, settings, monkeypatch
 ):

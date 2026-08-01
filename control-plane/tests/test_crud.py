@@ -215,7 +215,6 @@ def test_environment_lifecycle(client: TestClient) -> None:
         "project_id",
         "name",
         "is_production",
-        "wg_subnet",
         "created_at",
     }
 
@@ -231,41 +230,23 @@ def test_environment_lifecycle(client: TestClient) -> None:
     assert replaced.status_code == 200
     # PUT resets omitted fields to their defaults.
     assert replaced.json()["is_production"] is False
-    # wg_subnet is server-owned and survives a replace.
-    assert replaced.json()["wg_subnet"] == body["wg_subnet"]
 
     assert client.delete(f"/environments/{env_id}").status_code == 204
     assert client.get(f"/environments/{env_id}").status_code == 404
 
 
-def test_every_environment_gets_a_distinct_wg_subnet(client: TestClient) -> None:
+def test_environment_creation_does_not_expose_or_allocate_a_legacy_mesh_subnet(
+    client: TestClient,
+) -> None:
+    """Kubernetes namespaces, not WireGuard CIDRs, isolate environments."""
+
     project = make_project(client)
-    subnets = [production_environment(client, project["id"])["wg_subnet"]]
-    for name in ("staging", "preview", "qa"):
-        response = client.post(
-            f"/projects/{project['id']}/environments", json={"name": name}
-        )
-        assert response.status_code == 201, response.text
-        subnets.append(response.json()["wg_subnet"])
-
-    assert all(subnet is not None for subnet in subnets)
-    assert all(subnet.endswith("/24") for subnet in subnets)
-    assert len(set(subnets)) == len(subnets)
-    assert subnets[0] == "10.42.0.0/24"
-
-
-def test_wg_subnet_reuses_a_freed_slot(client: TestClient) -> None:
-    project = make_project(client)
-    staging = client.post(
+    response = client.post(
         f"/projects/{project['id']}/environments", json={"name": "staging"}
-    ).json()
-    assert staging["wg_subnet"] == "10.42.1.0/24"
+    )
 
-    assert client.delete(f"/environments/{staging['id']}").status_code == 204
-    again = client.post(
-        f"/projects/{project['id']}/environments", json={"name": "staging"}
-    ).json()
-    assert again["wg_subnet"] == "10.42.1.0/24"
+    assert response.status_code == 201, response.text
+    assert "wg_subnet" not in response.json()
 
 
 def test_duplicate_environment_name_is_409(client: TestClient) -> None:

@@ -20,9 +20,21 @@ infra/traefik/dynamic/*.yml
 # the disposable Kind cluster and must never be committed.
 infra/kind/kubeconfig
 
+# Cloud and app credentials: GCP service account JSON, GitHub App private keys.
+# Never commit these. Phase 4 moves runtime credentials to Workload Identity so
+# no long-lived key file is needed in the first place — see ADR 0004 and
+# docs/phases/PHASE-4-mesh.md step 2.
+keys/
+*.pem
+*-service-account*.json
+
 .DS_Store
 .agents/
 .claude/
+
+# Local test/runtime state; schemas and migrations belong in source control,
+# SQLite database files do not.
+*.db
 .codex/
 .worktrees/
 .superpowers/

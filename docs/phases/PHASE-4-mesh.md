@@ -2,15 +2,19 @@
 
 **Target:** 3–5 weeks
 **Owner:** Platform / infrastructure
-**Status:** planned; do not deploy customer workloads until the acceptance
-checklist passes.
+**Status:** core GKE delivery path verified on 2026-07-31; the phase remains
+**open** until the backup/restore, isolation, and operational acceptance gates
+below pass. The verified path is appropriate for a controlled beta, not yet a
+complete production-service commitment.
 
 > **Why this file is still named `PHASE-4-mesh.md`:** it preserves existing
 > links. It is no longer a WireGuard implementation plan. Rudder's production
 > path is GKE, where Kubernetes Services, CoreDNS, namespaces, and
-> NetworkPolicies provide the private service network. WireGuard remains only a
-> future non-Kubernetes/Docker-host alternative and is explicitly out of scope
-> for this phase.
+> NetworkPolicies provide the private service network. WireGuard is **cancelled**
+> as a Rudder deliverable, not deferred — see
+> [ADR 0004](../decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md).
+> Reviving it for non-Kubernetes Docker hosts would need a new phase and its own
+> ADR.
 
 ## One-sentence demo
 
@@ -18,6 +22,186 @@ A GitHub push builds an immutable image, deploys an isolated application,
 worker, Postgres, and Redis stack to GKE; only the application has a public
 HTTPS route, private services resolve by Kubernetes DNS, and a failed rollout
 keeps the prior public revision serving traffic.
+
+### Implementation snapshot — 2026-07-30
+
+The repository now has the first GKE-ready runtime boundary:
+
+- `RUDDER_KUBERNETES_TARGET=gke` uses in-cluster Workload Identity rather than
+  an operator kubeconfig, accepts only immutable Artifact Registry digests, and
+  records a Kubernetes accounting projection instead of depending on a legacy
+  Phase 2 agent node.
+- The Kubernetes translation renders public GKE routes with stable TLS Secrets
+  and a required cert-manager `ClusterIssuer`; Kind remains an explicitly local
+  HTTP development target.
+- `infra/gcp/scripts/bootstrap-platform.sh` installs the platform operators,
+  a Workload-Identity-backed Cloud DNS ACME issuer, a zone-scoped ExternalDNS
+  controller, and the control-plane HTTPS ingress. ExternalDNS receives a
+  direct identity for only `external-dns/external-dns`, observes only
+  Rudder-labelled Ingresses, and uses TXT ownership within the delegated zone.
+  The bootstrap requires explicit image/chart/hostname inputs and makes no
+  unreviewed version selection.
+- Terraform describes the imported regional GKE baseline and the deferred
+  workload pool.
+- The control-plane container installs the checked-in `uv.lock` runtime graph
+  without development dependencies. A fresh migration-chain test proves the
+  image runs `alembic upgrade head` before serving `/healthz`; production runs
+  that same image against CloudNativePG/PostgreSQL through the migration Job.
+- The historical static S3 backup settings are now rejected for the `gke`
+  target. They remain available only for an isolated Kind + MinIO development
+  target. Terraform no longer binds the backup identity to
+  `rudder-system`: CNPG database Pods live in per-environment namespaces, so
+  that binding would be non-functional as well as misleading.
+
+### Verified GKE delivery slice — 2026-07-31
+
+The first end-to-end GKE release path has now been exercised against the live
+`rudder-gke` cluster in `asia-south1`:
+
+1. A push to an installed GitHub App repository triggered exactly one Rudder
+   deployment for commit `106b06e83c903352050942790f1b8569d9de62f7`.
+2. The control plane archived that exact revision, submitted it to regional
+   Cloud Build using the dedicated Rudder build service account and source/log
+   buckets, and published an immutable Artifact Registry digest.
+3. Rudder applied the release into the environment namespace
+   `rudder-b7c60f6bfc8a`. The application Deployment, Redis StatefulSet and
+   Postgres workload reached Ready; the application, Postgres and Redis were
+   observed running across the shared GKE platform pool.
+4. ExternalDNS published the application hostname under
+   `rudder.invytt.com`; cert-manager issued its certificate; the public HTTPS
+   route returned HTTP 200 and the expected sample application response.
+5. A restore was exercised from a prior live immutable deployment and then
+   restored to the newest immutable deployment. Deployment history count did
+   not increase during either operation, proving restore re-points a stored
+   image rather than rebuilding from the current Git branch.
+
+The exact deployment IDs, image digests, commands, and remaining gates are
+recorded in [the Phase 4 checkpoint](checkpoints/PHASE-4-COMPLETION.md).
+
+**Open production gate — backup identity:** the GCS bucket, dedicated backup
+Google service account, and a separately deployed private identity broker now
+exist. The broker runs as its own Workload Identity, has only a custom role for
+reading and setting IAM policy, and accepts requests only from the labelled
+control-plane Pods through a `ClusterIP` Service plus `NetworkPolicy`. It binds
+only the generated CNPG ServiceAccount in the requested `rudder-*` environment
+namespace to the dedicated backup GSA; the control plane itself has no IAM
+policy-write permission. Rudder also creates CNPG `ScheduledBackup` resources
+with continuous WAL archiving when a verified object-storage target is enabled.
+
+Google IAM does not support scoping `setIamPolicy` directly to one service
+account, so the broker's three-permission custom role is necessarily granted at
+the GCP project level. The application-level broker validation, private network
+boundary, dedicated ServiceAccount, and exact member check are the compensating
+controls; this residual scope must remain documented and audited. Do **not** set
+`RUDDER_KUBERNETES_BACKUP_GCS_IDENTITY_READY=true` or expose GKE backup controls
+until one real generated CNPG ServiceAccount binding and a disposable backup /
+restore drill have passed. A broad node identity, all-cluster principal, static
+S3/HMAC key, or JSON service-account key is explicitly rejected.
+
+The cloud gate is deliberate: GKE admits the regional workloads pool against
+the project-wide Compute **`CPUS_ALL_REGIONS`** quota, not the regional
+`CPUS` display. At the last verification, that authoritative quota was
+**12 used / 12 limit**; the regional e2-standard-2 pool needs six more vCPUs.
+For the initial production topology, customer Pods therefore share the tainted
+`platform` pool with Rudder's control plane. The runtime enforces
+`rudder.pool=platform` plus the matching `NoSchedule` toleration for every
+Deployment, StatefulSet, CloudNativePG cluster, CronJob, and Job. Set
+`enable_workloads_pool=true` only after aggregate quota reaches at least 18,
+Terraform creates the dedicated pool, and a reviewed deployment switches
+`RUDDER_KUBERNETES_WORKLOAD_POOL` to `workloads`.
+The Terraform deployer also needs authority to write the three Workload Identity
+service-account policy bindings. Neither blocker should be bypassed by
+shrinking security controls or manually changing cluster state.
+
+Run `infra/gcp/scripts/preflight-gke.sh` with `RUDDER_GCP_PROJECT`,
+`RUDDER_GCP_REGION`, and `RUDDER_GKE_CLUSTER` before enabling the workloads
+pool. The read-only preflight confirms the live cluster is running, verifies
+the expected Workload Identity pool, proves Terraform's Application Default
+Credential is valid, and checks both total and available project-wide
+`CPUS_ALL_REGIONS` quota.
+It fails closed with the exact credential or quota shortfall and never modifies
+cloud resources. An invalid ADC requires `gcloud auth application-default
+login`; an ordinary `gcloud auth login` alone is not sufficient for Terraform.
+
+**Latest live check — 2026-07-31:** `rudder-gke` remains `RUNNING` with healthy
+regional `system` and `platform` pools, and Workload Identity remains
+`invytt-2483d.svc.id.goog`. Application Default Credentials are valid. The
+authoritative **project-wide** quota remains **`CPUS_ALL_REGIONS = 12 used / 12
+limit`**, even though the unrelated `asia-south1` **regional** `CPUS` display
+shows `32`. GKE rejects a three-zone e2-standard-2 workloads pool against the
+former quota, so `enable_workloads_pool` remains false until `CPUS_ALL_REGIONS`
+is granted at least 18. Request 24 using the Google Cloud Console's Quotas &
+System Limits page, filtering for the exact project-wide `CPUS_ALL_REGIONS`
+metric rather than regional `CPUS`: Google's Quota Preferences API does not
+expose this legacy GCE quota. The Cloud Audit entry is the source of truth for
+this distinction; do not infer GKE capacity from regional `CPUS`.
+
+Terraform has now created the `rudder-secret-sync` identity, its narrowly
+scoped Workload Identity and Secret Manager reader bindings, and the empty
+`rudder-control-plane-runtime` Secret Manager container. The first immutable
+control-plane artifact is published at
+`asia-south1-docker.pkg.dev/invytt-2483d/rudder/control-plane@sha256:bfd3e0f830ad80524891d5afdebcafcdc046e25b074062be04441f53028665c2`.
+There is deliberately no runtime secret version yet, and public DNS delegation
+is still absent (`dig NS rudder.invytt.com` returns no Cloud DNS nameservers),
+so the shared platform bootstrap must not run yet.
+
+**Verified baseline repair — 2026-07-30:** Terraform removed an erroneous
+`NoSchedule` taint from the imported system pool in-place (no nodes or pools
+were destroyed). All six nodes are Ready, the three system nodes now have no
+taint, and both CoreDNS replicas recovered to `Running`. The platform pool
+retains its `rudder.pool=platform:NoSchedule` taint; the Rudder control-plane
+and ingress manifests now carry the matching toleration. `terraform plan` is
+clean after the repair. This validates cluster health only — it does **not**
+mean the platform bootstrap or customer workload acceptance path is complete.
+
+### Platform bootstrap contract — handoff checklist
+
+`infra/gcp/scripts/bootstrap-platform.sh` is the supported installer for shared
+GKE platform components. It deliberately fails closed and does **not** create
+customer environments. Before running it, an operator must complete all of the
+following:
+
+1. Refresh Terraform's local Application Default Credentials with
+   `gcloud auth application-default login`. Normal `gcloud auth login` is not
+   enough for Terraform's Google provider.
+2. Apply the reviewed Terraform plan so the Secret Manager container,
+   `rudder-secret-sync` identity, exact Secret Manager reader binding, runtime
+   Workload Identity binding, Artifact Registry, Cloud DNS zone, and GKE
+   identities exist. Terraform never writes a secret version.
+3. Add an operator-managed JSON version to Secret Manager secret
+   `rudder-control-plane-runtime`. It must contain at least
+   `RUDDER_SECRET_KEYS`, `RUDDER_JWT_SECRET`, `RUDDER_ADMIN_EMAIL`, and
+   `RUDDER_ADMIN_PASSWORD`; include GitHub OAuth/App fields only when those
+   integrations are enabled. Never put that JSON, an OAuth client secret, a
+   GitHub private key, password, JWT, or Fernet key in Git, Terraform variables,
+   logs, or shell history.
+4. Push the control-plane image to Artifact Registry and record its immutable
+   `@sha256:` digest. Tags such as `latest` are intentionally rejected.
+5. Delegate the Cloud DNS zone at the registrar and verify
+   `dig NS rudder.invytt.com` returns the Cloud DNS nameservers. Choose a
+   `RUDDER_KUBERNETES_PUBLIC_DOMAIN` equal to that suffix or a subdomain of it,
+   and a control-plane hostname beneath that domain.
+6. Pin the ingress-nginx, cert-manager, External Secrets, ExternalDNS, and
+   CloudNativePG Helm versions in the operator command. Never use an unpinned
+   chart version in production.
+
+The bootstrap order is security-significant:
+
+```text
+External Secrets identity and SecretStore
+  -> synced runtime Secret
+  -> CloudNativePG three-instance control-plane database
+  -> CNPG generated application URI Secret
+  -> one migration Job (`alembic upgrade head`)
+  -> control-plane Deployment, ClusterIssuer, and HTTPS Ingress
+```
+
+The API uses only the CNPG-generated database URI; it does not retain a
+hard-coded `localhost` database fallback in GKE. A failed secret sync, database
+readiness check, migration, or image/hostname preflight stops the bootstrap
+before the public API Deployment is created. Remaining acceptance gates are the
+aggregate CPU quota/workloads pool, DNS delegation, a real immutable image, and
+a completed backup-identity broker plus restore drill.
 
 ---
 
@@ -46,8 +230,9 @@ Phase 4 turns that local runtime into a repeatable, secure GCP environment:
    access;
 3. public traffic through one managed ingress/gateway path only;
 4. private, environment-scoped Kubernetes service networking;
-5. external durable state where required (Cloud SQL, object storage, Secret
-   Manager), rather than pretending local Kind volumes are production backups;
+5. durable in-cluster state under the CloudNativePG operator, with WAL archiving
+   and backups to object storage and a drilled restore — rather than pretending
+   local Kind volumes are production backups;
 6. end-to-end proof that deployment, rollback, failure safety, and UI status
    agree with the actual GKE resources.
 
@@ -74,6 +259,12 @@ Rudder control plane ----> Artifact Registry (immutable image digest)
           v
 GKE Standard regional cluster (private nodes, VPC-native)
   |
+  +-- system node pool (untainted)
+  |     GKE-managed add-ons such as CoreDNS and metrics components
+  |
+  +-- platform node pool (rudder.pool=platform:NoSchedule)
+  |     Rudder control plane and public ingress, each with an explicit toleration
+  |
   +-- rudder-system namespace
   |     control-plane integration, ingress/gateway, observability agents
   |
@@ -94,7 +285,7 @@ app/worker --> redis.rudder-<environment-id>.svc.cluster.local
 
 | Traffic | Required behaviour | Enforcement |
 |---|---|---|
-| Internet → application | HTTPS to explicitly public application services only | managed ingress/gateway, TLS certificate, allow-list of public services |
+| Internet → application | HTTPS to explicitly public application services only | ingress-nginx, cert-manager certificate, allow-list of public services |
 | Application → Postgres/Redis | Private DNS and private ClusterIP only | Kubernetes Service plus namespace NetworkPolicy |
 | Worker → application/database/queue | Private, explicit only | namespace NetworkPolicy |
 | Environment A → environment B | Denied by default | namespace isolation and default-deny NetworkPolicies |
@@ -105,29 +296,63 @@ app/worker --> redis.rudder-<environment-id>.svc.cluster.local
 be intentional and use the fully qualified Kubernetes Service name. Rudder
 does not allocate mesh IPs or write host-level DNS zones.
 
+### Node-pool scheduling contract
+
+The regional cluster has three roles. The **system** pool is deliberately
+untainted so GKE-managed add-ons that cannot know about Rudder's taints (for
+example CoreDNS) always have a schedulable home. The **platform** pool remains
+tainted `rudder.pool=platform:NoSchedule`; Rudder's control plane and
+ingress-nginx explicitly select and tolerate it. The optional **workloads**
+pool is untainted and reserved for customer namespaces through labels,
+admission rules, and namespace policy rather than a global taint. This avoids
+starving cluster DNS while retaining a clear control-plane boundary.
+
 ---
 
 ## 3. Required production decisions
 
-These decisions must be recorded before provisioning. Do not silently choose a
-different option during implementation.
+**Decided and recorded 2026-07-29** ([ADR 0005](../decisions/0005-phase-4-kubernetes-only-attach-mode.md)).
+Do not silently choose differently during implementation.
 
-| Decision | Recommended initial choice | Reason |
+The governing decision is **Kubernetes-only, even in production**: every runtime
+component Rudder operates lives in the cluster. Managed GCP services are used only
+where nothing can run in-cluster by nature — the L4 load balancer that fronts
+ingress, object storage, the image registry, and the identity that reaches those.
+
+| Decision | Choice | Reason |
 |---|---|---|
-| Region | `asia-south1`, regional cluster | aligns with the current GCP footprint and tolerates one zonal failure |
-| GKE mode | Standard, VPC-native, private nodes | Rudder needs predictable node pools, workloads, and operations controls |
-| Cluster ownership | one shared Rudder production cluster | matches the namespace-per-environment runtime model |
-| Control plane location | dedicated `rudder-system` namespace or separately managed service | separates platform authority from customer namespaces |
-| Image registry | private Artifact Registry repository | immutable digest deployment and Google IAM integration |
-| Public edge | GKE Gateway or managed Ingress, selected once and used consistently | one auditable path for TLS, domains, and routing |
-| DNS and certificates | Cloud DNS + Google-managed certificates, or an explicitly documented alternative | public hostnames must have an ownership and renewal model |
-| Secrets | Secret Manager + Workload Identity; synchronize only the values a pod needs | prevents broad project credentials in Pods |
-| Primary relational database | Cloud SQL for real production customer data | provides backups, encryption, HA, and recovery workflows not present in local PVCs |
-| Object storage | GCS bucket with retention and lifecycle rules | deployment artifacts, logs/export, and backup staging |
+| Region | `asia-south1`, regional cluster | already the configured project default; tolerates one zonal failure |
+| GKE mode | Standard, VPC-native, private nodes | predictable node pools and operations controls |
+| Cluster ownership | **attach** — Terraform provisions one shared cluster, Rudder consumes a kubeconfig | Rudder owns namespaces and workloads, not cluster lifecycle. Smallest blast radius and the cheapest path to EKS/AKS |
+| Control plane location | dedicated `rudder-system` namespace | separates platform authority from customer namespaces |
+| Image registry | private Artifact Registry repository | immutable digest deployment, Google IAM integration |
+| Public edge | **ingress-nginx**, one controller, one auditable path | portable across GKE/EKS/AKS unchanged, unlike GKE Gateway or a cloud-specific Ingress class |
+| Certificates | **cert-manager** + Let's Encrypt | runs in-cluster, portable; Google-managed certificates would bind the edge to GCP |
+| DNS | Cloud DNS zone for `rudder.invytt.com`, delegated from GoDaddy | see step 1; the zone provider is an acknowledged per-cloud seam |
+| Secrets | Secret Manager + Workload Identity; sync only the values a Pod needs | prevents broad project credentials in Pods |
+| Primary relational database | **in-cluster Postgres via the CloudNativePG operator** — not Cloud SQL | K8s-only mandate. CNPG supplies replication, failover election, PITR through WAL archiving, and scheduled backups. A hand-rolled StatefulSet does not and must not hold customer data |
+| Object storage | GCS bucket with retention and lifecycle rules, reached through CloudNativePG's native GKE Workload Identity flow | WAL archive, backups, deployment artifacts. The provider contract stays portable; authentication is provider-specific |
 
 If cost or availability requires a smaller first acceptance cluster, it may use
 one customer node pool temporarily. That exception must not weaken the network,
 identity, backup, or public-route model.
+
+### What K8s-only costs us, stated plainly
+
+Dropping Cloud SQL saves roughly $50–150/month and removes a GCP dependency, and
+transfers to Rudder: Postgres version upgrades, WAL archive correctness, failover
+verification, replication-lag monitoring, connection pooling, and restore drills.
+The asymmetric risk is not downtime — it is Rudder's own reconciler deleting a
+StatefulSet's PVC and destroying customer data unrecoverably, which a managed
+service's independent lifecycle would have prevented. Two controls are therefore
+**mandatory**, not optional hardening:
+
+1. Postgres runs under CloudNativePG with WAL archiving to object storage and a
+   restore drill that has actually been executed against a disposable dataset.
+2. Rudder's control plane must be structurally unable to delete a stateful PVC:
+   RBAC denies PVC deletion, and stateful volumes carry a retain policy plus
+   deletion protection. Environment teardown deletes stateful volumes only through
+   an explicit, separately authorised operator path.
 
 ---
 
@@ -135,22 +360,49 @@ identity, backup, or public-route model.
 
 ### Step 1 — Establish the GCP foundation
 
-1. Enable the required GCP APIs: GKE, Artifact Registry, IAM, Compute, Cloud
-   DNS, Certificate Manager/selected edge service, Secret Manager, Logging,
-   Monitoring, and Cloud SQL if used in the first acceptance run.
-2. Create a dedicated VPC/subnet design for the cluster and configure secondary
-   ranges for Pods and Services. Do not reuse an unmanaged Docker subnet.
-3. Create the regional private GKE Standard cluster and separate node pools:
+Attach mode means Terraform provisions this foundation once and Rudder never
+touches it at runtime. Rudder receives only a kubeconfig.
+
+Environment audited across 2026-07-29–30 on `invytt-2483d`: billing is enabled,
+the regional `rudder-gke` baseline exists, and the system/platform pools consume
+the current **12-vCPU project-wide `CPUS_ALL_REGIONS` quota**. A Cloud DNS zone
+delegation, Artifact Registry repository verification, and the Workload Identity
+policy bindings remain acceptance prerequisites. Customer releases initially
+share the tainted `platform` pool; a separate workload pool is a later capacity
+upgrade, not a blocker for this constrained beta topology.
+The Phase 2
+`rudder-vpc` custom-mode VPC is historical and must not be silently reused for
+the GKE pod/service ranges.
+
+1. ~~Enable the required GCP APIs~~ — **done 2026-07-29.** All ten are enabled:
+   container, artifactregistry, iam, compute, dns, certificatemanager,
+   secretmanager, logging, monitoring, sqladmin. (`sqladmin` is enabled but
+   unused; K8s-only means no Cloud SQL instance.)
+2. Create a GCS bucket for Terraform remote state with versioning enabled, and
+   configure the backend before the first `apply`. Local state for a shared
+   cluster is how two operators silently destroy each other's work.
+3. Decide `rudder-vpc` explicitly: **reuse it or replace it, in writing.** It was
+   built for the Phase 2 Docker lab and has no secondary ranges for Pods and
+   Services. A VPC-native cluster needs those. Default to a purpose-built
+   `rudder-gke-vpc` with documented primary and secondary CIDRs; do not silently
+   graft cluster ranges onto lab networking.
+4. Create the regional private GKE Standard cluster with separate node pools:
    system, build/platform, and customer workloads. Apply autoscaling bounds and
-   resource limits from the start.
-4. Create private Artifact Registry repositories and allow only the build
-   identity to push. Runtime workloads pull immutable digests only.
-5. Define Terraform or equivalent reviewed infrastructure-as-code as the source
-   of truth. Manual console changes are emergency-only and must be backfilled
-   into code.
+   resource limits from the start. Enable network policy enforcement **at creation**
+   — on some clouds it cannot be turned on afterwards, and Phase 4's isolation
+   guarantees are void without it.
+5. Create private Artifact Registry repositories and allow only the build identity
+   to push. Runtime workloads pull immutable digests only.
+6. Delegate `rudder.invytt.com` to Cloud DNS: create the managed zone, then add its
+   four NS records at GoDaddy, which currently serves `invytt.com` via
+   `domaincontrol.com`. Delegating only the subdomain leaves the apex and existing
+   records untouched. Verify with `dig NS rudder.invytt.com` before relying on it.
+7. Define Terraform as the reviewed source of truth for all of the above. Manual
+   console changes are emergency-only and must be backfilled into code.
 
 **Exit criteria:** a clean GCP project can create the same cluster and
-prerequisite services from reviewed infrastructure code.
+prerequisite services from reviewed infrastructure code, and
+`dig NS rudder.invytt.com` returns Cloud DNS nameservers.
 
 ### Step 2 — Establish identity and control-plane access
 
@@ -198,8 +450,9 @@ using the same Rudder API/UI workflow.
    egress, and the selected ingress/gateway controller.
 3. Create ClusterIP Services for Postgres, Redis, workers, queues, and internal
    monitoring. Rudder must reject a request to make these service kinds public.
-4. Permit an Ingress/Gateway only for a service marked `public=true`; attach a
-   managed certificate and a verified DNS name.
+4. Permit an Ingress only for a service marked `public=true`; attach a
+   cert-manager-issued certificate and a verified DNS name under
+   `rudder.invytt.com`.
 5. Keep database and cache ports off cloud load balancers, public node ports,
    and public firewall rules. Administrative access uses a documented,
    authenticated private path.
@@ -211,16 +464,33 @@ unreachable from the public Internet or another environment namespace.
 
 ### Step 5 — Durable state, observability, and recovery
 
-1. Treat in-cluster Postgres/Redis as acceptance-test state unless a dedicated
-   database operation model is approved. Production customer state should use
-   managed services or an explicitly documented operator and backup design.
-2. Configure automated database backups, PITR/retention where offered, storage
-   encryption, restore drills, and secret rotation.
-3. Send control-plane audit logs, GKE events, application logs, metrics, and
+1. Install the **CloudNativePG** operator in `rudder-system` and render database
+   services as CNPG `Cluster` resources, replacing Phase 3's hand-rolled Postgres
+   StatefulSet. Pin the operator version; treat its upgrade as a platform change,
+   not a workload change. Redis stays a plain StatefulSet — it is a cache, and
+   losing it is an availability event, not a data-loss event.
+2. ~~Implement a small, separately authorised **backup identity broker**~~ —
+   **implemented 2026-08-01.** At environment creation it creates one named
+   Kubernetes ServiceAccount in the environment namespace, binds only that
+   principal to the dedicated backup Google service account, and renders the
+   CNPG `serviceAccountTemplate` plus `googleCredentials.gkeEnvironment: true`.
+   It does not grant the node identity, every Pod in the cluster, or the
+   control-plane identity general storage-write authority. CNPG scheduled base
+   backups and continuous WAL archiving are rendered when a verified target is
+   enabled. **Still required before the gate closes:** set the retention window
+   for the real GCS target and execute a full or point-in-time restore against a
+   disposable dataset. A backup configuration that has never been restored from
+   does not count as a backup.
+3. Enforce the stateful-data guardrails from section 3: RBAC denies PVC deletion
+   to the control plane, stateful volumes retain on release, and environment
+   teardown removes stateful volumes only via an explicit operator path.
+4. Send control-plane audit logs, GKE events, application logs, metrics, and
    deployment state to the selected observability stack. Prometheus/Grafana can
    be interpreted by Rudder later; Phase 4 needs dependable raw signals first.
-4. Define alerts for failed rollouts, no-ready-replica, ingress errors,
-   exhausted quota, image-pull failure, certificate expiry, and failed backup.
+5. Define alerts for failed rollouts, no-ready-replica, ingress errors,
+   exhausted quota, image-pull failure, certificate expiry, failed backup, and —
+   new with CNPG — replication lag, failed WAL archive, and a Postgres failover
+   election. An unarchived WAL segment is a silent data-loss window.
 
 **Exit criteria:** an operator can identify which image, namespace, Pod, and
 cloud identity served a deployment and can recover a tested data sample.
@@ -235,14 +505,24 @@ SDK calls throughout the control plane:
 
 ```text
 CloudProvider
-  ensure_cluster_target()
+  ensure_cluster_target()                   # attach: resolve kubeconfig, do not create
   publish_image(digest)
   resolve_runtime_credentials()
-  ensure_public_route(host, service, tls_policy)
-  provision_managed_database(spec)          # later operations phase
-  provision_object_storage(spec)            # later operations phase
+  ensure_dns_record(host, target)           # zone provider is the seam, not the edge
+  ensure_object_storage(spec)               # backup/WAL target, provider-specific WI
   observe_runtime(target, namespace)
 ```
+
+Two capabilities the earlier draft listed are **not** in this contract, because
+K8s-only ([ADR 0005](../decisions/0005-phase-4-kubernetes-only-attach-mode.md))
+removed the need for them:
+
+- `provision_managed_database` — Postgres is a CloudNativePG `Cluster` rendered by
+  the shared workload adapter, identical on every cloud.
+- `ensure_public_route` as a cloud call — the edge is ingress-nginx plus
+  cert-manager, which are Kubernetes resources. Only the DNS record and the L4
+  load balancer the controller's Service requests are cloud-touching, and the
+  latter the cloud controller-manager handles for us.
 
 The Kubernetes workload adapter remains shared. The GCP adapter maps these
 capabilities to GKE, Artifact Registry, IAM/Workload Identity, Cloud DNS, and
@@ -253,6 +533,78 @@ Do not create AWS or Azure resources in Phase 4. Instead, write provider
 contracts and acceptance tests so a later implementation can satisfy the same
 behaviour without changing deployment records, UI semantics, or the service
 graph.
+
+### Cost of adding AWS and Azure
+
+Audited 2026-07-29 against the current tree. The codebase is already largely
+cloud-portable: the runtime layer makes **zero** GCP-specific service calls,
+Kubernetes resources use standard APIs (`V1Ingress`, `V1PersistentVolumeClaim`,
+`NetworkPolicy`) with no cloud-native annotations. The object-storage *contract*
+is portable, while each cloud supplies its own short-lived workload identity;
+cluster access goes through kubeconfig, and both ingress class and storage class
+are configuration rather than constants.
+
+**What does not change per cloud** — and this is most of the system: the
+Kubernetes workload adapter, the Compose-derived service graph, immutable
+deployment records, rollback and restore semantics, the UI, NetworkPolicy /
+ResourceQuota / LimitRange rendering, and the object-storage contract.
+
+**What does change per cloud:**
+
+| Concern | GCP | AWS | Azure | Kind of work |
+|---|---|---|---|---|
+| Cluster credential exec | `gke-gcloud-auth-plugin` | `aws eks get-token` | `kubelogin` | code |
+| Image registry + digest publish | Artifact Registry | ECR | ACR | code |
+| Pod identity | Workload Identity | IRSA / EKS Pod Identity | Azure Workload Identity | code + IAM policy |
+| Secrets backend | Secret Manager | Secrets Manager | Key Vault | code |
+| DNS zone / ACME DNS-01 solver | Cloud DNS | Route 53 | Azure DNS | config |
+| Storage class + expansion | `pd-*` | `gp3` via EBS CSI | `managed-csi` | config |
+| NetworkPolicy prerequisite | on by default | needs VPC CNI policy or Calico | must be enabled at cluster creation | config, but a silent security gap if missed |
+| Backup / WAL target | GCS | S3 | Blob (S3 API via gateway, or a second client) | mostly config |
+
+K8s-only ([ADR 0005](../decisions/0005-phase-4-kubernetes-only-attach-mode.md))
+removed two rows that would otherwise sit here. **Public edge and certificates** are
+now identical on all three clouds — ingress-nginx plus cert-manager, no ALB
+Controller, no ACM, no AGIC, no Google-managed certificates. **The database** is a
+CloudNativePG `Cluster` rendered by the shared adapter, so RDS and Azure Database
+never enter the picture. That is the concrete payoff of the K8s-only mandate: the
+two most cloud-divergent, most code-heavy seams collapse into shared Kubernetes
+manifests.
+
+Two very different scopes follow from the cluster-ownership decision:
+
+**Attach mode** — the operator provisions the cluster, Rudder consumes a
+kubeconfig and owns only namespaces and workloads.
+
+| Work | Estimate |
+|---|---|
+| Phase 4 as specified (GKE) | 3–5 wk |
+| Harden `CloudProvider` into a real contract plus a cloud-agnostic conformance suite | +1–2 wk |
+| AWS/EKS adapter | +2–3 wk |
+| Azure/AKS adapter | +2–3 wk |
+| **All three clouds, attach mode** | **8–13 wk total** |
+
+**Provision mode** — Rudder owns cluster lifecycle: create, upgrade, delete,
+node pools, VPC, identity federation.
+
+| Work | Estimate |
+|---|---|
+| Attach-mode baseline above | 8–13 wk |
+| Cloud-agnostic cluster lifecycle model: `Cluster` entity, create/upgrade/delete state machine, credential storage, drift detection | +2–3 wk |
+| Per-cloud provisioning IaC, teardown, and upgrade tests (×3) | +6–9 wk |
+| **All three clouds, provision mode** | **16–25 wk total** |
+
+Provision mode also carries permanent costs that a one-time estimate hides: CI
+must create and destroy real clusters across three clouds for every acceptance
+run (real money per run), three Kubernetes version-skew streams to track, and
+three sets of cloud-specific failure modes — quota denials, region capacity,
+per-cloud IAM propagation delays — that become Rudder's on-call surface rather
+than the operator's.
+
+**Recommendation:** ship Phase 4 in attach mode, and treat the conformance suite
+as part of Phase 4 rather than a later cleanup. Attach mode is where the
+portability the audit found actually pays out; provision mode is a separate
+product decision, not an extension of this phase.
 
 ---
 
@@ -366,7 +718,28 @@ checkpoint.
   promotion semantics after GKE environment isolation exists.
 - [Phase 6 — operations](PHASE-6-operations.md) expands managed database,
   volume, logs, metrics, and restore products after this foundation is proven.
-- Update `docs/phases/README.md`, `docs/PRD.md`, and later phase references in
-  the Phase 4 implementation plan: they currently describe this file as the
-  legacy WireGuard alternative and must be aligned before Phase 4 is marked
-  complete.
+- [ADR 0004](../decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md)
+  records the mesh cancellation and the deprecated `wg_*` fields.
+- Documentation alignment is **done** (2026-07-29): `docs/PRD.md`,
+  `docs/phases/README.md`, `PHASE-3-kubernetes-runtime.md`,
+  `PHASE-5-environments.md`, `PHASE-6-operations.md`,
+  `PHASE-6.5-frontends.md`, and `docs/NEED-FROM-YOU.md` no longer describe this
+  file as the legacy WireGuard alternative.
+- Remaining code debt from the cancellation, to clear during Phase 4. The subnet
+  allocator is still **live**, not dormant — every environment create calls it and
+  the API publishes the result — so removing it is a real change, not a delete of
+  unreachable code:
+  - `control-plane/rudder_cp/services/environments.py` — remove
+    `allocate_wg_subnet`, `SUBNET_POOL_EXHAUSTED`, the subnet pool constants, and
+    the `wg_subnet=` argument in `create_environment`.
+  - `control-plane/rudder_cp/schemas/environment.py` — drop `wg_subnet` from
+    `EnvironmentRead` (breaking response change, accepted in ADR 0004).
+  - `control-plane/rudder_cp/routers/environments.py` — drop the "`wg_subnet` is
+    server-owned" text from the PUT description.
+  - `control-plane/tests/test_crud.py` — delete
+    `test_every_environment_gets_a_distinct_wg_subnet` and
+    `test_wg_subnet_reuses_a_freed_slot`, and drop `wg_subnet` from the
+    replace-fields assertion.
+  - `control-plane/rudder_cp/models/project.py` — fix the docstring claiming
+    `wg_subnet` provides environment isolation. The column itself stays nullable
+    and unset per ADR 0004.

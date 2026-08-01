@@ -42,12 +42,17 @@ from rudder_cp.models import (
     ServiceOperationsState,
     Volume,
 )
-from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, KubernetesRuntime, RuntimeSettings
+from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, KubernetesRuntime
 from rudder_cp.runtime.models import ComposeService as KubernetesComposeService
 from rudder_cp.runtime.models import KubernetesRelease, dns_label
+from rudder_cp.runtime.targets import (
+    backup_identity_broker_from,
+    load_kubernetes_client,
+    runtime_settings_from,
+)
 from rudder_cp.services import scheduler, traefik, variables
 from rudder_cp.services.agent_client import AgentClient, AgentError
-from rudder_cp.services.builder import BuildFailed, BuildRequest, build_image
+from rudder_cp.services.builder import BuildFailed, BuildRequest, build_image, validate_gke_image
 from rudder_cp.services.github_app import GitHubAppClient, GitHubAppError
 from rudder_cp.services.health import is_still_alive, wait_until_healthy
 from rudder_cp.services.locks import service_deploy_lock
@@ -201,6 +206,13 @@ async def _deploy_locked(
 
     deployment.image_tag = getattr(result, "image_tag", None)
     deployment.commit_sha = getattr(result, "commit_sha", deployment.commit_sha)
+    if settings.kubernetes_target == "gke":
+        if not isinstance(deployment.image_tag, str):
+            return _fail(session, deployment, "GKE release has no immutable image artifact.")
+        try:
+            validate_gke_image(deployment.image_tag)
+        except ValueError as exc:
+            return _fail(session, deployment, str(exc))
 
     imported = session.exec(
         select(GitHubImport).where(GitHubImport.app_service_id == service.id)
@@ -577,18 +589,16 @@ async def _deploy_imported_kubernetes(
 ) -> DeployOutcome:
     """Release an imported Compose graph through the Kubernetes runtime.
 
-    Kubernetes owns pod placement and readiness.  The existing Rudder node is
-    retained as an accounting anchor for the current ``Instance`` schema and
-    host health UI; it is not used to schedule individual pods.
+    Kubernetes owns pod placement and readiness. The ``Instance`` schema still
+    requires a node reference, so GKE uses an accounting-only virtual node;
+    neither it nor any legacy Rudder agent schedules individual pods.
     """
     deployment.status = DeploymentStatus.DEPLOYING
     session.add(deployment)
     _supersede_older(session, deployment)
     session.commit()
 
-    anchor_node = session.exec(
-        select(Node).where(Node.status == NodeStatus.HEALTHY).order_by(Node.hostname)
-    ).first()
+    anchor_node = _kubernetes_accounting_anchor(session, settings)
     if anchor_node is None:
         return _fail(
             session,
@@ -678,21 +688,13 @@ async def _deploy_imported_kubernetes(
         namespace = dns_label(
             f"{settings.kubernetes_namespace_prefix}-{service.environment_id.hex[:12]}"
         )
-        runtime_settings = RuntimeSettings(
-            local_domain=settings.kubernetes_local_domain,
-            ingress_class=settings.kubernetes_ingress_class,
-            readiness_timeout_seconds=settings.kubernetes_readiness_timeout_seconds,
-            backup_s3_endpoint=settings.kubernetes_backup_s3_endpoint,
-            backup_s3_bucket=settings.kubernetes_backup_s3_bucket,
-            backup_s3_access_key=settings.kubernetes_backup_s3_access_key,
-            backup_s3_secret_key=settings.kubernetes_backup_s3_secret_key,
-            backup_s3_region=settings.kubernetes_backup_s3_region,
-        )
-        api = await AsyncKubernetesApi.from_kubeconfig(
+        runtime_settings = runtime_settings_from(settings)
+        api = await load_kubernetes_client(settings)
+        runtime = KubernetesRuntime(
+            api,
             runtime_settings,
-            kubeconfig_path=settings.kubernetes_kubeconfig,
+            backup_identity_broker=backup_identity_broker_from(settings),
         )
-        runtime = KubernetesRuntime(api, runtime_settings)
         mark_runtime_operations_progressing(
             session, service_ids=[mapping.service_id for mapping in mappings]
         )
@@ -759,6 +761,33 @@ async def _deploy_imported_kubernetes(
 
 
 # --------------------------------------------------------------------- helpers
+
+
+def _kubernetes_accounting_anchor(session: Session, settings: Settings) -> Node | None:
+    """Return the existing host anchor, or GKE's accounting-only projection.
+
+    ``Instance.node_id`` remains required while the Docker runtime is
+    supported. GKE places Pods itself, so it must not depend on a legacy
+    Rudder agent row merely to satisfy that historical foreign key.
+    """
+    if settings.kubernetes_target != "gke":
+        return session.exec(
+            select(Node).where(Node.status == NodeStatus.HEALTHY).order_by(Node.hostname)
+        ).first()
+
+    node = session.exec(select(Node).where(Node.hostname == "gke-runtime")).first()
+    if node is not None:
+        return node
+    node = Node(
+        hostname="gke-runtime",
+        ip_address="0.0.0.0",
+        status=NodeStatus.HEALTHY,
+        reported_state={"runtime": "kubernetes", "accounting_only": True},
+    )
+    session.add(node)
+    session.commit()
+    session.refresh(node)
+    return node
 
 
 async def _open_deployment_log(

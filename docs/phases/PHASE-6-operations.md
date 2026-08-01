@@ -11,8 +11,9 @@ This is the phase that makes it usable day to day rather than just demoable.
 
 ## Prerequisites
 
-- [ ] Phase 2 verified (volumes need the scheduler)
-- [ ] Phase 4 verified (database templates need the mesh)
+- [ ] Phase 2 verified (volumes need the scheduler on the Docker runtime)
+- [ ] Phase 4 verified (managed database, backup, and restore products need the
+      GKE landing zone and its durable-state decisions)
 - [ ] D15 landed in Phase 1 — rollback depends on the `Domain` table
 
 ---

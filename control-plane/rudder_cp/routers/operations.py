@@ -101,7 +101,7 @@ def _require_backup_controls(
     ):
         raise InvalidRequestError(
             "Backups require catalog-managed PostgreSQL on Kubernetes with CloudNativePG "
-            "and a configured S3-compatible backup destination."
+            "and a configured backup destination."
         )
 
 

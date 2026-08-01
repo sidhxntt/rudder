@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rudder-system
+  labels:
+    app.kubernetes.io/part-of: rudder
+    pod-security.kubernetes.io/enforce: baseline

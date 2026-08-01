@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from kubernetes_asyncio import client, config
@@ -25,6 +25,9 @@ class RuntimeSettings:
 
     local_domain: str = "localhost"
     ingress_class: str = "nginx"
+    # Empty for local Kind. A configured issuer makes Rudder attach an
+    # ingress TLS block and cert-manager annotation for every public route.
+    certificate_issuer: str = ""
     readiness_timeout_seconds: int = 180
     readiness_poll_seconds: float = 2.0
     backup_s3_endpoint: str = ""
@@ -32,15 +35,37 @@ class RuntimeSettings:
     backup_s3_access_key: str = ""
     backup_s3_secret_key: str = ""
     backup_s3_region: str = "us-east-1"
+    # CloudNativePG ScheduledBackup uses a six-field cron expression including
+    # seconds. The default is a daily base backup at 02:00 UTC; WAL archiving
+    # provides point-in-time recovery between those base backups.
+    backup_schedule: str = "0 0 2 * * *"
+    # GKE's CloudNativePG integration uses a projected short-lived token via
+    # Workload Identity. The account must be pre-bound to this exact CNPG
+    # service account by the separately authorised platform broker.
+    backup_gcs_bucket: str = ""
+    backup_gcp_service_account: str = ""
+    # GKE customer workloads must share the explicitly tainted platform pool
+    # until project-wide CPU quota permits a dedicated workload pool. Kind
+    # keeps these empty for unrestricted local scheduling.
+    workload_node_selector: Mapping[str, str] = field(default_factory=dict)
+    workload_tolerations: tuple[Mapping[str, str], ...] = ()
 
     @property
     def backup_configured(self) -> bool:
+        return self.s3_backup_configured or self.gcs_backup_configured
+
+    @property
+    def s3_backup_configured(self) -> bool:
         return bool(
             self.backup_s3_endpoint
             and self.backup_s3_bucket
             and self.backup_s3_access_key
             and self.backup_s3_secret_key
         )
+
+    @property
+    def gcs_backup_configured(self) -> bool:
+        return bool(self.backup_gcs_bucket and self.backup_gcp_service_account)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +82,7 @@ class WorkloadSpec:
     replicas: int | None = 1
     resources: Mapping[str, Mapping[str, str]] | None = None
     node_selector: Mapping[str, str] | None = None
+    tolerations: tuple[Mapping[str, str], ...] = ()
     anti_affinity: bool = False
     topology_spread: bool = False
     rolling_update: Mapping[str, str | int] | None = None
@@ -109,6 +135,8 @@ class CronJobSpec:
     timeout_seconds: int
     retries: int
     concurrency_policy: str
+    node_selector: Mapping[str, str] = field(default_factory=dict)
+    tolerations: tuple[Mapping[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +148,8 @@ class JobSpec:
     labels: Mapping[str, str]
     timeout_seconds: int
     retries: int
+    node_selector: Mapping[str, str] = field(default_factory=dict)
+    tolerations: tuple[Mapping[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +176,8 @@ class CloudNativePostgresSpec:
     instances: int
     labels: Mapping[str, str]
     backup_retention_days: int | None = None
+    node_selector: Mapping[str, str] = field(default_factory=dict)
+    tolerations: tuple[Mapping[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,12 +191,24 @@ class CloudNativePostgresBackupSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class CloudNativePostgresScheduledBackupSpec:
+    """One durable, operator-managed schedule for a CNPG Cluster."""
+
+    name: str
+    cluster_name: str
+    schedule: str
+    labels: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
 class PublicRouteSpec:
     name: str
     host: str
     backend_service_name: str
     backend_port: int
     labels: Mapping[str, str]
+    tls_secret_name: str | None = None
+    certificate_issuer: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +223,10 @@ class KubernetesApi(Protocol):
 
     async def ensure_guardrails(self, namespace: str, labels: dict[str, str]) -> None: ...
 
+    async def ensure_cnpg_backup_service_account(
+        self, namespace: str, *, name: str, labels: dict[str, str]
+    ) -> None: ...
+
     async def apply_service(self, namespace: str, spec: ServiceSpec) -> None: ...
 
     async def apply_cloudnative_postgres(
@@ -187,6 +235,10 @@ class KubernetesApi(Protocol):
 
     async def apply_cloudnative_postgres_backup(
         self, namespace: str, spec: CloudNativePostgresBackupSpec
+    ) -> None: ...
+
+    async def apply_cloudnative_postgres_scheduled_backup(
+        self, namespace: str, spec: CloudNativePostgresScheduledBackupSpec
     ) -> None: ...
 
     async def wait_cloudnative_postgres_backup(
@@ -245,12 +297,27 @@ class KubernetesApi(Protocol):
     async def delete_release(self, namespace: str, release_id: str) -> None: ...
 
 
+class BackupIdentityBroker(Protocol):
+    """Bind the one generated CNPG service account to the backup identity."""
+
+    async def ensure_cnpg_binding(
+        self, *, namespace: str, service_account_name: str
+    ) -> None: ...
+
+
 class KubernetesRuntime:
     """Apply all Compose members, then promote public routes only when ready."""
 
-    def __init__(self, api: KubernetesApi, settings: RuntimeSettings) -> None:
+    def __init__(
+        self,
+        api: KubernetesApi,
+        settings: RuntimeSettings,
+        *,
+        backup_identity_broker: BackupIdentityBroker | None = None,
+    ) -> None:
         self.api = api
         self.settings = settings
+        self.backup_identity_broker = backup_identity_broker
 
     async def apply(
         self,
@@ -298,6 +365,15 @@ class KubernetesRuntime:
                     member_labels["rudder.release"] = "stateful"
                 operation_config, member_observed = _operation_config(member.operations)
                 member_labels = {**member_labels, "rudder.workload": resource_name}
+                # A caller can request additional placement constraints, but
+                # target-owned constraints are last and therefore cannot be
+                # bypassed by a release intent. This is what keeps customer
+                # Pods off GKE's untainted system pool at the current quota.
+                node_selector = {
+                    **dict(operation_config["node_selector"]),
+                    **dict(self.settings.workload_node_selector),
+                }
+                tolerations = self.settings.workload_tolerations
 
                 # Only catalog-authored managed PostgreSQL is rendered as a
                 # CloudNativePG Cluster.  A similarly named service from a
@@ -320,13 +396,55 @@ class KubernetesRuntime:
                         backup_retention_days=(
                             _int(operation_config["backup"].get("retention_days"), 7)
                             if operation_config["backup"] is not None
-                            else None
+                            else (7 if self.settings.backup_configured else None)
                         ),
+                        node_selector=node_selector,
+                        tolerations=tolerations,
                     )
+                    if self.settings.gcs_backup_configured:
+                        if self.backup_identity_broker is None:
+                            raise RuntimeError(
+                                "GCS PostgreSQL backups require the environment backup "
+                                "identity broker."
+                            )
+                        await progress(
+                            f"kubernetes: binding backup identity for {member.name}\n"
+                        )
+                        await self.api.ensure_cnpg_backup_service_account(
+                            release.namespace,
+                            name=resource_name,
+                            labels=member_labels,
+                        )
+                        await self.backup_identity_broker.ensure_cnpg_binding(
+                            namespace=release.namespace,
+                            # CloudNativePG creates its default generated ServiceAccount
+                            # with the Cluster's name. Keeping this stable means the
+                            # broker binds one precise workload identity per environment.
+                            service_account_name=resource_name,
+                        )
                     await progress(
                         f"kubernetes: applying managed PostgreSQL cluster for {member.name}\n"
                     )
                     await self.api.apply_cloudnative_postgres(release.namespace, postgres)
+                    if self.settings.backup_configured:
+                        scheduled_backup = CloudNativePostgresScheduledBackupSpec(
+                            name=dns_label(f"{resource_name}-scheduled-backup"),
+                            cluster_name=resource_name,
+                            schedule=self.settings.backup_schedule,
+                            labels=member_labels,
+                        )
+                        await progress(
+                            "kubernetes: configuring scheduled PostgreSQL backup for "
+                            f"{member.name}\n"
+                        )
+                        await self.api.apply_cloudnative_postgres_scheduled_backup(
+                            release.namespace, scheduled_backup
+                        )
+                        member_observed["scheduled_backup"] = {
+                            "status": "configured",
+                            "name": scheduled_backup.name,
+                            "schedule": scheduled_backup.schedule,
+                        }
                     await progress(
                         f"kubernetes: creating private primary endpoint for {member.name}\n"
                     )
@@ -364,8 +482,8 @@ class KubernetesRuntime:
                     if backup is not None:
                         if not self.settings.backup_configured:
                             raise RuntimeError(
-                                "PostgreSQL backup was requested without an S3-compatible "
-                                "backup destination configured."
+                                "PostgreSQL backup was requested without a verified backup "
+                                "destination configured."
                             )
                         backup_id = backup.get("operation_id")
                         if not isinstance(backup_id, str) or not backup_id:
@@ -412,7 +530,8 @@ class KubernetesRuntime:
                     volume_mount_path=member.volume_mount_path,
                     replicas=operation_config["replicas"],
                     resources=operation_config["resources"],
-                    node_selector=operation_config["node_selector"],
+                    node_selector=node_selector,
+                    tolerations=tolerations,
                     anti_affinity=operation_config["anti_affinity"],
                     topology_spread=operation_config["topology_spread"],
                     rolling_update=operation_config["rolling_update"],
@@ -437,6 +556,7 @@ class KubernetesRuntime:
                     replicas=workload.replicas,
                     resources=workload.resources,
                     node_selector=workload.node_selector,
+                    tolerations=workload.tolerations,
                     anti_affinity=workload.anti_affinity,
                     topology_spread=workload.topology_spread,
                     rolling_update=workload.rolling_update,
@@ -569,6 +689,8 @@ class KubernetesRuntime:
                         timeout_seconds=_int(spec.get("timeout_seconds"), 900),
                         retries=_int(spec.get("retries"), 0),
                         concurrency_policy=str(spec.get("concurrency_policy", "forbid")),
+                        node_selector=node_selector,
+                        tolerations=tolerations,
                     )
                     await self.api.apply_cron_job(release.namespace, cron_job)
                     member_observed.setdefault("schedules", {})[schedule_id] = {"status": "applied"}
@@ -589,6 +711,8 @@ class KubernetesRuntime:
                             labels=member_labels,
                             timeout_seconds=_int(job.get("timeout_seconds"), 900),
                             retries=_int(job.get("retries"), 0),
+                            node_selector=node_selector,
+                            tolerations=tolerations,
                         )
                         await progress(f"kubernetes: applying one-off Job for {member.name}\n")
                         await self.api.apply_job(release.namespace, one_off)
@@ -643,6 +767,12 @@ class KubernetesRuntime:
                     backend_service_name=workload.name,
                     backend_port=member.port,
                     labels={**workload.labels, "rudder.route": dns_label(member.name)},
+                    tls_secret_name=(
+                        dns_label(f"route-{member.name}-tls")
+                        if self.settings.certificate_issuer
+                        else None
+                    ),
+                    certificate_issuer=self.settings.certificate_issuer or None,
                 )
                 await self.api.promote_public_service(release.namespace, route)
                 await progress(
@@ -865,6 +995,18 @@ class AsyncKubernetesApi:
             await config.load_kube_config()
         return cls(settings=settings)
 
+    @classmethod
+    async def from_in_cluster(cls, settings: RuntimeSettings) -> AsyncKubernetesApi:
+        """Load the mounted ServiceAccount credentials of a GKE Pod.
+
+        ``load_incluster_config`` is intentionally synchronous in
+        kubernetes-asyncio: it only reads the token and CA files mounted into
+        the Pod. Requests remain asynchronous through the shared ApiClient.
+        """
+
+        config.load_incluster_config()
+        return cls(settings=settings)
+
     async def ensure_namespace(self, namespace: str, labels: dict[str, str]) -> None:
         body = client.V1Namespace(metadata=client.V1ObjectMeta(name=namespace, labels=labels))
         await self._create_or_replace(
@@ -899,7 +1041,13 @@ class AsyncKubernetesApi:
             metadata=client.V1ObjectMeta(name="rudder-private-network", labels=owner),
             spec=client.V1NetworkPolicySpec(
                 pod_selector=client.V1LabelSelector(),
-                policy_types=["Ingress"],
+                # Guard both directions.  The namespace label is written by
+                # ``ensure_namespace`` and gives every environment its own
+                # private network boundary; Pods need only their own services
+                # and Kubernetes DNS.  New external egress must be modeled as
+                # an explicit, reviewed capability rather than leaking through
+                # a default-allow policy.
+                policy_types=["Ingress", "Egress"],
                 ingress=[
                     client.V1NetworkPolicyIngressRule(
                         _from=[
@@ -922,6 +1070,37 @@ class AsyncKubernetesApi:
                             ),
                         ]
                     )
+                ],
+                egress=[
+                    # App, worker, database and cache traffic remains private
+                    # to this exact Rudder environment.
+                    client.V1NetworkPolicyEgressRule(
+                        to=[
+                            client.V1NetworkPolicyPeer(
+                                namespace_selector=client.V1LabelSelector(
+                                    match_labels={
+                                        "rudder.environment": labels["rudder.environment"]
+                                    }
+                                )
+                            )
+                        ]
+                    ),
+                    # DNS lookups are the sole cross-namespace egress path.
+                    # Restrict both TCP and UDP to port 53 rather than allowing
+                    # general traffic to kube-system.
+                    client.V1NetworkPolicyEgressRule(
+                        to=[
+                            client.V1NetworkPolicyPeer(
+                                namespace_selector=client.V1LabelSelector(
+                                    match_labels={"kubernetes.io/metadata.name": "kube-system"}
+                                )
+                            )
+                        ],
+                        ports=[
+                            client.V1NetworkPolicyPort(protocol="TCP", port=53),
+                            client.V1NetworkPolicyPort(protocol="UDP", port=53),
+                        ],
+                    ),
                 ],
             ),
         )
@@ -947,6 +1126,31 @@ class AsyncKubernetesApi:
             self.networking.replace_namespaced_network_policy,
             "rudder-private-network",
             policy,
+            namespace=namespace,
+        )
+
+    async def ensure_cnpg_backup_service_account(
+        self, namespace: str, *, name: str, labels: dict[str, str]
+    ) -> None:
+        """Create the stable CNPG ServiceAccount before granting cloud access."""
+
+        if not self.settings.backup_gcp_service_account:
+            raise RuntimeError("CNPG backup ServiceAccount requires a GCP identity.")
+        body = client.V1ServiceAccount(
+            metadata=client.V1ObjectMeta(
+                name=name,
+                labels=dict(labels),
+                annotations={
+                    "iam.gke.io/gcp-service-account": self.settings.backup_gcp_service_account
+                },
+            )
+        )
+        await self._create_or_replace(
+            self.core.read_namespaced_service_account,
+            self.core.create_namespaced_service_account,
+            self.core.replace_namespaced_service_account,
+            name,
+            body,
             namespace=namespace,
         )
 
@@ -1019,7 +1223,22 @@ class AsyncKubernetesApi:
                 },
             },
         }
-        if self.settings.backup_configured:
+        if spec.node_selector or spec.tolerations:
+            cluster_spec = body["spec"]
+            assert isinstance(cluster_spec, dict)
+            cluster_spec["affinity"] = {
+                **(
+                    {"nodeSelector": dict(spec.node_selector)}
+                    if spec.node_selector
+                    else {}
+                ),
+                **(
+                    {"tolerations": [dict(item) for item in spec.tolerations]}
+                    if spec.tolerations
+                    else {}
+                ),
+            }
+        if self.settings.s3_backup_configured:
             backup_secret_name = dns_label(f"{spec.name}-backup-s3")
             backup_secret = client.V1Secret(
                 metadata=client.V1ObjectMeta(
@@ -1065,6 +1284,26 @@ class AsyncKubernetesApi:
                     },
                     "wal": {"compression": "gzip"},
                 },
+            }
+        elif self.settings.gcs_backup_configured:
+            cluster_backup = body["spec"]
+            assert isinstance(cluster_backup, dict)
+            cluster_backup["backup"] = {
+                "retentionPolicy": f"{spec.backup_retention_days or 7}d",
+                "barmanObjectStore": {
+                    "destinationPath": (
+                        f"gs://{self.settings.backup_gcs_bucket}/rudder/{namespace}/{spec.name}"
+                    ),
+                    "googleCredentials": {"gkeEnvironment": True},
+                    "wal": {"compression": "gzip"},
+                },
+            }
+            cluster_backup["serviceAccountTemplate"] = {
+                "metadata": {
+                    "annotations": {
+                        "iam.gke.io/gcp-service-account": self.settings.backup_gcp_service_account
+                    }
+                }
             }
         try:
             existing = await self.custom.get_namespaced_custom_object(
@@ -1148,6 +1387,55 @@ class AsyncKubernetesApi:
             body=body,
         )
 
+    async def apply_cloudnative_postgres_scheduled_backup(
+        self, namespace: str, spec: CloudNativePostgresScheduledBackupSpec
+    ) -> None:
+        body: dict[str, object] = {
+            "apiVersion": "postgresql.cnpg.io/v1",
+            "kind": "ScheduledBackup",
+            "metadata": {"name": spec.name, "labels": dict(spec.labels)},
+            "spec": {
+                "schedule": spec.schedule,
+                "backupOwnerReference": "self",
+                "cluster": {"name": spec.cluster_name},
+                "method": "barmanObjectStore",
+            },
+        }
+        try:
+            existing = await self.custom.get_namespaced_custom_object(
+                group="postgresql.cnpg.io",
+                version="v1",
+                namespace=namespace,
+                plural="scheduledbackups",
+                name=spec.name,
+            )
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+            await self.custom.create_namespaced_custom_object(
+                group="postgresql.cnpg.io",
+                version="v1",
+                namespace=namespace,
+                plural="scheduledbackups",
+                body=body,
+            )
+            return
+        metadata = existing.get("metadata", {}) if isinstance(existing, dict) else {}
+        if isinstance(metadata, dict) and isinstance(metadata.get("resourceVersion"), str):
+            body["metadata"] = {
+                "name": spec.name,
+                "labels": dict(spec.labels),
+                "resourceVersion": metadata["resourceVersion"],
+            }
+        await self.custom.replace_namespaced_custom_object(
+            group="postgresql.cnpg.io",
+            version="v1",
+            namespace=namespace,
+            plural="scheduledbackups",
+            name=spec.name,
+            body=body,
+        )
+
     async def wait_cloudnative_postgres_backup(
         self,
         namespace: str,
@@ -1210,6 +1498,8 @@ class AsyncKubernetesApi:
             spec=client.V1PodSpec(
                 containers=[container],
                 node_selector=dict(spec.node_selector or {}) or None,
+                tolerations=[client.V1Toleration(**dict(item)) for item in spec.tolerations]
+                or None,
                 affinity=self._affinity(spec, selector),
                 topology_spread_constraints=self._topology_spread(spec, selector),
             ),
@@ -1586,10 +1876,24 @@ class AsyncKubernetesApi:
         )
 
     async def promote_public_service(self, namespace: str, spec: PublicRouteSpec) -> None:
+        annotations = (
+            {"cert-manager.io/cluster-issuer": spec.certificate_issuer}
+            if spec.certificate_issuer
+            else None
+        )
         body = client.V1Ingress(
-            metadata=client.V1ObjectMeta(name=spec.name, labels=dict(spec.labels)),
+            metadata=client.V1ObjectMeta(
+                name=spec.name,
+                labels=dict(spec.labels),
+                annotations=annotations,
+            ),
             spec=client.V1IngressSpec(
                 ingress_class_name=self.settings.ingress_class,
+                tls=(
+                    [client.V1IngressTLS(hosts=[spec.host], secret_name=spec.tls_secret_name)]
+                    if spec.tls_secret_name
+                    else None
+                ),
                 rules=[
                     client.V1IngressRule(
                         host=spec.host,
@@ -1621,7 +1925,13 @@ class AsyncKubernetesApi:
         )
 
     async def delete_release(self, namespace: str, release_id: str) -> None:
-        """Delete only candidate-labelled objects after an unsuccessful release."""
+        """Delete only disposable candidate-labelled objects after failure.
+
+        PersistentVolumeClaims are deliberately retained. A failed candidate
+        must never be able to erase user data, and the production control
+        plane does not receive the RBAC permission to do so. Operators can
+        perform an explicit, audited break-glass deletion outside Rudder.
+        """
         selector = f"rudder.release={dns_label(release_id)}"
         delete_options = client.V1DeleteOptions(propagation_policy="Background")
         await self.apps.delete_collection_namespaced_deployment(
@@ -1646,9 +1956,6 @@ class AsyncKubernetesApi:
             namespace, label_selector=selector, body=delete_options
         )
         await self.core.delete_collection_namespaced_secret(
-            namespace, label_selector=selector, body=delete_options
-        )
-        await self.core.delete_collection_namespaced_persistent_volume_claim(
             namespace, label_selector=selector, body=delete_options
         )
 
@@ -1735,6 +2042,9 @@ class AsyncKubernetesApi:
             metadata=client.V1ObjectMeta(labels=dict(spec.labels)),
             spec=client.V1PodSpec(
                 restart_policy="Never",
+                node_selector=dict(spec.node_selector) or None,
+                tolerations=[client.V1Toleration(**dict(item)) for item in spec.tolerations]
+                or None,
                 containers=[
                     client.V1Container(
                         name="job",

@@ -4,7 +4,8 @@
 
 **Demo:** push to GitHub, a container comes up, a public URL serves it.
 
-Everything runs on one machine. No scheduler, no mesh, no multi-node anything.
+Everything runs on one machine. No scheduler, no private service network, no
+multi-node anything.
 The point of this phase is a working end-to-end pipeline, not a distributed
 system.
 
