@@ -1230,6 +1230,68 @@ class AsyncKubernetesApi:
         ``-rw``/``-ro`` services. Rudder only supplies the small declarative
         cluster contract; no database credential is ever placed in a log.
         """
+        if self.settings.gcs_backup_configured:
+            # CNPG owns the instance Pod template and does not propagate Rudder
+            # workload labels to it. Select the stable CNPG-generated cluster
+            # label so this capability applies to the database Pods themselves.
+            backup_egress = client.V1NetworkPolicy(
+                metadata=client.V1ObjectMeta(
+                    name=dns_label(f"{spec.name}-backup-egress"),
+                    labels={"app.kubernetes.io/managed-by": "rudder", **dict(spec.labels)},
+                ),
+                spec=client.V1NetworkPolicySpec(
+                    pod_selector=client.V1LabelSelector(
+                        match_labels={"cnpg.io/cluster": spec.name}
+                    ),
+                    policy_types=["Egress"],
+                    egress=[
+                        # Private GKE routes Pod DNS through kube-dns and/or
+                        # NodeLocal DNS. Both are required for the Google
+                        # metadata hostname used by barman-cloud.
+                        client.V1NetworkPolicyEgressRule(
+                            to=[
+                                client.V1NetworkPolicyPeer(
+                                    ip_block=client.V1IPBlock(cidr="10.112.0.10/32")
+                                ),
+                                client.V1NetworkPolicyPeer(
+                                    ip_block=client.V1IPBlock(cidr="169.254.20.10/32")
+                                ),
+                            ],
+                            ports=[
+                                client.V1NetworkPolicyPort(protocol="TCP", port=53),
+                                client.V1NetworkPolicyPort(protocol="UDP", port=53),
+                            ],
+                        ),
+                        # GKE Standard with Calico routes Workload Identity
+                        # metadata traffic through this local proxy.
+                        client.V1NetworkPolicyEgressRule(
+                            to=[
+                                client.V1NetworkPolicyPeer(
+                                    ip_block=client.V1IPBlock(cidr="169.254.169.252/32")
+                                )
+                            ],
+                            ports=[
+                                client.V1NetworkPolicyPort(protocol="TCP", port=987),
+                                client.V1NetworkPolicyPort(protocol="TCP", port=988),
+                            ],
+                        ),
+                        # Google APIs do not publish stable CIDRs. Keep HTTPS
+                        # narrowly scoped to the managed PostgreSQL Pods.
+                        client.V1NetworkPolicyEgressRule(
+                            ports=[client.V1NetworkPolicyPort(protocol="TCP", port=443)]
+                        ),
+                    ],
+                ),
+            )
+            backup_egress_name = dns_label(f"{spec.name}-backup-egress")
+            await self._create_or_replace(
+                self.networking.read_namespaced_network_policy,
+                self.networking.create_namespaced_network_policy,
+                self.networking.replace_namespaced_network_policy,
+                backup_egress_name,
+                backup_egress,
+                namespace=namespace,
+            )
         secret_name = dns_label(f"{spec.name}-app-user")
         secret = client.V1Secret(
             metadata=client.V1ObjectMeta(name=secret_name, labels=dict(spec.labels)),

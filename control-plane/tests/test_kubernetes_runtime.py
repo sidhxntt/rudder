@@ -793,6 +793,23 @@ async def test_cnpg_gke_backup_uses_workload_identity_without_a_credential_secre
         backup_gcs_bucket="rudder-backups",
         backup_gcp_service_account="rudder-backup@example.iam.gserviceaccount.com",
     )
+    api.networking = SimpleNamespace(
+        read_namespaced_network_policy=object(),
+        create_namespaced_network_policy=object(),
+        replace_namespaced_network_policy=object(),
+    )
+    rendered_network_policies: dict[str, object] = {}
+
+    original_create_or_replace = api._create_or_replace
+
+    async def create_or_replace(read, create, replace, name, body, *, namespace) -> None:
+        assert namespace == "rudder-shop-production"
+        if name == "postgres-backup-egress":
+            rendered_network_policies[name] = body
+            return
+        await original_create_or_replace(read, create, replace, name, body, namespace=namespace)
+
+    api._create_or_replace = create_or_replace
     api.core = core = Core()
     api.custom = custom = Custom()
     spec = CloudNativePostgresSpec(
@@ -827,6 +844,17 @@ async def test_cnpg_gke_backup_uses_workload_identity_without_a_credential_secre
             }
         }
     }
+    backup_egress = rendered_network_policies["postgres-backup-egress"]
+    assert backup_egress.spec.pod_selector.match_labels == {"cnpg.io/cluster": "postgres"}
+    assert backup_egress.spec.policy_types == ["Egress"]
+    assert [(port.protocol, port.port) for port in backup_egress.spec.egress[0].ports] == [
+        ("TCP", 53),
+        ("UDP", 53),
+    ]
+    assert backup_egress.spec.egress[2].to is None
+    assert [(port.protocol, port.port) for port in backup_egress.spec.egress[2].ports] == [
+        ("TCP", 443)
+    ]
 
 
 @pytest.mark.asyncio
