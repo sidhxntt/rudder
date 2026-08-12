@@ -27,6 +27,14 @@ complete production-service commitment.
   Pods and one control-plane database Pod are `Pending`, and one customer
   PostgreSQL Pod is repeatedly restarting. Diagnose and recover these before
   attempting the backup/restore drill.
+- GKE Calico applies egress policy after the `kubernetes.default` Service is
+  translated. The runtime therefore permits CNPG only to the exact private
+  control-plane endpoint `/32` on TCP/443; allowing the Service ClusterIP alone
+  is insufficient, while general HTTPS egress remains prohibited.
+- Successful Kubernetes promotions remove their superseded stateless release
+  resources after route promotion. Deployment records and stateful workloads
+  remain for rollback and data safety, preventing abandoned app revisions from
+  exhausting the shared platform-pool CPU reservation.
 
 ## One-sentence demo
 

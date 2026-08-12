@@ -336,7 +336,7 @@ async def test_guardrails_default_deny_egress_except_dns_and_same_environment() 
 @pytest.mark.asyncio
 async def test_guardrails_allow_only_configured_kubernetes_api_service() -> None:
     api = object.__new__(AsyncKubernetesApi)
-    api.settings = RuntimeSettings(kubernetes_api_server_cidr="10.112.0.1/32")
+    api.settings = RuntimeSettings(kubernetes_api_server_endpoint_cidr="10.80.0.15/32")
     api.core = SimpleNamespace(
         read_namespaced_resource_quota=object(),
         create_namespaced_resource_quota=object(),
@@ -360,7 +360,7 @@ async def test_guardrails_allow_only_configured_kubernetes_api_service() -> None
     await api.ensure_guardrails("rudder-shop", {"rudder.environment": "environment-id"})
 
     api_egress = rendered["rudder-private-network"].spec.egress[2]
-    assert api_egress.to[0].ip_block.cidr == "10.112.0.1/32"
+    assert api_egress.to[0].ip_block.cidr == "10.80.0.15/32"
     assert [(port.protocol, port.port) for port in api_egress.ports] == [("TCP", 443)]
 
 

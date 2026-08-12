@@ -65,6 +65,14 @@ gcloud secrets describe "$RUDDER_CONTROL_PLANE_SECRET_NAME" \
 
 "$script_dir/configure-kubectl.sh"
 
+# Calico evaluates NetworkPolicy after the Kubernetes Service translates this
+# path. Permit CNPG only to GKE's exact private control-plane endpoint.
+api_endpoint="$(gcloud container clusters describe "$RUDDER_GKE_CLUSTER" \
+  --project "$RUDDER_GCP_PROJECT" --region "$RUDDER_GCP_REGION" \
+  --format='value(privateClusterConfig.privateEndpoint)')"
+[[ -n "$api_endpoint" ]] || fail "GKE private control-plane endpoint is unavailable."
+RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR="${api_endpoint}/32"
+
 kubectl apply -f "$platform_dir/namespace.yaml"
 kubectl apply -f "$platform_dir/rbac.yaml"
 kubectl apply -f "$platform_dir/ingress-nginx.yaml"
@@ -128,6 +136,7 @@ export RUDDER_BACKUP_BUCKET RUDDER_BACKUP_GSA RUDDER_BACKUP_IDENTITY_BROKER_GSA
 export RUDDER_SECRET_SYNC_GSA RUDDER_CONTROL_PLANE_IMAGE RUDDER_CONTROL_PLANE_SECRET_NAME
 export RUDDER_CONTROL_PLANE_HOST RUDDER_KUBERNETES_PUBLIC_DOMAIN RUDDER_REGISTRY
 export RUDDER_ACME_EMAIL RUDDER_KUBERNETES_CERTIFICATE_ISSUER RUDDER_GCP_DNS_ZONE
+export RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR
 
 # Sync runtime credentials before creating an API Pod. The Secret Manager
 # version itself is an explicit operator-managed prerequisite; a missing value

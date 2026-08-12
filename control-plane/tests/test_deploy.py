@@ -695,6 +695,25 @@ async def test_imported_kubernetes_failure_keeps_previous_live_route_unchanged(
         assert prior.status is DeploymentStatus.LIVE
 
 
+async def test_imported_kubernetes_release_prunes_superseded_stateless_candidate(
+    engine, service, settings, monkeypatch
+):
+    _configure_kubernetes_import(engine, service)
+    settings.runtime = "kubernetes"
+    first_api = FakeKubernetesApi()
+    second_api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, first_api, second_api)
+
+    first = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+    second = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert first.status is DeploymentStatus.LIVE
+    assert second.status is DeploymentStatus.LIVE
+    assert ("cleanup", str(first.deployment_id)) in second_api.calls
+    with Session(engine) as session:
+        assert session.get(Deployment, first.deployment_id).status is DeploymentStatus.SUPERSEDED
+
+
 async def test_imported_kubernetes_restore_reuses_the_recorded_image_without_a_builder(
     engine, service, settings, monkeypatch
 ):

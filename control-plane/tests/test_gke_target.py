@@ -137,8 +137,7 @@ def test_gke_maps_backup_identity_only_after_the_platform_marks_it_ready() -> No
     assert runtime_settings.backup_schedule == "0 0 2 * * *"
 
 
-def test_gke_maps_its_in_cluster_api_service_to_guardrail_egress(monkeypatch) -> None:
-    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.112.0.1")
+def test_gke_maps_its_private_api_endpoint_to_guardrail_egress() -> None:
     settings = Settings(
         runtime="kubernetes",
         kubernetes_target="gke",
@@ -146,9 +145,13 @@ def test_gke_maps_its_in_cluster_api_service_to_guardrail_egress(monkeypatch) ->
         kubernetes_public_domain="rudder.invytt.com",
         kubernetes_certificate_issuer="rudder-letsencrypt-prod",
         registry="asia-south1-docker.pkg.dev/invytt-2483d/rudder",
+        kubernetes_api_server_endpoint_cidr="10.80.0.15/32",
     )
 
-    assert targets.runtime_settings_from(settings).kubernetes_api_server_cidr == "10.112.0.1/32"
+    assert (
+        targets.runtime_settings_from(settings).kubernetes_api_server_endpoint_cidr
+        == "10.80.0.15/32"
+    )
 
 
 def test_gke_uses_the_private_backup_broker_only_when_identity_is_enabled() -> None:

@@ -245,7 +245,6 @@ async def _deploy_locked(
     session.add(deployment)
     _supersede_older(session, deployment)
     session.commit()
-
     try:
         env = await variables.resolve_service_env(session, service.id)
         node = scheduler.select_node_for_service(session, service)
@@ -597,6 +596,19 @@ async def _deploy_imported_kubernetes(
     session.add(deployment)
     _supersede_older(session, deployment)
     session.commit()
+    # Deployment records retain immutable rollback artifacts, but old
+    # candidate-labelled Kubernetes workloads must not keep reserving CPU once
+    # a new candidate has safely promoted its route.
+    retired_release_ids = [
+        str(previous.id)
+        for previous in session.exec(
+            select(Deployment).where(
+                Deployment.service_id == deployment.service_id,
+                Deployment.id != deployment.id,
+                Deployment.status == DeploymentStatus.LIVE,
+            )
+        ).all()
+    ]
 
     anchor_node = _kubernetes_accounting_anchor(session, settings)
     if anchor_node is None:
@@ -713,6 +725,23 @@ async def _deploy_imported_kubernetes(
             environment_id=str(service.environment_id),
             on_progress=lambda text: _append_release_log(store, deployment.id, text),
         )
+        for retired_release_id in retired_release_ids:
+            try:
+                await api.delete_release(namespace, retired_release_id)
+                await _append_release_log(
+                    store,
+                    deployment.id,
+                    f"kubernetes: removed superseded release {retired_release_id[:8]}\n",
+                )
+            except (ApiException, OSError) as exc:
+                # The new release is already healthy and promoted. Retaining a
+                # stale stateless candidate is recoverable; rolling back the
+                # newly promoted route over cleanup failure is not.
+                log.warning(
+                    "could not remove superseded Kubernetes release %s: %s",
+                    retired_release_id,
+                    exc,
+                )
     except (ApiException, OSError, ValueError, yaml.YAMLError, RuntimeError) as exc:
         if mappings:
             mark_runtime_operations_failed(

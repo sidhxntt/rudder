@@ -49,10 +49,10 @@ class RuntimeSettings:
     # keeps these empty for unrestricted local scheduling.
     workload_node_selector: Mapping[str, str] = field(default_factory=dict)
     workload_tolerations: tuple[Mapping[str, str], ...] = ()
-    # CNPG instance Pods reconcile themselves through the Kubernetes API. The
-    # GKE control plane derives this as the exact in-cluster Service ClusterIP;
-    # an empty value keeps local development's existing deny-by-default policy.
-    kubernetes_api_server_cidr: str = ""
+    # CNPG instance Pods reconcile themselves through the Kubernetes API. GKE
+    # Calico evaluates egress after Service translation, so this is the exact
+    # private control-plane endpoint rather than general HTTPS egress.
+    kubernetes_api_server_endpoint_cidr: str = ""
 
     @property
     def backup_configured(self) -> bool:
@@ -1108,20 +1108,20 @@ class AsyncKubernetesApi:
                         [
                             # CloudNativePG instances use the Kubernetes API to
                             # report and reconcile their Cluster state. Permit
-                            # only the mounted in-cluster Service address, never
+                            # only the private control-plane endpoint, never
                             # arbitrary HTTPS egress.
                             client.V1NetworkPolicyEgressRule(
                                 to=[
                                     client.V1NetworkPolicyPeer(
                                         ip_block=client.V1IPBlock(
-                                            cidr=self.settings.kubernetes_api_server_cidr
+                                            cidr=self.settings.kubernetes_api_server_endpoint_cidr
                                         )
                                     )
                                 ],
                                 ports=[client.V1NetworkPolicyPort(protocol="TCP", port=443)],
                             )
                         ]
-                        if self.settings.kubernetes_api_server_cidr
+                        if self.settings.kubernetes_api_server_endpoint_cidr
                         else []
                     ),
                 ],

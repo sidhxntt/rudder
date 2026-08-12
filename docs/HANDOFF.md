@@ -25,6 +25,14 @@ last local verification on 2026-08-12 found a clean worktree, passing focused
 runtime tests and Terraform validation, but degraded customer/database Pods in
 GKE that must be recovered before the backup/restore acceptance drill.
 
+GKE uses Calico, which evaluates generated namespace egress policy after the
+`kubernetes.default` Service is translated. The platform bootstrap derives the
+cluster's private control-plane endpoint and injects its exact `/32` into the
+control plane; CNPG then receives only TCP/443 to that endpoint. Do not replace
+this with general HTTPS egress. Successful Kubernetes promotions also prune
+superseded stateless release resources after their replacement route is live;
+deployment records and stateful data remain intact for rollback and recovery.
+
 ## Product and phase map
 
 Rudder is a Railway/Vercel-like deployment platform:

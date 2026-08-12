@@ -57,6 +57,10 @@ spec:
             # shared platform pool.
             - name: RUDDER_KUBERNETES_WORKLOAD_POOL
               value: platform
+            # CNPG must reconcile through GKE's private control-plane endpoint.
+            # The bootstrap derives this exact /32; broad HTTPS remains denied.
+            - name: RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR
+              value: ${RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR}
             - name: RUDDER_BASE_DOMAIN
               value: ${RUDDER_KUBERNETES_PUBLIC_DOMAIN}
             - name: RUDDER_KUBERNETES_PUBLIC_DOMAIN

@@ -123,6 +123,9 @@ class Settings(BaseSettings):
     # Rudder's control-plane and customer workloads.  Keep this explicit so a
     # later dedicated workload-pool migration is deliberate and reviewable.
     kubernetes_workload_pool: str = "platform"
+    # GKE's exact private control-plane endpoint CIDR. The platform bootstrap
+    # injects this into the runtime for CNPG's required API reconciliation.
+    kubernetes_api_server_endpoint_cidr: str = ""
     # GKE public routes are HTTPS-only. The issuer is installed and owned by
     # the platform bootstrap, while each release receives its own stable
     # certificate Secret through cert-manager.
