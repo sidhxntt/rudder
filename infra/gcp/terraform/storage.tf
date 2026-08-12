@@ -51,15 +51,11 @@ resource "google_storage_bucket" "build_logs" {
   }
 }
 
-resource "google_storage_bucket_iam_member" "backup_object_creator" {
+resource "google_storage_bucket_iam_member" "backup_object_admin" {
   bucket = google_storage_bucket.backups.name
-  role   = "roles/storage.objectCreator"
-  member = "serviceAccount:${google_service_account.backup.email}"
-}
-
-resource "google_storage_bucket_iam_member" "backup_object_viewer" {
-  bucket = google_storage_bucket.backups.name
-  role   = "roles/storage.objectViewer"
+  # CNPG/Barman creates, lists, replaces and prunes backup metadata and WAL
+  # objects. This role is limited to object operations on this one bucket.
+  role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.backup.email}"
 }
 
