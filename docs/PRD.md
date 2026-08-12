@@ -360,7 +360,7 @@ this document wins.
 | 1 | [Single-host deploy](phases/PHASE-1-single-host.md) | 3-4 wk | Push to GitHub, container comes up, public URL serves it |
 | 2 | [Multi-host](phases/PHASE-2-multi-host.md) | 3-4 wk | Two nodes, service lands on the less loaded one, node dies, service reschedules |
 | 3 | [Kubernetes runtime](phases/PHASE-3-kubernetes-runtime.md) | 3-5 wk | Imported Compose app deploys in an isolated namespace; failed revisions roll back |
-| 4 | [GKE landing zone](phases/PHASE-4-mesh.md) | 3-5 wk | The Phase 3 namespace model runs on a private regional GKE cluster; only the app is publicly routed |
+| 4 | [GKE production runtime](phases/PHASE-4-gke-production-runtime.md) | 3-5 wk | The Phase 3 namespace model runs on a private regional GKE cluster; only the app is publicly routed |
 | 5 | [Environments](phases/PHASE-5-environments.md) | 2 wk | Clone production to staging, everything rewires |
 | 6 | [Operations](phases/PHASE-6-operations.md) | 2-3 wk | Volumes, DB templates, logs, metrics, instant rollback |
 | 6.5 | [Frontends](phases/PHASE-6.5-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
@@ -376,15 +376,15 @@ a single managed HTTPS edge, durable managed state, and infrastructure-as-code.
 
 **WireGuard is cancelled.** Kubernetes Services, CoreDNS, namespaces, and
 NetworkPolicies are the private service network — Rudder allocates no mesh IPs,
-manages no peers, and writes no host-level DNS. `phases/PHASE-4-mesh.md` keeps its
-filename to preserve links only. See
+manages no peers, and writes no host-level DNS. See the GKE production runtime
+plan at `phases/PHASE-4-gke-production-runtime.md` and
 [ADR 0004](decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md).
 
 **Multi-cloud.** GCP is the first provider adapter, not the product assumption.
 Phase 4 writes the provider contract and its acceptance tests so EKS and AKS can
 satisfy the same behaviour later without changing deployment records, UI
 semantics, or the service graph. It creates no AWS or Azure resources. Scope and
-effort for those adapters: `phases/PHASE-4-mesh.md` → "Cost of adding AWS and
+effort for those adapters: `phases/PHASE-4-gke-production-runtime.md` → "Cost of adding AWS and
 Azure".
 
 **Do not start a phase until the previous one is verified working end to end.**

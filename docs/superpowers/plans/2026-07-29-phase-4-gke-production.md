@@ -23,7 +23,7 @@
 - Modify: `control-plane/rudder_cp/services/rollbacks.py` — restore a recorded digest/manifest without building from the current branch.
 - Modify: `control-plane/rudder_cp/models/{deployment,service}.py` and `control-plane/rudder_cp/schemas/*` — persistent target and workload state only if the existing record cannot represent it.
 - Create: `control-plane/tests/test_gke_target.py` and modify `control-plane/tests/test_kubernetes_runtime.py`, `control-plane/tests/test_deploy.py`, `control-plane/tests/test_rollbacks.py` — focused unit/integration coverage.
-- Modify: `.env.example`, `docker-compose.dev.yml`, `README.md`, `docs/GCP-Infrastructure.md`, and `docs/phases/PHASE-4-mesh.md` — documented operator workflow and GKE acceptance evidence.
+- Modify: `.env.example`, `docker-compose.dev.yml`, `README.md`, `docs/GCP-Infrastructure.md`, and `docs/phases/PHASE-4-gke-production-runtime.md` — documented operator workflow and GKE acceptance evidence.
 
 ## Task 1: Add a repeatable GKE foundation in Terraform
 
@@ -333,7 +333,7 @@ git commit -m "ops: run Rudder control plane on GKE"
 - Create: `control-plane/scripts/verify_gke.py`
 - Modify: `control-plane/tests/test_kubernetes_runtime.py`
 - Modify: `docs/GCP-Infrastructure.md`
-- Modify: `docs/phases/PHASE-4-mesh.md`
+- Modify: `docs/phases/PHASE-4-gke-production-runtime.md`
 
 - [ ] **Step 1: Write an acceptance script with explicit pass/fail assertions.**
 
@@ -372,10 +372,10 @@ cd .. && bash infra/gcp/scripts/verify-gke.sh
 - [ ] **Step 10: Commit and open the Phase 4 pull request.**
 
 ```bash
-git add docs/GCP-Infrastructure.md docs/phases/PHASE-4-mesh.md infra/gcp/scripts control-plane/scripts control-plane/tests
+git add docs/GCP-Infrastructure.md docs/phases/PHASE-4-gke-production-runtime.md infra/gcp/scripts control-plane/scripts control-plane/tests
 git commit -m "docs: verify Phase 4 GKE acceptance"
 git push -u origin phase-4
-gh pr create --base main --head phase-4 --title "Phase 4: GKE production runtime" --body-file docs/phases/PHASE-4-mesh.md
+gh pr create --base main --head phase-4 --title "Phase 4: GKE production runtime" --body-file docs/phases/PHASE-4-gke-production-runtime.md
 ```
 
 ## Production operator actions outside this repository

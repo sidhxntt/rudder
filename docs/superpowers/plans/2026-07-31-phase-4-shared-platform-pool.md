@@ -18,7 +18,7 @@
 - Modify: `control-plane/tests/test_gke_target.py` — prove only GKE receives platform placement.
 - Modify: `control-plane/tests/test_kubernetes_runtime.py` — prove caller-provided placement cannot escape the platform pool and every rendered Pod template tolerates the taint.
 - Modify: `control-plane/tests/test_gke_node_pool_scheduling_contract.py` — prove Terraform leaves the workloads pool disabled and runtime enforces the shared pool.
-- Modify: `infra/kubernetes/platform/control-plane.yaml`, `.env.example`, and `docs/phases/PHASE-4-mesh.md` — production contract and migration documentation.
+- Modify: `infra/kubernetes/platform/control-plane.yaml`, `.env.example`, and `docs/phases/PHASE-4-gke-production-runtime.md` — production contract and migration documentation.
 
 ### Task 1: Add an explicit, target-safe shared-pool setting ✅
 
@@ -176,7 +176,7 @@ git commit -m "feat: enforce shared platform placement for GKE releases"
 - Modify: `infra/kubernetes/platform/control-plane.yaml`
 - Modify: `control-plane/tests/test_gke_node_pool_scheduling_contract.py`
 - Modify: `.env.example`
-- Modify: `docs/phases/PHASE-4-mesh.md`
+- Modify: `docs/phases/PHASE-4-gke-production-runtime.md`
 
 - [x] **Step 1: Write failing contract assertions.**
 
@@ -215,7 +215,7 @@ Expected: all tests pass.
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add infra/kubernetes/platform/control-plane.yaml control-plane/tests/test_gke_node_pool_scheduling_contract.py .env.example docs/phases/PHASE-4-mesh.md
+git add infra/kubernetes/platform/control-plane.yaml control-plane/tests/test_gke_node_pool_scheduling_contract.py .env.example docs/phases/PHASE-4-gke-production-runtime.md
 git commit -m "docs: record shared GKE platform pool topology"
 ```
 

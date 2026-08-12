@@ -49,6 +49,10 @@ class RuntimeSettings:
     # keeps these empty for unrestricted local scheduling.
     workload_node_selector: Mapping[str, str] = field(default_factory=dict)
     workload_tolerations: tuple[Mapping[str, str], ...] = ()
+    # CNPG instance Pods reconcile themselves through the Kubernetes API. The
+    # GKE control plane derives this as the exact in-cluster Service ClusterIP;
+    # an empty value keeps local development's existing deny-by-default policy.
+    kubernetes_api_server_cidr: str = ""
 
     @property
     def backup_configured(self) -> bool:
@@ -1043,10 +1047,9 @@ class AsyncKubernetesApi:
                 pod_selector=client.V1LabelSelector(),
                 # Guard both directions.  The namespace label is written by
                 # ``ensure_namespace`` and gives every environment its own
-                # private network boundary; Pods need only their own services
-                # and Kubernetes DNS.  New external egress must be modeled as
-                # an explicit, reviewed capability rather than leaking through
-                # a default-allow policy.
+                # private network boundary. New external egress must be modeled
+                # as an explicit, reviewed capability rather than leaking
+                # through a default-allow policy.
                 policy_types=["Ingress", "Egress"],
                 ingress=[
                     client.V1NetworkPolicyIngressRule(
@@ -1100,6 +1103,26 @@ class AsyncKubernetesApi:
                             client.V1NetworkPolicyPort(protocol="TCP", port=53),
                             client.V1NetworkPolicyPort(protocol="UDP", port=53),
                         ],
+                    ),
+                    *(
+                        [
+                            # CloudNativePG instances use the Kubernetes API to
+                            # report and reconcile their Cluster state. Permit
+                            # only the mounted in-cluster Service address, never
+                            # arbitrary HTTPS egress.
+                            client.V1NetworkPolicyEgressRule(
+                                to=[
+                                    client.V1NetworkPolicyPeer(
+                                        ip_block=client.V1IPBlock(
+                                            cidr=self.settings.kubernetes_api_server_cidr
+                                        )
+                                    )
+                                ],
+                                ports=[client.V1NetworkPolicyPort(protocol="TCP", port=443)],
+                            )
+                        ]
+                        if self.settings.kubernetes_api_server_cidr
+                        else []
                     ),
                 ],
             ),

@@ -34,8 +34,8 @@ the same Kubernetes networking, so mesh code buys nothing on the multi-cloud pat
    Phase 3 resource contract unchanged onto a private regional GKE Standard
    cluster and adds Artifact Registry, Workload Identity, a single managed HTTPS
    edge, durable managed state, observability, and infrastructure-as-code.
-   `docs/phases/PHASE-4-mesh.md` keeps its filename **only** to preserve inbound
-   links.
+   The authoritative plan is
+   `docs/phases/PHASE-4-gke-production-runtime.md`.
 3. **The `wg_*` data-model fields are deprecated.** `Environment.wg_subnet`,
    `Node.wg_public_key`, `Node.wg_ip`, and `Instance.wg_ip` stay in the schema as
    nullable columns and must end up always null. Nothing may read or validate

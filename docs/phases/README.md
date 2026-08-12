@@ -15,7 +15,7 @@ file is a bug.
 | 1 | [PHASE-1-single-host.md](PHASE-1-single-host.md) | 3–4 wk | Push to GitHub, container comes up, public URL serves it |
 | 2 | [PHASE-2-multi-host.md](PHASE-2-multi-host.md) | 3–4 wk | Two nodes, service lands on the less loaded one, node dies, service reschedules |
 | 3 | [PHASE-3-kubernetes-runtime.md](PHASE-3-kubernetes-runtime.md) | 3–5 wk | Isolated Kubernetes namespace deploys an imported app and rolls back a failed revision |
-| 4 | [PHASE-4-mesh.md](PHASE-4-mesh.md) | 3–5 wk | GKE landing zone: the Phase 3 namespace model runs on a private regional cluster, only the app is publicly routed |
+| 4 | [PHASE-4-gke-production-runtime.md](PHASE-4-gke-production-runtime.md) | 3–5 wk | GKE landing zone: the Phase 3 namespace model runs on a private regional cluster, only the app is publicly routed |
 | 5 | [PHASE-5-environments.md](PHASE-5-environments.md) | 2 wk | Clone production to staging, everything rewires |
 | 6 | [PHASE-6-operations.md](PHASE-6-operations.md) | 2–3 wk | Volumes, DB templates, logs, metrics, instant rollback |
 | 6.5 | [PHASE-6.5-frontends.md](PHASE-6.5-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
@@ -33,8 +33,8 @@ Registry, Workload Identity, managed HTTPS edge, durable state, and
 infrastructure-as-code.
 
 **WireGuard is cancelled as a Rudder deliverable.** The private service network
-is Kubernetes networking. `PHASE-4-mesh.md` keeps its filename only to preserve
-existing links; its content is the GKE landing zone. See
+is Kubernetes networking. The GKE landing-zone plan is
+`PHASE-4-gke-production-runtime.md`. See
 [ADR 0004](../decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md)
 for the decision and for which `wg_*` data-model fields are now deprecated.
 

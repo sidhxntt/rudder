@@ -292,6 +292,7 @@ async def test_guardrails_default_deny_egress_except_dns_and_same_environment() 
     """
 
     api = object.__new__(AsyncKubernetesApi)
+    api.settings = RuntimeSettings()
     api.core = SimpleNamespace(
         read_namespaced_resource_quota=object(),
         create_namespaced_resource_quota=object(),
@@ -330,6 +331,37 @@ async def test_guardrails_default_deny_egress_except_dns_and_same_environment() 
     }
     assert {(port.protocol, port.port) for port in dns.ports} == {("TCP", 53), ("UDP", 53)}
     assert all(rule.to for rule in policy.spec.egress)
+
+
+@pytest.mark.asyncio
+async def test_guardrails_allow_only_configured_kubernetes_api_service() -> None:
+    api = object.__new__(AsyncKubernetesApi)
+    api.settings = RuntimeSettings(kubernetes_api_server_cidr="10.112.0.1/32")
+    api.core = SimpleNamespace(
+        read_namespaced_resource_quota=object(),
+        create_namespaced_resource_quota=object(),
+        replace_namespaced_resource_quota=object(),
+        read_namespaced_limit_range=object(),
+        create_namespaced_limit_range=object(),
+        replace_namespaced_limit_range=object(),
+    )
+    api.networking = SimpleNamespace(
+        read_namespaced_network_policy=object(),
+        create_namespaced_network_policy=object(),
+        replace_namespaced_network_policy=object(),
+    )
+    rendered: dict[str, object] = {}
+
+    async def create_or_replace(_read, _create, _replace, name, body, *, namespace) -> None:
+        rendered[name] = body
+
+    api._create_or_replace = create_or_replace
+
+    await api.ensure_guardrails("rudder-shop", {"rudder.environment": "environment-id"})
+
+    api_egress = rendered["rudder-private-network"].spec.egress[2]
+    assert api_egress.to[0].ip_block.cidr == "10.112.0.1/32"
+    assert [(port.protocol, port.port) for port in api_egress.ports] == [("TCP", 443)]
 
 
 @pytest.mark.asyncio

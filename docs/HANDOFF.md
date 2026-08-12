@@ -7,7 +7,7 @@ This document is the starting point for a new Codex session. Read it before maki
 When the user says “scan and understand my codebase”, do this in order:
 
 1. Read this file completely.
-2. Read `docs/phases/README.md`, then `docs/phases/PHASE-4-mesh.md`.
+2. Read `docs/phases/README.md`, then `docs/phases/PHASE-4-gke-production-runtime.md`.
 3. Inspect the current branch and dirty worktree:
 
    ```sh
@@ -19,7 +19,11 @@ When the user says “scan and understand my codebase”, do this in order:
 4. Do **not** reset, clean, remove containers, reset databases, or commit unrelated files. This repository is commonly left with in-progress work and local state.
 5. Inspect the files named in “Current code in progress”, run the focused tests, then verify external GCP state before changing infrastructure.
 
-The current branch at the time of this handoff is `phase-4`. Phase 4 is in progress; do not claim it is completed merely because the cluster exists or platform Pods are healthy.
+The current branch is `phase-4`. Phase 4 is in progress; do not claim it is
+completed merely because the cluster exists or platform Pods are healthy. The
+last local verification on 2026-08-12 found a clean worktree, passing focused
+runtime tests and Terraform validation, but degraded customer/database Pods in
+GKE that must be recovered before the backup/restore acceptance drill.
 
 ## Product and phase map
 
@@ -38,7 +42,7 @@ Completed/merged work:
 
 Current work:
 
-- **Phase 4** — production GKE runtime and shared platform pool. The authoritative plan and acceptance criteria are in `docs/phases/PHASE-4-mesh.md`.
+- **Phase 4** — production GKE runtime and shared platform pool. The authoritative plan and acceptance criteria are in `docs/phases/PHASE-4-gke-production-runtime.md`.
 
 Future documented phases:
 
@@ -232,8 +236,8 @@ GitHub OAuth signs the user in. GitHub App access lists repositories; webhook de
 - Stage only files authored/verified for the current change; the worktree may contain user-owned changes and local DB files.
 - Do not commit `.env`, private keys, local test databases, OAuth data, cloud tokens, GitHub tokens, or secrets.
 - Before a PR, run the focused control-plane tests and Terraform formatting/validation above, then record exactly what was tested in the PR summary.
-- Treat `docs/phases/PHASE-4-mesh.md` as the acceptance authority. Update it and add a Phase 4 checkpoint only after the real backup/restore drill passes.
+- Treat `docs/phases/PHASE-4-gke-production-runtime.md` as the acceptance authority. Update it and add a Phase 4 checkpoint only after the real backup/restore drill passes.
 
 ## Minimal opening prompt for the next Codex session
 
-> Read `docs/HANDOFF.md`, then scan the repository and current git status. We are on `phase-4`, implementing the GKE production runtime. Do not discard the dirty worktree. First check Cloud Build `a5231ca8-b71b-4466-b7f9-c2221ce36c27`, verify GKE state read-only, run the focused backup-runtime tests, then continue the Phase 4 acceptance gates in `docs/phases/PHASE-4-mesh.md`.
+> Read `docs/HANDOFF.md`, then scan the repository and current git status. We are on `phase-4`, implementing the GKE production runtime. Do not discard the dirty worktree. First check Cloud Build `a5231ca8-b71b-4466-b7f9-c2221ce36c27`, verify GKE state read-only, run the focused backup-runtime tests, then continue the Phase 4 acceptance gates in `docs/phases/PHASE-4-gke-production-runtime.md`.

@@ -149,8 +149,7 @@ the cluster once (**attach mode**); Rudder owns namespaces and workloads, never
 cluster lifecycle. Public hostnames sit under `rudder.invytt.com`. See
 [ADR 0005](docs/decisions/0005-phase-4-kubernetes-only-attach-mode.md).
 
-**WireGuard is cancelled**, and `docs/phases/PHASE-4-mesh.md` keeps its filename
-only to preserve links. The private service network is Kubernetes networking —
+**WireGuard is cancelled.** The private service network is Kubernetes networking —
 Services, CoreDNS, namespaces, and default-deny NetworkPolicies. See
 [ADR 0004](docs/decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md).
 
@@ -158,7 +157,7 @@ GCP is the first provider adapter, not the product assumption. Phase 4 writes th
 provider contract and its conformance tests so EKS and AKS can follow without
 changing deployment records, UI semantics, or the service graph; it creates no AWS
 or Azure resources. Effort for those adapters is estimated in
-[PHASE-4-mesh.md](docs/phases/PHASE-4-mesh.md) → "Cost of adding AWS and Azure".
+[PHASE-4-gke-production-runtime.md](docs/phases/PHASE-4-gke-production-runtime.md) → "Cost of adding AWS and Azure".
 
 Prerequisites are sorted as of 2026-07-29: `invytt-2483d` audited, all ten APIs
 enabled, Terraform 1.15.8 and `gke-gcloud-auth-plugin` installed, and the four

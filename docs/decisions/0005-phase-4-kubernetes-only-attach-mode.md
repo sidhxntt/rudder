@@ -68,5 +68,5 @@ becoming a per-cloud seam.
   changing deployment records or UI semantics.
 - Four cloud seams survive per additional cloud even under K8s-only: credential
   exec plugin, registry, pod identity, and DNS zone provider. The list is shorter
-  than with managed databases, not empty. See `docs/phases/PHASE-4-mesh.md` →
+  than with managed databases, not empty. See `docs/phases/PHASE-4-gke-production-runtime.md` →
   "Cost of adding AWS and Azure".

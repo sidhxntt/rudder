@@ -1,4 +1,4 @@
-# Phase 4 — GKE production networking and landing zone
+# Phase 4 — GKE production runtime and landing zone
 
 **Target:** 3–5 weeks
 **Owner:** Platform / infrastructure
@@ -7,14 +7,26 @@
 below pass. The verified path is appropriate for a controlled beta, not yet a
 complete production-service commitment.
 
-> **Why this file is still named `PHASE-4-mesh.md`:** it preserves existing
-> links. It is no longer a WireGuard implementation plan. Rudder's production
-> path is GKE, where Kubernetes Services, CoreDNS, namespaces, and
-> NetworkPolicies provide the private service network. WireGuard is **cancelled**
-> as a Rudder deliverable, not deferred — see
+> Rudder's production path is GKE, where Kubernetes Services, CoreDNS,
+> namespaces, and NetworkPolicies provide the private service network.
+> WireGuard is **cancelled** as a Rudder deliverable, not deferred — see
 > [ADR 0004](../decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md).
 > Reviving it for non-Kubernetes Docker hosts would need a new phase and its own
 > ADR.
+
+### Live re-verification — 2026-08-12
+
+- The `rudder-gke` cluster is `RUNNING`, all six nodes are `Ready`, and the
+  platform operators, control plane, and backup-identity broker are running.
+- The latest recorded Phase 4 Cloud Build succeeded and published immutable
+  digest `sha256:de5430245fc22f31f0123c4a06572c7e4c0a5de9a246c4bef119572f8483a5f8`.
+- The project-wide `CPUS_ALL_REGIONS` quota remains exhausted at 12/12, so the
+  dedicated workloads pool remains blocked and customer workloads must continue
+  using the shared platform-pool contract.
+- The customer workloads are not yet healthy enough for acceptance: two Redis
+  Pods and one control-plane database Pod are `Pending`, and one customer
+  PostgreSQL Pod is repeatedly restarting. Diagnose and recover these before
+  attempting the backup/restore drill.
 
 ## One-sentence demo
 

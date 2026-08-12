@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from rudder_cp.config import Settings
 from rudder_cp.runtime.backup_identity import HttpBackupIdentityBroker
 from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, RuntimeSettings
@@ -51,6 +53,11 @@ def runtime_settings_from(settings: Settings) -> RuntimeSettings:
             )
             if settings.kubernetes_target == "gke"
             else ()
+        ),
+        kubernetes_api_server_cidr=(
+            f"{os.environ['KUBERNETES_SERVICE_HOST']}/32"
+            if settings.kubernetes_target == "gke" and os.environ.get("KUBERNETES_SERVICE_HOST")
+            else ""
         ),
     )
 
