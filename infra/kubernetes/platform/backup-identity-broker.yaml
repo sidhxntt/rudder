@@ -109,6 +109,32 @@ spec:
         - protocol: TCP
           port: 8000
   egress:
+    # Pods resolve Google metadata and IAM hosts through the cluster DNS
+    # Service. GKE's Calico policy evaluation happens after this ClusterIP is
+    # translated, so retain the existing kube-dns selector below and permit
+    # the stable service address as well.
+    - to:
+        - ipBlock:
+            cidr: 10.112.0.10/32
+        - ipBlock:
+            cidr: 169.254.20.10/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # This cluster uses Calico NetworkPolicy enforcement. GKE Workload
+    # Identity exchanges the projected KSA token through its node-local
+    # metadata proxy before the broker can call Google IAM. These are GKE's
+    # exact Calico metadata ports, not broad plaintext egress.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - protocol: TCP
+          port: 987
+        - protocol: TCP
+          port: 988
     - to:
         - namespaceSelector:
             matchLabels:

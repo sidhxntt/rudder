@@ -35,6 +35,11 @@ def runtime_settings_from(settings: Settings) -> RuntimeSettings:
             if settings.kubernetes_target == "gke" and settings.kubernetes_gcs_backup_ready
             else ""
         ),
+        backup_gcp_project_id=(
+            settings.gcp_project_id
+            if settings.kubernetes_target == "gke" and settings.kubernetes_gcs_backup_ready
+            else ""
+        ),
         workload_node_selector=(
             {"rudder.pool": settings.kubernetes_workload_pool}
             if settings.kubernetes_target == "gke"

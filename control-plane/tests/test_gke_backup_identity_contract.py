@@ -69,4 +69,12 @@ def test_broker_has_a_separate_private_service_account_and_network_boundary() ->
     assert "type: ClusterIP" in broker
     assert "app.kubernetes.io/name: rudder-control-plane" in broker
     assert "RUDDER_KUBERNETES_BACKUP_GCP_SERVICE_ACCOUNT" in broker
+    # Calico clusters require GKE Workload Identity's exact metadata proxy
+    # address and ports before the broker can call IAM over HTTPS.
+    assert "cidr: 169.254.169.252/32" in broker
+    assert "port: 987" in broker
+    assert "port: 988" in broker
+    # GKE's node-local DNS intercepts the cluster DNS service address.
+    assert "cidr: 10.112.0.10/32" in broker
+    assert "cidr: 169.254.20.10/32" in broker
     assert "envFrom:" not in broker

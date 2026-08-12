@@ -44,6 +44,7 @@ class RuntimeSettings:
     # service account by the separately authorised platform broker.
     backup_gcs_bucket: str = ""
     backup_gcp_service_account: str = ""
+    backup_gcp_project_id: str = ""
     # GKE customer workloads must share the explicitly tainted platform pool
     # until project-wide CPU quota permits a dedicated workload pool. Kind
     # keeps these empty for unrestricted local scheduling.
@@ -1262,6 +1263,12 @@ class AsyncKubernetesApi:
                 },
             },
         }
+        if self.settings.gcs_backup_configured and self.settings.backup_gcp_project_id:
+            cluster_spec = body["spec"]
+            assert isinstance(cluster_spec, dict)
+            cluster_spec["env"] = [
+                {"name": "GOOGLE_CLOUD_PROJECT", "value": self.settings.backup_gcp_project_id}
+            ]
         if spec.node_selector or spec.tolerations:
             cluster_spec = body["spec"]
             assert isinstance(cluster_spec, dict)
