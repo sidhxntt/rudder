@@ -101,15 +101,18 @@ The first end-to-end GKE release path has now been exercised against the live
 The exact deployment IDs, image digests, commands, and remaining gates are
 recorded in [the Phase 4 checkpoint](checkpoints/PHASE-4-COMPLETION.md).
 
-**Open production gate — backup identity:** the GCS bucket, dedicated backup
-Google service account, and a separately deployed private identity broker now
-exist. The broker runs as its own Workload Identity, has only a custom role for
-reading and setting IAM policy, and accepts requests only from the labelled
-control-plane Pods through a `ClusterIP` Service plus `NetworkPolicy`. It binds
-only the generated CNPG ServiceAccount in the requested `rudder-*` environment
-namespace to the dedicated backup GSA; the control plane itself has no IAM
-policy-write permission. Rudder also creates CNPG `ScheduledBackup` resources
-with continuous WAL archiving when a verified object-storage target is enabled.
+**Backup/restore production gate — passed 2026-08-12:** the GCS bucket,
+dedicated backup Google service account, and separately deployed private
+identity broker are live. The broker runs as its own Workload Identity, has only
+a custom role for reading and setting IAM policy, and accepts requests only from
+the labelled control-plane Pods through a `ClusterIP` Service plus
+`NetworkPolicy`. It binds only the generated CNPG ServiceAccount in the
+requested `rudder-*` environment namespace to the dedicated backup GSA; the
+control plane itself has no IAM policy-write permission. The backup identity has
+bucket-scoped `roles/storage.objectAdmin`, which is required by Barman to manage
+backup metadata and WAL objects. A physical backup completed, continuous WAL
+archiving was healthy, and a separate non-public CNPG cluster restored the GCS
+backup and passed a read-only catalog comparison before being deleted.
 
 Google IAM does not support scoping `setIamPolicy` directly to one service
 account, so the broker's three-permission custom role is necessarily granted at
@@ -118,8 +121,9 @@ boundary, dedicated ServiceAccount, and exact member check are the compensating
 controls; this residual scope must remain documented and audited. Do **not** set
 `RUDDER_KUBERNETES_BACKUP_GCS_IDENTITY_READY=true` or expose GKE backup controls
 until one real generated CNPG ServiceAccount binding and a disposable backup /
-restore drill have passed. A broad node identity, all-cluster principal, static
-S3/HMAC key, or JSON service-account key is explicitly rejected.
+restore drill have passed. That evidence now exists; retain the restriction. A
+broad node identity, all-cluster principal, static S3/HMAC key, or JSON
+service-account key is explicitly rejected.
 
 The cloud gate is deliberate: GKE admits the regional workloads pool against
 the project-wide Compute **`CPUS_ALL_REGIONS`** quota, not the regional
@@ -500,10 +504,12 @@ unreachable from the public Internet or another environment namespace.
    It does not grant the node identity, every Pod in the cluster, or the
    control-plane identity general storage-write authority. CNPG scheduled base
    backups and continuous WAL archiving are rendered when a verified target is
-   enabled. **Still required before the gate closes:** set the retention window
-   for the real GCS target and execute a full or point-in-time restore against a
-   disposable dataset. A backup configuration that has never been restored from
-   does not count as a backup.
+   enabled. **Verified 2026-08-12:** the seven-day real GCS target completed a
+   physical backup with continuous WAL archiving, then a separate non-public
+   CNPG cluster restored that backup and passed a read-only catalog comparison
+   before all disposable resources and its temporary identity grant were removed.
+   Native Barman recovery is deprecated by CNPG and must migrate to the Barman
+   Cloud Plugin before upgrading the operator to 1.31.
 3. Enforce the stateful-data guardrails from section 3: RBAC denies PVC deletion
    to the control plane, stateful volumes retain on release, and environment
    teardown removes stateful volumes only via an explicit operator path.

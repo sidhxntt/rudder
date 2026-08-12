@@ -851,6 +851,7 @@ async def test_cnpg_gke_backup_uses_workload_identity_without_a_credential_secre
         ("TCP", 53),
         ("UDP", 53),
     ]
+    assert backup_egress.spec.egress[0].to is None
     assert backup_egress.spec.egress[2].to is None
     assert [(port.protocol, port.port) for port in backup_egress.spec.egress[2].ports] == [
         ("TCP", 443)

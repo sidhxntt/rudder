@@ -1245,18 +1245,12 @@ class AsyncKubernetesApi:
                     ),
                     policy_types=["Egress"],
                     egress=[
-                        # Private GKE routes Pod DNS through kube-dns and/or
-                        # NodeLocal DNS. Both are required for the Google
-                        # metadata hostname used by barman-cloud.
+                        # Calico evaluates service egress after DNS service
+                        # translation, so a fixed kube-dns ClusterIP does not
+                        # work for a fresh CNPG recovery Pod. Keep this
+                        # capability constrained to DNS ports and the CNPG
+                        # cluster selector instead.
                         client.V1NetworkPolicyEgressRule(
-                            to=[
-                                client.V1NetworkPolicyPeer(
-                                    ip_block=client.V1IPBlock(cidr="10.112.0.10/32")
-                                ),
-                                client.V1NetworkPolicyPeer(
-                                    ip_block=client.V1IPBlock(cidr="169.254.20.10/32")
-                                ),
-                            ],
                             ports=[
                                 client.V1NetworkPolicyPort(protocol="TCP", port=53),
                                 client.V1NetworkPolicyPort(protocol="UDP", port=53),

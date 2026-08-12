@@ -19,11 +19,14 @@ When the user says “scan and understand my codebase”, do this in order:
 4. Do **not** reset, clean, remove containers, reset databases, or commit unrelated files. This repository is commonly left with in-progress work and local state.
 5. Inspect the files named in “Current code in progress”, run the focused tests, then verify external GCP state before changing infrastructure.
 
-The current branch is `phase-4`. Phase 4 is in progress; do not claim it is
-completed merely because the cluster exists or platform Pods are healthy. The
-last local verification on 2026-08-12 found a clean worktree, passing focused
-runtime tests and Terraform validation, but degraded customer/database Pods in
-GKE that must be recovered before the backup/restore acceptance drill.
+The current branch is `phase-4`. Phase 4 remains in progress until all
+operational acceptance gates are rechecked; do not claim it is completed merely
+because the cluster exists or platform Pods are healthy. On 2026-08-12, the
+customer database recovered, a physical GCS backup completed with continuous
+WAL archiving, and an isolated CNPG restore cluster passed a read-only catalog
+comparison before its volume, identity binding, and Kubernetes resources were
+removed. The next session should recheck ingress, isolation, and platform health
+before closing the phase.
 
 GKE uses Calico, which evaluates generated namespace egress policy after the
 `kubernetes.default` Service is translated. The platform bootstrap derives the
