@@ -332,6 +332,15 @@ async def test_guardrails_default_deny_egress_except_dns_and_same_environment() 
     assert {(port.protocol, port.port) for port in dns.ports} == {("TCP", 53), ("UDP", 53)}
     assert all(rule.to for rule in policy.spec.egress)
 
+    cnpg_status = policy.spec.ingress[1]
+    assert cnpg_status._from[0].namespace_selector.match_labels == {
+        "kubernetes.io/metadata.name": "cnpg-system"
+    }
+    assert cnpg_status._from[0].pod_selector.match_labels == {
+        "app.kubernetes.io/name": "cloudnative-pg"
+    }
+    assert [(port.protocol, port.port) for port in cnpg_status.ports] == [("TCP", 8000)]
+
 
 @pytest.mark.asyncio
 async def test_guardrails_allow_only_configured_kubernetes_api_service() -> None:

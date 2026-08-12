@@ -31,6 +31,9 @@ complete production-service commitment.
   translated. The runtime therefore permits CNPG only to the exact private
   control-plane endpoint `/32` on TCP/443; allowing the Service ClusterIP alone
   is insufficient, while general HTTPS egress remains prohibited.
+- The same default-deny policy permits only labelled `cloudnative-pg` Pods in
+  `cnpg-system` to reach a database Pod's TCP/8000 status endpoint. This is
+  required for CNPG health extraction and does not expose PostgreSQL itself.
 - Successful Kubernetes promotions remove their superseded stateless release
   resources after route promotion. Deployment records and stateful workloads
   remain for rollback and data safety, preventing abandoned app revisions from

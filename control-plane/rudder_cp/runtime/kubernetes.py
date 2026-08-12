@@ -1072,7 +1072,23 @@ class AsyncKubernetesApi:
                                 )
                             ),
                         ]
-                    )
+                    ),
+                    # The CloudNativePG operator gathers instance health from
+                    # its TLS status endpoint. Keep the cross-namespace path
+                    # constrained to the operator's labelled Pods and port.
+                    client.V1NetworkPolicyIngressRule(
+                        _from=[
+                            client.V1NetworkPolicyPeer(
+                                namespace_selector=client.V1LabelSelector(
+                                    match_labels={"kubernetes.io/metadata.name": "cnpg-system"}
+                                ),
+                                pod_selector=client.V1LabelSelector(
+                                    match_labels={"app.kubernetes.io/name": "cloudnative-pg"}
+                                ),
+                            )
+                        ],
+                        ports=[client.V1NetworkPolicyPort(protocol="TCP", port=8000)],
+                    ),
                 ],
                 egress=[
                     # App, worker, database and cache traffic remains private

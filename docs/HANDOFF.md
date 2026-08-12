@@ -29,7 +29,9 @@ GKE uses Calico, which evaluates generated namespace egress policy after the
 `kubernetes.default` Service is translated. The platform bootstrap derives the
 cluster's private control-plane endpoint and injects its exact `/32` into the
 control plane; CNPG then receives only TCP/443 to that endpoint. Do not replace
-this with general HTTPS egress. Successful Kubernetes promotions also prune
+this with general HTTPS egress. The guardrail also permits only the labelled
+CloudNativePG operator Pods in `cnpg-system` to reach TCP/8000 for instance
+status extraction. Successful Kubernetes promotions also prune
 superseded stateless release resources after their replacement route is live;
 deployment records and stateful data remain intact for rollback and recovery.
 
