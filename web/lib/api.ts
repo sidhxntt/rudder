@@ -37,6 +37,8 @@ import type {
   ServiceOperationsState,
   ResourceOperationRequest,
   AutoscalingOperationRequest,
+  AdvisorDiagnosis,
+  AdvisorProposal,
   ServiceUpdate,
   TokenResponse,
   User,
@@ -288,6 +290,26 @@ export async function deleteEnvironment(environmentId: string): Promise<void> {
 /** GET /environments/{environment_id}/services */
 export function listServices(environmentId: string): Promise<Service[]> {
   return requestJson<Service[]>(`/environments/${id(environmentId)}/services`);
+}
+
+/** Deterministic scan only. This endpoint cannot create resources. */
+export function scanAdvisor(environmentId: string, repositoryPath: string): Promise<AdvisorProposal> {
+  return requestJson<AdvisorProposal>(`/environments/${id(environmentId)}/advisor/scan`, {
+    method: "POST", body: { repository_path: repositoryPath },
+  });
+}
+
+/** One explicit acceptance; no batch / automatic apply API exists. */
+export function acceptAdvisorItem(environmentId: string, item: AdvisorProposal["items"][number], serviceId?: string): Promise<Service> {
+  return requestJson<Service>(`/environments/${id(environmentId)}/advisor/accept`, {
+    method: "POST", body: { item, service_id: serviceId ?? null },
+  });
+}
+
+export function diagnoseBuildFailure(logs: string[], serviceConfig: Record<string, unknown> = {}): Promise<AdvisorDiagnosis> {
+  return requestJson<AdvisorDiagnosis>("/advisor/diagnosis", {
+    method: "POST", body: { logs: logs.slice(-100), service_config: serviceConfig },
+  });
 }
 
 /** GET /services/{service_id} */

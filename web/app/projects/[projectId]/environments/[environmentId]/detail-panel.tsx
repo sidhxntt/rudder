@@ -15,8 +15,9 @@ import { Variables } from "./variables";
 import { Operations } from "./operations";
 import { Analytics } from "./analytics";
 import { ServiceSettings } from "./service-settings";
+import { AdvisorSurface } from "./advisor-surface";
 
-export type ServiceTab = "logs" | "variables" | "deploys" | "operations" | "analytics" | "service-settings";
+export type ServiceTab = "logs" | "variables" | "deploys" | "operations" | "analytics" | "service-settings" | "advisor";
 
 const TABS: readonly { id: ServiceTab; label: string }[] = [
   { id: "logs", label: "Build logs" },
@@ -25,6 +26,7 @@ const TABS: readonly { id: ServiceTab; label: string }[] = [
   { id: "operations", label: "Operations" },
   { id: "analytics", label: "Analytics" },
   { id: "service-settings", label: "Service settings" },
+  { id: "advisor", label: "Advisor" },
 ];
 
 /** Navigation stays separate from the selected panel so every service view
@@ -250,6 +252,7 @@ export function DetailPanel({
 
       <section id={`${tab}-panel`} role="tabpanel" aria-labelledby={`${tab}-tab`} className="flex min-h-0 flex-1 flex-col">
         {tab === "logs" ? <BuildLogs deployment={selectedDeployment} /> : null}
+        {tab === "advisor" ? <AdvisorSurface environmentId={service.environment_id} /> : null}
         {tab === "variables" ? <Variables serviceId={service.id} /> : null}
         {tab === "deploys" ? (
           <DeployHistory

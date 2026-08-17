@@ -148,6 +148,23 @@ export interface Deployment {
   became_live_at: string | null;
 }
 
+export interface AdvisorDiagnosis {
+  enabled: boolean;
+  model_generated: true;
+  diagnosis: string | null;
+}
+
+export interface AdvisorProposal {
+  version: number;
+  items: Array<{
+    id: string;
+    kind: "service" | "addon" | "variable";
+    status: "proposed";
+    payload: Record<string, unknown>;
+  }>;
+  external_requirements: string[];
+}
+
 export interface Instance {
   id: string;
   deployment_id: string;

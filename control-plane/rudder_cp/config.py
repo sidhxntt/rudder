@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # volumes and can consume real cluster capacity.
     github_pr_environment_limit: int = 10
 
+    # Phase 8: absence disables only non-deterministic failure diagnosis.
+    openai_api_key: str = ""
+    advisor_repository_root: str = ""
+
     @property
     def resolved_github_app_private_key(self) -> str:
         """Use a mounted PEM when configured, otherwise use the env value.
