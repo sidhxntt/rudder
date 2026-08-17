@@ -13,6 +13,22 @@ export type LauncherActions = {
 
 type LauncherAction = Exclude<keyof LauncherActions, "chooseTarget" | "signOut"> | "choose-target" | "sign-out" | "exit";
 
+export function canLaunchLauncher({
+  hasArgs,
+  json,
+  noInteractive,
+  stdinTTY,
+  stdoutTTY,
+}: {
+  hasArgs: boolean;
+  json: boolean;
+  noInteractive: boolean;
+  stdinTTY: boolean;
+  stdoutTTY: boolean;
+}): boolean {
+  return !hasArgs && !json && !noInteractive && stdinTTY && stdoutTTY;
+}
+
 export async function runLauncher({
   actions,
   clear = () => console.clear(),
@@ -57,6 +73,10 @@ export async function runLauncher({
     } catch (error) {
       spinner.stop(`${label} failed`);
       throw error;
+    }
+    if (selected === "sign-out") {
+      p.outro("Signed out.");
+      return;
     }
   }
 }

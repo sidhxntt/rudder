@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pathToFileURL } from "node:url";
 import * as p from "@clack/prompts";
 import { advisorRequest } from "./advisor.js";
 import { authenticationGate } from "./auth-guard.js";
@@ -7,7 +8,7 @@ import { ApiClient, ApiError } from "./client.js";
 import { loadConfig, mergeContext, saveConfig, type Context } from "./context.js";
 import { completeGitHubLogin } from "./github-login.js";
 import { formatServiceGraph, serviceGraph } from "./graph.js";
-import { runLauncher } from "./launcher.js";
+import { canLaunchLauncher, runLauncher } from "./launcher.js";
 import { fail, print, success, type Output } from "./output.js";
 
 type Flags = Record<string, string | boolean>;
@@ -40,7 +41,7 @@ async function command(state: State, args: string[]): Promise<void> {
   const [noun, action, ...rest] = args;
   if (!noun || noun === "help" || noun === "--help") { console.log(usage); return; }
   if (noun === "login") { if (state.flags["no-interactive"] || !process.stdin.isTTY) throw new Error("GitHub sign-in requires an interactive terminal. Set RUDDER_TOKEN for automation."); const result = await completeGitHubLogin({ api: state.api }); await saveAccessToken(state, result); if (!state.out.json) success(`Logged in to ${state.api.baseUrl}.`, state.out); return; }
-  if (noun === "logout") { state.credentials.token = undefined; await saveConfig(state.context, state.credentials); success("Logged out.", state.out); return; }
+  if (noun === "logout") { discardSession(state); await saveConfig(state.context, state.credentials); success("Logged out.", state.out); return; }
   if (noun === "whoami") return void await request(state, "GET", "/auth/me");
   if (noun === "context") { if (action === "show" || !action) return void print(state.context, state.out); if (action === "clear") { state.context = {}; await saveConfig(state.context, state.credentials); success("Context cleared.", state.out); return; } }
   if (noun === "api") { const method = requireArg(args, 1, "HTTP method").toUpperCase(); const path = requireArg(args, 2, "API path"); return void await request(state, method, path, jsonBody(state.flags)); }
@@ -67,6 +68,10 @@ async function saveAccessToken(state: State, result: Record<string, unknown>): P
   state.credentials.token = token;
   state.api = new ApiClient(state.api.baseUrl, token);
   await saveConfig(state.context, state.credentials);
+}
+export function discardSession(session: { api: ApiClient; credentials: { url?: string; token?: string } }): void {
+  session.credentials.token = undefined;
+  session.api = new ApiClient(session.api.baseUrl);
 }
 async function requireAuthentication(state: State): Promise<void> {
   const gate = authenticationGate({
@@ -112,7 +117,7 @@ async function githubImport(s: State, action: string | undefined, a: string[]): 
 async function domain(s: State, action: string | undefined, a: string[]): Promise<void> { const env = await resolve(s, "environment"); if (action === "list") return void await request(s, "GET", `/environments/${env}/domains`); if (action === "create") return void await request(s, "POST", `/environments/${env}/domains`, jsonBody(s.flags)); if (action === "delete") { await confirm(s, `Delete domain ${requireArg(a, 0, "domain id")}?`); return void await request(s, "DELETE", `/domains/${a[0]}`); } if (action === "settings") return void await request(s, "PATCH", `/domains/${requireArg(a, 0, "domain id")}`, jsonBody(s.flags)); throw new Error("domain: list, create, settings, delete"); }
 async function advisor(s: State, action: string | undefined): Promise<void> { if (action === "diagnose") { const result = await advisorRequest(s.api, "diagnose", undefined, jsonBody(s.flags)); if (s.out.json) return void print(result, s.out); console.log("Model-generated diagnosis (may be incomplete):"); return void print(result, s.out); } if (action === "scan" || action === "accept") { const environment = await resolve(s, "environment"); const body = action === "scan" ? { repository_path: stringFlag(s.flags, "path") ?? requireArg([], 0, "--path") } : jsonBody(s.flags); if (!body) throw new Error("advisor accept requires exactly one proposal in --data JSON."); return void print(await advisorRequest(s.api, action, environment, body), s.out); } throw new Error("advisor: scan --path PATH, accept --data JSON, diagnose --data JSON"); }
 
-async function main(): Promise<void> { const parsed = parse(process.argv.slice(2)); const saved = await loadConfig(); const context = mergeContext(saved.context, { project: stringFlag(parsed.flags, "project"), environment: stringFlag(parsed.flags, "env"), service: stringFlag(parsed.flags, "service") }); const url = stringFlag(parsed.flags, "url") ?? process.env.RUDDER_URL ?? saved.credentials.url ?? "http://localhost:8000"; const state: State = { api: new ApiClient(url, process.env.RUDDER_TOKEN ?? saved.credentials.token), context, credentials: { ...saved.credentials, url }, flags: parsed.flags, out: { json: Boolean(parsed.flags.json) } }; const noun = parsed.args[0]; const launch = !noun && Boolean(process.stdin.isTTY) && !parsed.flags.json && !parsed.flags["no-interactive"];
+export async function main(): Promise<void> { const parsed = parse(process.argv.slice(2)); const saved = await loadConfig(); const context = mergeContext(saved.context, { project: stringFlag(parsed.flags, "project"), environment: stringFlag(parsed.flags, "env"), service: stringFlag(parsed.flags, "service") }); const url = stringFlag(parsed.flags, "url") ?? process.env.RUDDER_URL ?? saved.credentials.url ?? "http://localhost:8000"; const state: State = { api: new ApiClient(url, process.env.RUDDER_TOKEN ?? saved.credentials.token), context, credentials: { ...saved.credentials, url }, flags: parsed.flags, out: { json: Boolean(parsed.flags.json) } }; const noun = parsed.args[0]; const launch = canLaunchLauncher({ hasArgs: Boolean(noun), json: Boolean(parsed.flags.json), noInteractive: Boolean(parsed.flags["no-interactive"]), stdinTTY: Boolean(process.stdin.isTTY), stdoutTTY: Boolean(process.stdout.isTTY) });
   if (launch) {
     await requireAuthentication(state);
     await runLauncher({ actions: {
@@ -128,4 +133,4 @@ async function main(): Promise<void> { const parsed = parse(process.argv.slice(2
     return;
   }
   if (![undefined, "help", "--help", "login", "logout"].includes(noun)) await requireAuthentication(state); await command(state, parsed.args); }
-main().catch((error: unknown) => { fail(error instanceof ApiError || error instanceof Error ? error.message : String(error)); process.exitCode = error instanceof ApiError && error.status === 401 ? 1 : 1; });
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error: unknown) => { fail(error instanceof ApiError || error instanceof Error ? error.message : String(error)); process.exitCode = error instanceof ApiError && error.status === 401 ? 1 : 1; });
