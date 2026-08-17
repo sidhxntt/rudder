@@ -57,9 +57,9 @@ RUDDER_TOKEN=... rudder --no-interactive project list --json
 ```
 
 With `--no-interactive`, browser sign-in and prompts are refused. A
-non-TTY command also cannot prompt: use `RUDDER_TOKEN` for an authenticated
-operator command. Bare `rudder` in a non-TTY prints usage rather than opening
-the launcher.
+non-TTY command also cannot prompt, but an authenticated command may use either
+an already-saved CLI token or `RUDDER_TOKEN`; prefer `RUDDER_TOKEN` for CI.
+Bare `rudder` in a non-TTY prints usage rather than opening the launcher.
 
 ---
 
@@ -136,13 +136,14 @@ pleasant terminal experience.
 `rudder login` starts the shared `POST /auth/authorizations` browser handoff
 and consumes its resulting bearer token; GitHub authentication remains in the
 browser. The CLI does not create a CLI-only OAuth callback or control plane.
-`RUDDER_TOKEN` is the process-local automation alternative. `rudder whoami`
-uses the same identity endpoint as the web client, while `rudder logout`
-clears only the CLI's locally saved token.
+`RUDDER_TOKEN` is the process-local automation alternative and is preferred in
+CI; non-interactive commands may also use an already-saved CLI token. `rudder
+whoami` uses the same identity endpoint as the web client, while `rudder
+logout` clears only the CLI's locally saved token.
 
 The CLI keeps a non-secret selected project, environment, and service context.
 An explicit UUID or flag always wins over context; an ambiguous name is an
-error that prints candidate IDs. `--project`, `--environment`, and `--service`
+error that prints candidate IDs. `--project`, `--env`, and `--service`
 work on every relevant command. Context selection is a convenience, never an
 implicit mutation target in non-interactive mode.
 
@@ -306,8 +307,8 @@ rudder variable get DATABASE_URL; test $? -ne 0
 - [ ] Shared GitHub browser authorization, documented local-config persistence
   until credential-store hardening, logout, selected context, and
   `RUDDER_TOKEN` automation authentication work without exposing tokens.
-- [ ] The first operational CLI command requires an existing CLI credential;
-  non-interactive mode instead requires `RUDDER_TOKEN`.
+- [ ] The first operational CLI command uses an existing CLI credential or the
+  process-local `RUDDER_TOKEN`; non-interactive CI prefers `RUDDER_TOKEN`.
 - [ ] Projects created in web are immediately visible in the CLI, and projects
   created or deleted by CLI appear or disappear in web after refresh.
 - [ ] GitHub import, service graph, deploy/history/permanent URLs, rollback,
