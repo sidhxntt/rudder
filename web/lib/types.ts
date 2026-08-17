@@ -94,6 +94,25 @@ export interface Environment {
   created_at: string;
 }
 
+/** A traceable, read-only reference returned with an assistant response. */
+export interface AssistantSource {
+  label: string;
+  href: string;
+}
+
+/** A session-local conversation turn. Assistant responses may cite sources. */
+export interface AssistantTurn {
+  role: "user" | "assistant";
+  content: string;
+  sources?: AssistantSource[];
+}
+
+/** Read-only assistant response for an environment-scoped conversation. */
+export interface AssistantMessageResponse {
+  model: string;
+  message: AssistantTurn;
+}
+
 export interface Service {
   id: string;
   environment_id: string;

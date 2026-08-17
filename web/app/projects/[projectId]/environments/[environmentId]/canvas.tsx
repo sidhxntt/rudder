@@ -35,6 +35,7 @@ import { composeManagedByServiceId, composeReleaseOwnerId } from "./compose-life
 import { ServiceNode, type ServiceNodeData } from "./service-node";
 import { AdvisorNode } from "./advisor-node";
 import { ProjectSettings } from "./project-settings";
+import { AssistantDock } from "./assistant-dock";
 
 const nodeTypes: NodeTypes = { service: ServiceNode, advisor: AdvisorNode };
 
@@ -391,6 +392,8 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
             <p className="text-caption text-status-failed">could not load services</p>
           </div>
         ) : null}
+
+        <AssistantDock environmentId={environmentId} />
       </div>
 
       {projectSettingsOpen ? (

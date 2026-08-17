@@ -39,6 +39,8 @@ import type {
   AutoscalingOperationRequest,
   AdvisorDiagnosis,
   AdvisorProposal,
+  AssistantMessageResponse,
+  AssistantTurn,
   ServiceUpdate,
   TokenResponse,
   User,
@@ -268,6 +270,24 @@ export function getGitHubImport(importId: string): Promise<GitHubImport> {
 /** GET /projects/{project_id}/environments */
 export function listEnvironments(projectId: string): Promise<Environment[]> {
   return requestJson<Environment[]>(`/projects/${id(projectId)}/environments`);
+}
+
+/**
+ * POST /environments/{environment_id}/assistant/messages
+ *
+ * The assistant route is intentionally conversational and read-only. The UI
+ * supplies only the current user question and a small, in-memory transcript;
+ * it never asks this endpoint to perform an environment action.
+ */
+export function sendAssistantMessage(
+  environmentId: string,
+  message: string,
+  priorTurns: AssistantTurn[],
+): Promise<AssistantMessageResponse> {
+  return requestJson<AssistantMessageResponse>(`/environments/${id(environmentId)}/assistant/messages`, {
+    method: "POST",
+    body: { message, prior_turns: priorTurns },
+  });
 }
 
 /** POST /environments/{environment_id}/clone */
