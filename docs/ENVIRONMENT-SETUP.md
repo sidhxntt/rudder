@@ -270,7 +270,7 @@ Do not set identity-ready true until the broker has created and verified the exa
 
 | Variable | Used by | Source |
 | --- | --- | --- |
-| ANTHROPIC_API_KEY | Phase 8 Advisor | Anthropic Console; blank until Advisor is enabled |
+| OPENAI_API_KEY | Phase 8 Advisor and read-only operator assistant | OpenAI API keys page; optional. Leave blank to keep deterministic Rudder features available without model-backed diagnosis or chat. |
 | RUDDER_API_URL | web development client | Optional browser API base URL |
 | RUDDER_URL | SDK generator | Optional OpenAPI URL; defaults to http://localhost:8000 |
 

@@ -27,13 +27,17 @@ import {
 import { Button } from "@/components/ui/button";
 import { serviceUrl } from "@/lib/status";
 import type { Service } from "@/lib/types";
+import type { AdvisorProposal } from "@/lib/types";
+import { acceptAdvisorItem, scanAdvisor } from "@/lib/api";
 
 import { DetailPanel } from "./detail-panel";
 import { composeManagedByServiceId, composeReleaseOwnerId } from "./compose-lifecycle";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
+import { AdvisorNode } from "./advisor-node";
 import { ProjectSettings } from "./project-settings";
+import { AssistantDock } from "./assistant-dock";
 
-const nodeTypes: NodeTypes = { service: ServiceNode };
+const nodeTypes: NodeTypes = { service: ServiceNode, advisor: AdvisorNode };
 
 /** Node box is 14rem wide; these leave a lane between columns. */
 const FALLBACK_COLUMN = 288;
@@ -151,6 +155,25 @@ export function composeEdges(services: Service[], releaseOwnerId: string | undef
   });
 }
 
+export function composeAdvisorGraph(items: AdvisorProposal["items"]): { nodes: Node[]; edges: Edge[] } {
+  const nodes = items.filter((item) => item.kind !== "variable").map((item, index) => ({
+    id: `advisor:${item.id}`, type: "advisor", position: { x: 600, y: index * 176 },
+    data: { name: String(item.payload.name ?? item.payload.template ?? item.id), kind: item.kind },
+  } satisfies Node));
+  const edges = items.filter((item) => item.kind === "variable").flatMap((item) => {
+    const service = String(item.payload.service ?? "app");
+    const addon = String(item.payload.key ?? "").startsWith("DATABASE") ? "postgres" : "redis";
+    return [{ id: `advisor:${item.id}`, source: `advisor:service:${service}`, target: `advisor:addon:${addon}`, type: "smoothstep", animated: true, style: { stroke: "var(--rd-accent)", strokeDasharray: "5 4" } } satisfies Edge];
+  });
+  return { nodes, edges };
+}
+
+export function resolveAdvisorVariableTarget(
+  selectedId: string, proposedName: unknown, services: Pick<Service, "id" | "name">[],
+): string | undefined {
+  return selectedId || services.find((service) => service.name === proposedName)?.id;
+}
+
 export function EnvironmentCanvas({ environmentId }: { environmentId: string }) {
   const params = useParams();
   const router = useRouter();
@@ -163,11 +186,34 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null);
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
+  const [advisorPath, setAdvisorPath] = useState("");
+  const [advisorProposal, setAdvisorProposal] = useState<AdvisorProposal | null>(null);
+  const [advisorMessage, setAdvisorMessage] = useState("");
+  const [advisorVariableTarget, setAdvisorVariableTarget] = useState("");
 
   const serviceList = useMemo(() => services.data ?? [], [services.data]);
   const domainList = useMemo(() => domains.data ?? [], [domains.data]);
   const composeAppServiceId = useMemo(() => composeReleaseOwnerId(serviceList), [serviceList]);
   const edges = useMemo(() => composeEdges(serviceList, composeAppServiceId), [composeAppServiceId, serviceList]);
+  const advisorGraph = useMemo(() => composeAdvisorGraph(advisorProposal?.items ?? []), [advisorProposal]);
+  const canvasNodes = useMemo(() => [...nodes, ...advisorGraph.nodes.map((node) => ({ ...node, data: { ...node.data, onAccept: () => void acceptProposal(node.id.replace("advisor:", "")) } }))], [nodes, advisorGraph.nodes]);
+  const canvasEdges = useMemo(() => [...edges, ...advisorGraph.edges], [edges, advisorGraph.edges]);
+
+  async function acceptProposal(id: string) {
+    const item = advisorProposal?.items.find((candidate) => candidate.id === id);
+    if (!item) return;
+    const target = item.kind === "variable"
+      ? resolveAdvisorVariableTarget(advisorVariableTarget, item.payload.service, serviceList)
+      : undefined;
+    if (item.kind === "variable" && !target) { setAdvisorMessage("Accept the proposed target service before its variable."); return; }
+    try { await acceptAdvisorItem(environmentId, item, target); setAdvisorProposal((current) => current && { ...current, items: current.items.filter((candidate) => candidate.id !== id) }); }
+    catch (error) { setAdvisorMessage(error instanceof Error ? error.message : "Could not accept proposal"); }
+  }
+
+  async function scanAdvisorProposal() {
+    try { setAdvisorMessage(""); setAdvisorProposal(await scanAdvisor(environmentId, advisorPath)); }
+    catch (error) { setAdvisorMessage(error instanceof Error ? error.message : "Advisor scan failed"); }
+  }
 
   // A local bootstrap can replace an environment while a browser still has its
   // old URL open. Resolve the project again instead of leaving the canvas on a
@@ -289,10 +335,17 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
               {operatorContext.description}
             </p>
           </div>
+          <div className="border-t border-hairline px-md py-sm">
+            <p className="font-mono text-micro uppercase tracking-wide text-accent">Advisor · ghost proposals</p>
+            <div className="mt-xs flex gap-xs"><input value={advisorPath} onChange={(event) => setAdvisorPath(event.target.value)} placeholder="checkout path" aria-label="Advisor checkout path" className="min-w-0 flex-1 rounded-sm border border-hairline bg-surface px-xs py-xxs text-micro" /><button type="button" onClick={() => void scanAdvisorProposal()} disabled={!advisorPath} className="text-micro text-accent disabled:opacity-50">Scan</button></div>
+            {advisorProposal?.items.some((item) => item.kind === "variable") ? <select value={advisorVariableTarget} onChange={(event) => setAdvisorVariableTarget(event.target.value)} aria-label="Variable target service" className="mt-xs w-full rounded-sm border border-hairline bg-surface px-xs py-xxs text-micro"><option value="">Select target service for variables</option>{serviceList.map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</select> : null}
+            {advisorProposal?.items.filter((item) => item.kind === "variable").map((item) => <div key={item.id} className="mt-xs flex items-center justify-between text-micro text-ink-mute"><span>ghost · {String(item.payload.key)}</span><button type="button" onClick={() => void acceptProposal(item.id)} className="text-accent underline">Accept</button></div>)}
+            {advisorMessage ? <p className="mt-xxs text-micro text-status-failed">{advisorMessage}</p> : null}
+          </div>
         </section>
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={canvasNodes}
+          edges={canvasEdges}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onNodeDragStop={onNodeDragStop}
@@ -339,10 +392,12 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
             <p className="text-caption text-status-failed">could not load services</p>
           </div>
         ) : null}
+
+        <AssistantDock environmentId={environmentId} />
       </div>
 
       {projectSettingsOpen ? (
-        <aside className="flex w-[30rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
+        <aside className="flex w-[36rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
           <div className="flex items-center justify-between gap-md border-b border-hairline px-lg py-md">
             <h2 className="text-heading-md text-ink">Project settings</h2>
             <button

@@ -94,6 +94,25 @@ export interface Environment {
   created_at: string;
 }
 
+/** A traceable, read-only reference returned with an assistant response. */
+export interface AssistantSource {
+  label: string;
+  href: string;
+}
+
+/** A session-local conversation turn. Assistant responses may cite sources. */
+export interface AssistantTurn {
+  role: "user" | "assistant";
+  content: string;
+  sources?: AssistantSource[];
+}
+
+/** Read-only assistant response for an environment-scoped conversation. */
+export interface AssistantMessageResponse {
+  model: string;
+  message: AssistantTurn;
+}
+
 export interface Service {
   id: string;
   environment_id: string;
@@ -146,6 +165,23 @@ export interface Deployment {
   error_message: string | null;
   created_at: string;
   became_live_at: string | null;
+}
+
+export interface AdvisorDiagnosis {
+  enabled: boolean;
+  model_generated: true;
+  diagnosis: string | null;
+}
+
+export interface AdvisorProposal {
+  version: number;
+  items: Array<{
+    id: string;
+    kind: "service" | "addon" | "variable";
+    status: "proposed";
+    payload: Record<string, unknown>;
+  }>;
+  external_requirements: string[];
 }
 
 export interface Instance {

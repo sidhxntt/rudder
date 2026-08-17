@@ -16,8 +16,9 @@ from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_engine
 from rudder_cp.logs.runtime import get_runtime_log_store
 from rudder_cp.logs.store import get_build_log_store
-from rudder_cp.routers import auth as auth_router
 from rudder_cp.routers import (
+    advisor,
+    assistant,
     deployments,
     domains,
     environments,
@@ -30,6 +31,7 @@ from rudder_cp.routers import (
     variables,
     webhooks,
 )
+from rudder_cp.routers import auth as auth_router
 from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.auth import seed_admin_user
@@ -128,6 +130,8 @@ def create_app() -> FastAPI:
         logs,
         imports,
         operations,
+        advisor,
+        assistant,
     )
     for module in protected:
         app.include_router(module.router, dependencies=[Depends(auth_router.get_current_user)])

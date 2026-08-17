@@ -17,7 +17,7 @@ that could mutate state would make the platform's behavior unreproducible.
 ## Prerequisites
 
 - [ ] Phase 1 verified (needs the service graph and canvas)
-- [ ] `ANTHROPIC_API_KEY` in `.env` — see `../NEED-FROM-YOU.md` item 12
+- [ ] `OPENAI_API_KEY` in `.env` — see `../NEED-FROM-YOU.md` item 15
 
 ---
 
@@ -66,6 +66,22 @@ to the model, return a plain-language diagnosis.
 ground truth; the diagnosis is a convenience that can be wrong.
 
 Mark it visually as model-generated. Users must never mistake a guess for a fact.
+
+### 5. Read-only operator assistant
+
+The lower-right **Ask Rudder** dock on an environment canvas answers questions
+about the current project, environment, services, deployment history,
+operations, metrics, redacted failure context, and the approved Rudder docs.
+It keeps only a small browser-session conversation window and labels its
+sources.
+
+It uses the same optional `OPENAI_API_KEY` boundary as failure diagnosis. With
+no key, Rudder remains fully usable and the assistant explains that model-backed
+answers are unavailable.
+
+The assistant is deliberately unable to deploy, accept advisor proposals,
+rollback, edit variables, or change any project state. It can explain a manual
+next step, but every mutation remains in the existing, explicit controls.
 
 ---
 
@@ -126,6 +142,11 @@ rudder service list                   # → exactly that one item, nothing else
 # 6. Prompt injection
 #    add a repo file containing instruction-shaped text
 # → proposal unchanged, no behavior change
+
+# 7. Read-only operator assistant
+#    open Ask Rudder in the lower-right canvas dock and ask about the environment
+# → response cites its scope; no action, deploy, rollback, or acceptance control
+#   is available from the conversation
 ```
 
 ---
@@ -139,6 +160,8 @@ rudder service list                   # → exactly that one item, nothing else
 - [ ] Ghost nodes are visually distinct from real services
 - [ ] Per-item accept works; nothing applies without it
 - [ ] Failure diagnosis appears alongside the raw log, marked as generated
+- [ ] Ask Rudder can explain the current environment and approved Rudder docs
+- [ ] Ask Rudder exposes no state-changing operation
 - [ ] Instruction-shaped text in a repo does not change advisor behavior
 - [ ] No code path exists where the model mutates state
 - [ ] `README.md` Phase 8 section

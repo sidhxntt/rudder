@@ -26,7 +26,7 @@ The project is **Rudder**.
 | Docker network | `rudder` |
 | Compose project | `rudder` |
 
-`GITHUB_TOKEN` and `ANTHROPIC_API_KEY` keep their conventional names — they are
+`GITHUB_TOKEN` and `OPENAI_API_KEY` keep their conventional names — they are
 not Rudder's namespace.
 
 ## Rejected alternatives

@@ -37,6 +37,10 @@ import type {
   ServiceOperationsState,
   ResourceOperationRequest,
   AutoscalingOperationRequest,
+  AdvisorDiagnosis,
+  AdvisorProposal,
+  AssistantMessageResponse,
+  AssistantTurn,
   ServiceUpdate,
   TokenResponse,
   User,
@@ -268,6 +272,24 @@ export function listEnvironments(projectId: string): Promise<Environment[]> {
   return requestJson<Environment[]>(`/projects/${id(projectId)}/environments`);
 }
 
+/**
+ * POST /environments/{environment_id}/assistant/messages
+ *
+ * The assistant route is intentionally conversational and read-only. The UI
+ * supplies only the current user question and a small, in-memory transcript;
+ * it never asks this endpoint to perform an environment action.
+ */
+export function sendAssistantMessage(
+  environmentId: string,
+  message: string,
+  priorTurns: AssistantTurn[],
+): Promise<AssistantMessageResponse> {
+  return requestJson<AssistantMessageResponse>(`/environments/${id(environmentId)}/assistant/messages`, {
+    method: "POST",
+    body: { message, prior_turns: priorTurns },
+  });
+}
+
 /** POST /environments/{environment_id}/clone */
 export function cloneEnvironment(environmentId: string, name: string): Promise<Environment> {
   return requestJson<Environment>(`/environments/${id(environmentId)}/clone`, {
@@ -288,6 +310,26 @@ export async function deleteEnvironment(environmentId: string): Promise<void> {
 /** GET /environments/{environment_id}/services */
 export function listServices(environmentId: string): Promise<Service[]> {
   return requestJson<Service[]>(`/environments/${id(environmentId)}/services`);
+}
+
+/** Deterministic scan only. This endpoint cannot create resources. */
+export function scanAdvisor(environmentId: string, repositoryPath: string): Promise<AdvisorProposal> {
+  return requestJson<AdvisorProposal>(`/environments/${id(environmentId)}/advisor/scan`, {
+    method: "POST", body: { repository_path: repositoryPath },
+  });
+}
+
+/** One explicit acceptance; no batch / automatic apply API exists. */
+export function acceptAdvisorItem(environmentId: string, item: AdvisorProposal["items"][number], serviceId?: string): Promise<Service> {
+  return requestJson<Service>(`/environments/${id(environmentId)}/advisor/accept`, {
+    method: "POST", body: { item, service_id: serviceId ?? null },
+  });
+}
+
+export function diagnoseBuildFailure(logs: string[], serviceConfig: Record<string, unknown> = {}): Promise<AdvisorDiagnosis> {
+  return requestJson<AdvisorDiagnosis>("/advisor/diagnosis", {
+    method: "POST", body: { logs: logs.slice(-100), service_config: serviceConfig },
+  });
 }
 
 /** GET /services/{service_id} */

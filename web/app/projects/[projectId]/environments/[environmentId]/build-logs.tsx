@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { ApiError, isNotFound, streamBuildLog } from "@/lib/api";
+import { ApiError, diagnoseBuildFailure, isNotFound, streamBuildLog } from "@/lib/api";
+import type { AdvisorDiagnosis } from "@/lib/types";
 import type { Deployment } from "@/lib/types";
 
 type Stream =
@@ -43,6 +44,7 @@ export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
   const [logAttempt, setLogAttempt] = useState(0);
   const [followOutput, setFollowOutput] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [diagnosis, setDiagnosis] = useState<AdvisorDiagnosis | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef<Deployment["status"] | null>(null);
 
@@ -51,10 +53,16 @@ export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
 
   useEffect(() => {
     setLines([]);
+    setDiagnosis(null);
     setLogAttempt(0);
 
     if (!deploymentId) setStream({ phase: "idle" });
   }, [deploymentId]);
+
+  useEffect(() => {
+    if (deployment?.status !== "failed" || lines.length === 0) return;
+    void diagnoseBuildFailure(lines).then(setDiagnosis).catch(() => setDiagnosis(null));
+  }, [deployment?.status, lines]);
 
   useEffect(() => {
     if (!deploymentId) {
@@ -211,6 +219,14 @@ export function BuildLogs({ deployment }: { deployment: Deployment | null }) {
             <p className="text-micro font-medium text-status-failed">Build failed</p>
             <p className="pt-xxs font-mono text-micro leading-5 text-status-failed">{deployment.error_message}</p>
           </div>
+        ) : null}
+
+        {diagnosis?.enabled && diagnosis.diagnosis ? (
+          <section className="mx-lg mt-md border border-accent/30 bg-accent/5 px-md py-sm" aria-label="Model-generated failure diagnosis">
+            <p className="font-mono text-micro uppercase tracking-wide text-accent">Model-generated diagnosis</p>
+            <p className="pt-xxs text-micro text-ink-secondary">{diagnosis.diagnosis}</p>
+            <p className="pt-xs text-micro text-ink-faint">This is a suggestion. The raw build log above is the source of truth.</p>
+          </section>
         ) : null}
 
         <div ref={endRef} />
