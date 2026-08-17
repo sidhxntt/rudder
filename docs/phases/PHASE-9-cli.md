@@ -2,8 +2,8 @@
 
 **Target:** 2–3 weeks
 
-**Demo:** from a terminal, authenticate with the existing Rudder bearer-token
-endpoint, import a repository, inspect its
+**Demo:** from a terminal, authenticate through Rudder's shared GitHub browser
+authorization handoff, import a repository, inspect its
 service graph, deploy it, follow coloured logs, change an operation, inspect
 analytics, and restore an earlier release — with the same resulting state as
 the web console.
@@ -197,11 +197,13 @@ usage or incomplete non-interactive input, and 130 cancellation.
    detection, typed API client boundary, output formatter, and one error/exit
    contract. Preserve the Python CLI only as a migration reference until parity
    tests explicitly replace it.
-2. **Add authentication and targeting.** Consume the existing bearer-token
-   endpoint, secure interactive token storage, process-local automation token
-   support, selected context, explicit-ID resolution, and consistent
-   project/environment/service selectors. No CLI-specific backend route is
-   introduced.
+2. **Add authentication and targeting.** Use the shared browser authorization
+   handoff and consume its bearer token. Persist the interactive token, Rudder
+   URL, and selected context in the documented local config file until OS
+   credential-store hardening lands; support the process-local `RUDDER_TOKEN`
+   automation token, explicit-ID resolution, and consistent
+   project/environment/service selectors. The CLI remains a client of the
+   shared control plane, not a separate CLI control plane.
 3. **Port foundational resources.** Implement projects, environments, service
    lifecycle, variables, domains, GitHub import, and a textual service graph.
    The import wizard must show the exact Compose release that it will confirm.
@@ -257,7 +259,7 @@ terminal failed state.
 
 ```bash
 # Package quality
-cd cli
+cd cli/node
 npm test
 npm run typecheck
 npm run build
@@ -301,8 +303,9 @@ rudder variable get DATABASE_URL; test $? -ne 0
   with documented interactive and non-interactive forms.
 - [ ] CLI mutations use only the same control-plane API resources as the web
   console; no direct Docker, Kubernetes, database, or agent mutations exist.
-- [ ] Existing bearer-token login, secure credential storage, logout, selected context,
-  and `RUDDER_TOKEN` automation authentication work without exposing tokens.
+- [ ] Shared GitHub browser authorization, documented local-config persistence
+  until credential-store hardening, logout, selected context, and
+  `RUDDER_TOKEN` automation authentication work without exposing tokens.
 - [ ] The first operational CLI command requires an existing CLI credential;
   non-interactive mode instead requires `RUDDER_TOKEN`.
 - [ ] Projects created in web are immediately visible in the CLI, and projects
