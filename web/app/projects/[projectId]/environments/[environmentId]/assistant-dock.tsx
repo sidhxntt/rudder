@@ -59,7 +59,7 @@ export function AssistantDock({ environmentId }: { environmentId: string }) {
   }
 
   return (
-    <div className="absolute bottom-5 right-5 z-20 flex flex-col items-end gap-sm">
+    <div className="absolute bottom-5 left-5 z-20 flex flex-col items-start gap-sm">
       {open ? (
         <section
           role="dialog"
@@ -129,7 +129,7 @@ export function AssistantDock({ environmentId }: { environmentId: string }) {
         </section>
       ) : null}
 
-      <Button onClick={() => setOpen(true)} className="bottom-5 right-5 border-hairline-strong bg-surface-raised/90 text-ink shadow-elev-2 backdrop-blur-md hover:bg-surface-soft hover:text-accent">
+      <Button onClick={() => setOpen(true)} className="border-hairline-strong bg-surface-raised/90 text-ink shadow-elev-2 backdrop-blur-md hover:bg-surface-soft hover:text-accent">
         <svg viewBox="0 0 24 24" aria-hidden="true" className="mr-xs h-4 w-4 fill-none stroke-current stroke-[1.7]">
           <path d="M5 5.75A2.75 2.75 0 0 1 7.75 3h8.5A2.75 2.75 0 0 1 19 5.75v6.5A2.75 2.75 0 0 1 16.25 15H11l-4.2 3.15c-.66.5-1.6.03-1.6-.8V15.4A2.74 2.74 0 0 1 5 14.25v-8.5Z" strokeLinecap="round" strokeLinejoin="round" />
         </svg>

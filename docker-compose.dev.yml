@@ -90,6 +90,10 @@ services:
       RUDDER_BUILDKIT_ADDR: tcp://registry:1234
       RUDDER_AGENT_URL: http://agent:9000
       RUDDER_TRAEFIK_DYNAMIC_DIR: /traefik/dynamic
+      # Phase 8 Advisor may inspect this local checkout only. The mount below
+      # is read-only, and the scanner considers recognised source/manifests,
+      # not arbitrary prose or dotenv files.
+      RUDDER_ADVISOR_REPOSITORY_ROOT: /workspace/rudder
       # Keep the GitHub App key on the host. The container receives only a
       # read-only mount at a stable path; Settings reads this path instead of
       # exposing a multiline PEM through the compose file.
@@ -98,6 +102,7 @@ services:
       - "8000:8000"
     volumes:
       - ./control-plane:/app
+      - ./:/workspace/rudder:ro
       - ./infra/traefik/dynamic:/traefik/dynamic
       - buildlogs:/var/log/rudder/builds
       - ${RUDDER_GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/rudder-github-app.pem:ro

@@ -397,7 +397,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
       </div>
 
       {projectSettingsOpen ? (
-        <aside className="flex w-[30rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
+        <aside className="flex w-[36rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
           <div className="flex items-center justify-between gap-md border-b border-hairline px-lg py-md">
             <h2 className="text-heading-md text-ink">Project settings</h2>
             <button

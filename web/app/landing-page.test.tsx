@@ -32,3 +32,11 @@ it("frames Rudder as an observable delivery loop with an ordered operator proof"
   expect(screen.getByText("Repository event")).toBeTruthy();
   expect(screen.getByText("Release record")).toBeTruthy();
 });
+
+it("explains Rudder AI and the propose-only Advisor without promising automatic changes", () => {
+  render(<LandingPage authenticated={false} />);
+
+  expect(screen.getByText("Rudder AI, grounded in your workspace")).toBeTruthy();
+  expect(screen.getByText("Rudder Advisor, before you deploy")).toBeTruthy();
+  expect(screen.getByText(/nothing is applied automatically/i)).toBeTruthy();
+});

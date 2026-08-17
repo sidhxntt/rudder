@@ -95,6 +95,8 @@ const features = [
   ["A release you can inspect", "Follow build and runtime logs, see actual service state, and keep immutable deployment records for restore."],
   ["Environments without a second system", "Clone an isolated service graph for production or let GitHub pull requests create capped preview environments."],
   ["Frontends included", "Deploy Vite, CRA, Astro, and Next static export projects with permanent release URLs; run Next SSR as an app container."],
+  ["Rudder AI, grounded in your workspace", "Ask a read-only assistant about the current environment, releases, services, runtime signals, and Rudder documentation. It explains; it never changes state."],
+  ["Rudder Advisor, before you deploy", "Scan a local checkout for an app, worker, database, cache, and wiring suggestions. Nothing is applied automatically: review each ghost proposal before accepting it."],
 ];
 
 export function LandingPage({ authenticated }: LandingPageProps) {

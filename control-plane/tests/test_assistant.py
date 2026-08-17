@@ -110,6 +110,21 @@ def test_context_includes_allowlisted_rudder_docs_with_source_identifiers(
     assert [source["id"] for source in sources] == ["PRD.md", "phases/PHASE-1-single-host.md"]
 
 
+def test_response_parser_reads_structured_responses_api_output() -> None:
+    payload = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "The release is healthy."},
+                ],
+            }
+        ]
+    }
+
+    assert assistant_service.response_text(payload) == "The release is healthy."
+
+
 async def test_no_openai_key_disables_model_and_action_requests_are_refused(
     assistant_client,
 ) -> None:
@@ -123,7 +138,7 @@ async def test_no_openai_key_disables_model_and_action_requests_are_refused(
     body = response.json()
     assert body["enabled"] is False
     assert body["read_only"] is True
-    assert "cannot deploy" in body["message"].lower()
+    assert "cannot deploy" in body["message"]["content"].lower()
 
 
 async def test_prompt_marks_untrusted_content_and_model_is_injectable() -> None:
@@ -143,6 +158,38 @@ async def test_prompt_marks_untrusted_content_and_model_is_injectable() -> None:
     )
 
     assert response["enabled"] is True
-    assert response["message"] == "I can explain the current state."
+    assert response["message"]["content"] == "I can explain the current state."
     assert "UNTRUSTED DATA" in seen
     assert "never execute" in seen.lower()
+
+
+def test_message_endpoint_matches_the_canvas_contract_and_carries_prior_turns(
+    assistant_client,
+) -> None:
+    client, _, _, _, environment = assistant_client
+    seen = ""
+
+    async def fake_model(prompt: str) -> str:
+        nonlocal seen
+        seen = prompt
+        return "The release is healthy."
+
+    client.app.state.settings = type(
+        "Settings", (), {"openai_api_key": "test-key", "assistant_model": "test-model"}
+    )()
+    client.app.state.assistant_complete = fake_model
+
+    response = client.post(
+        f"/environments/{environment.id}/assistant/messages",
+        json={
+            "message": "What is happening now?",
+            "prior_turns": [{"role": "user", "content": "Earlier question"}],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model"] == "test-model"
+    assert body["message"]["role"] == "assistant"
+    assert body["message"]["content"] == "The release is healthy."
+    assert "Earlier question" in seen

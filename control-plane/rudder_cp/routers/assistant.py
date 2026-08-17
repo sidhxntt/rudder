@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,8 +22,14 @@ router = APIRouter(tags=["assistant"])
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
+class AssistantTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4_000)
+
+
 class AssistantMessage(BaseModel):
     message: str = Field(min_length=1, max_length=4_000)
+    prior_turns: list[AssistantTurn] = Field(default_factory=list, max_length=6)
 
 
 @router.post("/environments/{environment_id}/assistant/messages")
@@ -52,7 +58,9 @@ async def message(
     return await respond(
         api_key=request.app.state.settings.openai_api_key,
         message=body.message,
+        prior_turns=[turn.model_dump() for turn in body.prior_turns],
         context=context,
         docs=load_knowledge_documents(),
         complete=complete,
+        model=getattr(request.app.state.settings, "assistant_model", "gpt-4.1-mini"),
     )

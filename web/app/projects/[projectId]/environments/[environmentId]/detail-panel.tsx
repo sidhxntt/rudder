@@ -126,7 +126,7 @@ export function DetailPanel({
     status === "live" && latest?.status === "failed" ? latest : null;
 
   return (
-    <aside className="flex w-[30rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
+    <aside className="flex w-[36rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
       <div className="flex items-start justify-between gap-md border-b border-hairline px-lg py-md">
         <div className="min-w-0">
           <div className="flex items-center gap-sm">

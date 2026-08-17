@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { acceptAdvisorItem, scanAdvisor } from "@/lib/api";
 import type { AdvisorProposal } from "@/lib/types";
 
@@ -28,7 +30,23 @@ export function AdvisorSurface({ environmentId }: { environmentId: string }) {
     <section className="border border-dashed border-accent/50 bg-accent/5 p-md">
       <p className="font-mono text-micro uppercase tracking-wide text-accent">Advisor · propose only</p>
       <p className="mt-xs text-caption text-ink-secondary">Ghost nodes are suggestions, not deployed resources. Each acceptance is separate.</p>
-      <div className="mt-md flex gap-sm"><input value={path} onChange={(event) => setPath(event.target.value)} placeholder="checkout path relative to advisor root" className="min-w-0 flex-1 rounded-sm border border-hairline bg-surface px-sm py-xs text-micro" /><button type="button" onClick={() => void scan()} disabled={!path} className="rounded-sm border border-accent px-sm py-xs text-micro text-accent disabled:opacity-50">Scan</button></div>
+      <div className="mt-md flex gap-sm">
+        <Input
+          value={path}
+          onChange={(event) => setPath(event.target.value)}
+          placeholder="checkout path relative to advisor root"
+          className="min-w-0 flex-1"
+        />
+        <Button type="button" variant="outline" size="sm" onClick={() => void scan()} disabled={!path}>
+          Scan
+        </Button>
+      </div>
+      <div className="mt-sm border-t border-hairline pt-sm text-micro leading-relaxed text-ink-mute">
+        <span className="font-medium text-ink-secondary">Example:</span>{" "}
+        for this local Rudder checkout, enter <code className="font-mono text-ink">.</code> to scan it. For a checkout at{" "}
+        <code className="font-mono text-ink">&lt;advisor-root&gt;/my-api</code>, enter <code className="font-mono text-ink">my-api</code>. Then select{" "}
+        <span className="text-ink-secondary">Scan</span> and review the ghost suggestions before accepting any one of them.
+      </div>
     </section>
     {message ? <p className="mt-md text-micro text-ink-mute">{message}</p> : null}
     <div className="mt-md grid gap-sm sm:grid-cols-2">

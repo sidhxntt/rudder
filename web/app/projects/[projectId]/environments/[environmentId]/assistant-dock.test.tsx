@@ -9,7 +9,7 @@ describe("AssistantDock", () => {
     vi.unstubAllGlobals();
   });
 
-  test("opens from the lower-right dock, keeps its read-only boundary, and renders sourced replies", async () => {
+  test("opens from the lower-left dock, keeps its read-only boundary, and renders sourced replies", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       model: "rudder-readonly-1",
       message: {
@@ -23,8 +23,8 @@ describe("AssistantDock", () => {
     render(<AssistantDock environmentId="env one" />);
 
     const trigger = screen.getByRole("button", { name: "Ask Rudder" });
-    expect(trigger.getAttribute("class")).toContain("bottom-5");
-    expect(trigger.getAttribute("class")).toContain("right-5");
+    expect(trigger.parentElement?.getAttribute("class")).toContain("bottom-5");
+    expect(trigger.parentElement?.getAttribute("class")).toContain("left-5");
     expect(screen.queryByRole("dialog", { name: "Ask Rudder" })).toBeNull();
 
     await userEvent.click(trigger);

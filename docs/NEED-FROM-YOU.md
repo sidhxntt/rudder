@@ -219,12 +219,12 @@ of it; some needs you to look at a screen and confirm.
 
 ## Before Phase 8 (advisor) — GATING
 
-### 15. An Anthropic API key
+### 15. An OpenAI API key
 
 Only used in Phase 8. Nowhere else in the system touches an LLM — that's an
 explicit rule in the PRD.
 
-`ANTHROPIC_API_KEY=` in `.env`. Same rule: write it yourself, don't paste it.
+`OPENAI_API_KEY=` in `.env`. Same rule: write it yourself, don't paste it.
 
 ---
 
