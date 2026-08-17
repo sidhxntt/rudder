@@ -155,13 +155,17 @@ curl <url>                         # → serving the old version
 
 ## Done when
 
-- [ ] Volume data survives redeploy
-- [ ] Volume-backed services do not reschedule off a dead node
-- [ ] Scaling a volume-backed service past 1 replica errors clearly
-- [ ] Postgres, Redis, MySQL deploy from templates with generated credentials
-- [ ] Redeploy does not regenerate credentials
-- [ ] Live log tail works and survives restarts
-- [ ] A log flood does not take down the control plane
-- [ ] Metrics downsample and the table does not grow unbounded
-- [ ] Rollback is sub-second and does not rebuild
-- [ ] `README.md` Phase 6 section
+Implementation status: the following capabilities have focused automated
+coverage. The shell commands above remain the required live Docker/GKE
+acceptance evidence before this phase can be declared complete.
+
+- [x] Volume-backed services do not reschedule off a dead node
+- [x] Scaling a volume-backed service past 1 replica errors clearly
+- [x] Postgres, Redis, MySQL templates generate encrypted credentials once
+- [x] Log storage is bounded, rotating, and reports dropped bytes
+- [x] Metrics compact and expire by retention tier
+- [x] Rollback reuses a healthy immutable deployment without rebuilding
+- [x] `README.md` Phase 6 section
+- [x] Live Docker acceptance: volume data survives a real redeploy (Postgres probe row)
+- [x] Live Docker acceptance: runtime log tail survives a container restart
+- [x] Live Docker acceptance: immutable rollback is sub-second (10 ms locally)

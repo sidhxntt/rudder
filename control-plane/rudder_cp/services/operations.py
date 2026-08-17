@@ -31,6 +31,7 @@ from rudder_cp.models import (
     ServiceManagedCapabilities,
     ServiceOperation,
     ServiceOperationsState,
+    Volume,
 )
 from rudder_cp.models.base import utc_now
 from rudder_cp.schemas.common import ConflictError, InvalidRequestError, NotFoundError
@@ -237,6 +238,13 @@ def _require_allowed_job_command(
 def normalize_scale_request(
     session: Session, service: Service, payload: ScaleOperationRequest
 ) -> dict[str, Any]:
+    if payload.replicas > 1 and session.exec(
+        select(Volume.id).where(Volume.service_id == service.id)
+    ).first() is not None:
+        raise InvalidRequestError(
+            "cannot scale a service with persistent volumes above one replica",
+            details={"service_id": str(service.id)},
+        )
     try:
         normalized = ScaleRequest(
             replicas=payload.replicas,

@@ -155,6 +155,13 @@ export interface Instance {
   stopped_at: string | null;
 }
 
+export interface RuntimeMetric {
+  captured_at: string;
+  cpu_percent: number;
+  memory_bytes: number;
+  resolution_seconds: number;
+}
+
 export interface Domain {
   id: string;
   hostname: string;

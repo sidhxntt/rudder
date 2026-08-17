@@ -1,4 +1,4 @@
-# Phase 7 — Deploy advisor
+# Phase 8 — Deploy advisor
 
 **Target:** 1–2 weeks
 
@@ -141,4 +141,4 @@ rudder service list                   # → exactly that one item, nothing else
 - [ ] Failure diagnosis appears alongside the raw log, marked as generated
 - [ ] Instruction-shaped text in a repo does not change advisor behavior
 - [ ] No code path exists where the model mutates state
-- [ ] `README.md` Phase 7 section
+- [ ] `README.md` Phase 8 section

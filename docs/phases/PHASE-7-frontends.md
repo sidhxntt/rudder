@@ -1,4 +1,4 @@
-# Phase 6.5 — Frontends
+# Phase 7 — Frontends
 
 **Target:** 1 week
 
@@ -204,4 +204,4 @@ curl -I <url>/assets/main.<hash>.js # → immutable, long max-age
 - [ ] Build-time env vars are injected at build and documented as such in the UI
 - [ ] Cache headers correct — `index.html` uncached, hashed assets immutable
 - [ ] No serverless function code exists anywhere in the repo
-- [ ] `README.md` Phase 6.5 section
+- [ ] `README.md` Phase 7 section

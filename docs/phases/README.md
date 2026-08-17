@@ -18,8 +18,8 @@ file is a bug.
 | 4 | [PHASE-4-gke-production-runtime.md](PHASE-4-gke-production-runtime.md) | 3–5 wk | GKE landing zone: the Phase 3 namespace model runs on a private regional cluster, only the app is publicly routed |
 | 5 | [PHASE-5-environments.md](PHASE-5-environments.md) | 2 wk | Clone production to staging, everything rewires |
 | 6 | [PHASE-6-operations.md](PHASE-6-operations.md) | 2–3 wk | Volumes, DB templates, logs, metrics, instant rollback |
-| 6.5 | [PHASE-6.5-frontends.md](PHASE-6.5-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
-| 7 | [PHASE-7-advisor.md](PHASE-7-advisor.md) | 1–2 wk | Point at a repo, get a proposed service graph as ghost nodes |
+| 7 | [PHASE-7-frontends.md](PHASE-7-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
+| 8 | [PHASE-8-advisor.md](PHASE-8-advisor.md) | 1–2 wk | Point at a repo, get a proposed service graph as ghost nodes |
 
 Total: 18–26 weeks on the Kubernetes production track.
 
@@ -49,7 +49,7 @@ cloning does not need multi-host — it can run any time after Phase 1. Phase 4
 can no longer move earlier: it depends on the Phase 3 Kubernetes resource
 contract existing and being verified.
 
-Phase 6.5 depends on D15 (the `Domain` table) landing in Phase 1, and on nothing
+Phase 7 depends on D15 (the `Domain` table) landing in Phase 1, and on nothing
 else. It can move earlier if frontends become urgent.
 
 ## Structure of each file

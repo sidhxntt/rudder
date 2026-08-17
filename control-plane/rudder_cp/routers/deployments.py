@@ -88,12 +88,13 @@ async def create_deployment(
                 "details": {"release_service_id": managed_by_service_id},
             },
         )
-    if not service.source_repo:
+    managed_image = service.build_config.get("managed_image")
+    if not service.source_repo and not isinstance(managed_image, str):
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "no_source_repo",
-                "message": "This service has no source_repo, so there is nothing to build.",
+                "message": "This service has no source_repo or managed image to deploy.",
                 "details": {"service_id": str(service_id)},
             },
         )

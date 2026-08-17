@@ -14,6 +14,7 @@ from sqlmodel import Session
 
 from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_engine
+from rudder_cp.logs.runtime import get_runtime_log_store
 from rudder_cp.logs.store import get_build_log_store
 from rudder_cp.routers import auth as auth_router
 from rudder_cp.routers import (
@@ -62,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             engine=engine,
             settings=settings,
             store=get_build_log_store(),
+            runtime_log_store=get_runtime_log_store(),
             agent=app.state.agent,
             stop=stop,
         ),

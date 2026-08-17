@@ -278,6 +278,7 @@ class Settings(BaseSettings):
 
     traefik_dynamic_dir: str = "/traefik/dynamic"
     build_log_dir: str = "/var/log/rudder/builds"
+    runtime_log_dir: str = "/var/log/rudder/runtime"
 
     # D12 — health check parameters.
     health_timeout_seconds: int = 60

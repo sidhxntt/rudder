@@ -14,6 +14,7 @@ from rudder_cp.models.base import (
 from rudder_cp.models.deployment import Deployment, Instance
 from rudder_cp.models.domain import Domain
 from rudder_cp.models.github_import import GitHubImport, GitHubImportService
+from rudder_cp.models.metrics import RuntimeMetric
 from rudder_cp.models.node import Node
 from rudder_cp.models.operations import (
     OperationKind,
@@ -41,6 +42,7 @@ __all__ = [
     "OperationKind",
     "OperationStatus",
     "Project",
+    "RuntimeMetric",
     "Service",
     "ServiceManagedCapabilities",
     "ServiceOperation",

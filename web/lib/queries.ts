@@ -33,6 +33,7 @@ export const keys = {
   domains: (environmentId: string) => ["domains", environmentId] as const,
   deployments: (serviceId: string) => ["deployments", serviceId] as const,
   instances: (serviceId: string) => ["instances", serviceId] as const,
+  metrics: (serviceId: string) => ["metrics", serviceId] as const,
   variables: (serviceId: string) => ["variables", serviceId] as const,
   operations: (serviceId: string) => ["service-operations", serviceId] as const,
 };
@@ -166,6 +167,15 @@ export function useInstances(serviceId: string | undefined) {
   return useQuery({
     queryKey: keys.instances(serviceId ?? ""),
     queryFn: () => api.listInstances(serviceId ?? ""),
+    enabled: Boolean(serviceId),
+    refetchInterval: LIVE_POLL_MS,
+  });
+}
+
+export function useServiceMetrics(serviceId: string | undefined) {
+  return useQuery({
+    queryKey: keys.metrics(serviceId ?? ""),
+    queryFn: () => api.listServiceMetrics(serviceId ?? ""),
     enabled: Boolean(serviceId),
     refetchInterval: LIVE_POLL_MS,
   });

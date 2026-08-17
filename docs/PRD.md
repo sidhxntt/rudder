@@ -363,8 +363,8 @@ this document wins.
 | 4 | [GKE production runtime](phases/PHASE-4-gke-production-runtime.md) | 3-5 wk | The Phase 3 namespace model runs on a private regional GKE cluster; only the app is publicly routed |
 | 5 | [Environments](phases/PHASE-5-environments.md) | 2 wk | Clone production to staging, everything rewires |
 | 6 | [Operations](phases/PHASE-6-operations.md) | 2-3 wk | Volumes, DB templates, logs, metrics, instant rollback |
-| 6.5 | [Frontends](phases/PHASE-6.5-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
-| 7 | [Deploy advisor](phases/PHASE-7-advisor.md) | 1-2 wk | Point at a repo, get a proposed service graph as ghost nodes |
+| 7 | [Frontends](phases/PHASE-7-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
+| 8 | [Deploy advisor](phases/PHASE-8-advisor.md) | 1-2 wk | Point at a repo, get a proposed service graph as ghost nodes |
 
 Total: 18-26 weeks on the Kubernetes production track.
 
@@ -392,7 +392,7 @@ Each phase is demoable. "It compiles" and "the happy path worked once" are not
 verification -- every phase file has a `## Verify` section with actual commands.
 
 **Reordering.** Phase 5 is the easiest phase after 1, has high payoff, and does
-not need multi-host -- it can move earlier freely. Phase 6.5 depends only on D15
+not need multi-host -- it can move earlier freely. Phase 7 depends only on D15
 landing in Phase 1 and can also move earlier if frontends become urgent. Phase 4
 cannot move earlier: it depends on a verified Phase 3 Kubernetes resource
 contract.

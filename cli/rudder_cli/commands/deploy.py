@@ -16,7 +16,13 @@ from rudder_sdk.models import (
     ServiceRead,
 )
 
-from ..buildlog import TERMINAL, follow_deployment, stream_build_log, wait_for_build_log
+from ..buildlog import (
+    TERMINAL,
+    _parse_events,
+    follow_deployment,
+    stream_build_log,
+    wait_for_build_log,
+)
 from ..client import CliError
 from ..context import State, resolve_service
 from ..render import emit_json, err, out
@@ -86,9 +92,25 @@ def logs(
     deployment_id: Annotated[
         str | None, typer.Option("--deployment", help="A specific deployment id.")
     ] = None,
+    build: Annotated[
+        bool,
+        typer.Option("--build", help="Stream the build log instead of runtime logs."),
+    ] = False,
 ) -> None:
-    """Build logs for a service's latest deployment (D4 — build logs only in Phase 1)."""
+    """Runtime logs by default; use --build for the historical build log."""
     state: State = ctx.obj
+
+    if not build:
+        if deployment_id is not None:
+            raise CliError("--deployment is only valid with --build")
+        if not follow:
+            raise CliError("Runtime logs are live; pass --follow (or -f).")
+        target = resolve_service(state, service)
+        with state.api.stream("GET", f"/services/{target.id}/runtime-log") as response:
+            for _event, data in _parse_events(response.iter_lines()):
+                if data:
+                    out(data)
+        return
 
     if deployment_id is not None:
         deployment: DeploymentRead = state.api.call(

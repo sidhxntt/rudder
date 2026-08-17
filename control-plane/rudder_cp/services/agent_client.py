@@ -56,6 +56,18 @@ class ComposeServiceState:
     exit_code: int | None
 
 
+@dataclass(frozen=True)
+class RuntimeLogSnapshot:
+    text: str
+    dropped_bytes: int
+
+
+@dataclass(frozen=True)
+class ContainerMetrics:
+    cpu_percent: float
+    memory_bytes: int
+
+
 class AgentClient:
     # Pulling a newly-built image from the private registry can legitimately
     # take longer than the short timeout used by ordinary inspect/probe calls.
@@ -147,6 +159,23 @@ class AgentClient:
             ok=bool(payload["ok"]),
             status_code=payload.get("status_code"),
             reason=payload.get("reason"),
+        )
+
+    async def runtime_logs(
+        self, container_id: str, *, max_bytes: int = 65_536
+    ) -> RuntimeLogSnapshot:
+        payload = await self._request(
+            "GET", f"/containers/{container_id}/runtime-logs", params={"max_bytes": max_bytes}
+        )
+        return RuntimeLogSnapshot(
+            text=str(payload.get("text", "")), dropped_bytes=int(payload.get("dropped_bytes", 0))
+        )
+
+    async def runtime_metrics(self, container_id: str) -> ContainerMetrics:
+        payload = await self._request("GET", f"/containers/{container_id}/metrics")
+        return ContainerMetrics(
+            cpu_percent=float(payload.get("cpu_percent", 0)),
+            memory_bytes=int(payload.get("memory_bytes", 0)),
         )
 
     async def remove(self, container_id: str, *, drain_seconds: float) -> None:

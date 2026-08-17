@@ -141,3 +141,15 @@ class ComposeServiceState(BaseModel):
     status: str
     health: str | None = None
     exit_code: int | None = None
+
+
+class RuntimeLogSnapshot(BaseModel):
+    """A bounded, timestamped tail from one Docker container."""
+
+    text: str
+    dropped_bytes: int = Field(ge=0)
+
+
+class ContainerMetrics(BaseModel):
+    cpu_percent: float = Field(ge=0)
+    memory_bytes: int = Field(ge=0)

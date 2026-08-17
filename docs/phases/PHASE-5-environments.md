@@ -67,7 +67,7 @@ drop its domains, and release its runtime resources.
 
 Needs the GitHub webhook to handle `pull_request` events in addition to `push`.
 
-**Note the distinction from Phase 6.5 branch previews.** A PR environment is a
+**Note the distinction from Phase 7 branch previews.** A PR environment is a
 full clone with its own database. A branch preview deploys new code against the
 *existing* environment's backing services. Different features, both valid. This
 step builds the first one.

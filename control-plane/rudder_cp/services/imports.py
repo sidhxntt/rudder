@@ -453,6 +453,28 @@ def app_dependency_state(session: Session, app_service_id: uuid.UUID) -> tuple[s
     return "ready", None
 
 
+def provision_database_template(
+    session: Session, environment_id: uuid.UUID, template: str
+) -> Service:
+    """Provision a one-click durable database from Rudder's reviewed catalog.
+
+    Credentials are generated exactly once here and encrypted by the existing
+    managed-variable helpers. Repeating a request never rotates credentials.
+    """
+    if template not in {"postgres", "redis", "mysql"}:
+        raise ValueError("database template must be postgres, redis, or mysql")
+    existing = session.exec(
+        select(Service).where(Service.environment_id == environment_id, Service.name == template)
+    ).first()
+    if existing is not None:
+        return existing
+    if template == "postgres":
+        return _managed_postgres(session, environment_id)
+    if template == "redis":
+        return _managed_redis(session, environment_id)
+    return _managed_catalog_addon(session, environment_id, template)
+
+
 
 def _managed_postgres(session: Session, environment_id: uuid.UUID) -> Service:
     password = secrets.token_urlsafe(32)

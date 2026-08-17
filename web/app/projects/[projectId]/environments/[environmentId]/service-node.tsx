@@ -2,11 +2,12 @@
 
 import type { NodeProps } from "@xyflow/react";
 
-import { useDeployments, useInstances } from "@/lib/queries";
+import { useDeployments, useInstances, useServiceMetrics } from "@/lib/queries";
 import { deriveServiceStatus, latestDeployment } from "@/lib/status";
 import type { ServiceKind } from "@/lib/types";
 
 import { StatusDot } from "./status-dot";
+import { MetricSparkline } from "./metric-sparkline";
 
 export type ServiceNodeData = {
   serviceId: string;
@@ -34,6 +35,7 @@ export function ServiceNode(props: NodeProps) {
   const lifecycleServiceId = data.managedByServiceId ?? data.serviceId;
   const deployments = useDeployments(lifecycleServiceId);
   const instances = useInstances(lifecycleServiceId);
+  const metrics = useServiceMetrics(lifecycleServiceId);
 
   const status = deriveServiceStatus(deployments.data ?? [], instances.data ?? []);
   const latest = latestDeployment(deployments.data ?? []);
@@ -74,6 +76,9 @@ export function ServiceNode(props: NodeProps) {
         ) : (
           <span className="block truncate text-micro text-ink-faint">no public domain</span>
         )}
+      </div>
+      <div className="border-t border-hairline-faint px-md py-sm">
+        <MetricSparkline metrics={metrics.data ?? []} />
       </div>
     </div>
   );
