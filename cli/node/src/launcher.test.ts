@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prompts = vi.hoisted(() => ({
   cancel: vi.fn(),
@@ -12,10 +12,26 @@ const prompts = vi.hoisted(() => ({
 vi.mock("@clack/prompts", () => prompts);
 
 import { canLaunchLauncher, runLauncher } from "./launcher.js";
+import { discardSession } from "./index.js";
+import { ApiClient } from "./client.js";
+
+beforeEach(() => {
+  prompts.cancel.mockReset();
+  prompts.intro.mockReset();
+  prompts.isCancel.mockReset().mockImplementation((value: unknown) => value === Symbol.for("cancel"));
+  prompts.outro.mockReset();
+  prompts.select.mockReset();
+  prompts.spinner.mockReset();
+});
+afterEach(() => vi.unstubAllGlobals());
 
 describe("runLauncher", () => {
   it("does not launch when stdout is redirected", () => {
     expect(canLaunchLauncher({ hasArgs: false, json: false, noInteractive: false, stdinTTY: true, stdoutTTY: false })).toBe(false);
+  });
+
+  it("does not launch when stdin is redirected", () => {
+    expect(canLaunchLauncher({ hasArgs: false, json: false, noInteractive: false, stdinTTY: false, stdoutTTY: true })).toBe(false);
   });
 
   it("clears the terminal and dispatches Deploy through its injected callback", async () => {
@@ -55,5 +71,22 @@ describe("runLauncher", () => {
     expect(actions.signOut).toHaveBeenCalledOnce();
     expect(actions.deploy).not.toHaveBeenCalled();
     expect(prompts.outro).toHaveBeenCalledWith("Signed out.");
+  });
+
+  it("does not send the prior bearer after selecting Sign out before a protected action", async () => {
+    const spinner = { start: vi.fn(), stop: vi.fn() };
+    const fetcher = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    prompts.spinner.mockReturnValue(spinner);
+    prompts.select.mockResolvedValueOnce("sign-out").mockResolvedValueOnce("deploy");
+    const session = { api: new ApiClient("https://cp.example", "old-token"), credentials: { token: "old-token" } };
+    const deploy = vi.fn(async () => { await session.api.request("POST", "/protected"); });
+    const actions = { chooseTarget: vi.fn(), deploy, status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn(async () => { discardSession(session); }) };
+
+    await runLauncher({ actions, clear: vi.fn() });
+
+    expect(actions.signOut).toHaveBeenCalledOnce();
+    expect(deploy).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
