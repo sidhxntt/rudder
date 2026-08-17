@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rudder-control-plane
+  namespace: rudder-system
+  annotations:
+    iam.gke.io/gcp-service-account: ${RUDDER_RUNTIME_GSA}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rudder-control-plane
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/name: rudder-control-plane
+    app.kubernetes.io/part-of: rudder
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rudder-control-plane
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rudder-control-plane
+        app.kubernetes.io/part-of: rudder
+    spec:
+      serviceAccountName: rudder-control-plane
+      nodeSelector:
+        rudder.pool: platform
+      tolerations:
+        - key: rudder.pool
+          operator: Equal
+          value: platform
+          effect: NoSchedule
+      containers:
+        - name: control-plane
+          image: ${RUDDER_CONTROL_PLANE_IMAGE}
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: rudder-control-plane-runtime
+          env:
+            # CNPG owns this generated credential Secret. Its standard URI is
+            # normalised to SQLAlchemy's psycopg driver by Settings.
+            - name: RUDDER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rudder-control-plane-db-app
+                  key: uri
+            - name: RUDDER_RUNTIME
+              value: kubernetes
+            - name: RUDDER_KUBERNETES_TARGET
+              value: gke
+            # The initial 12-vCPU GKE topology has no dedicated workloads
+            # pool. The runtime forces every customer Pod onto this tainted
+            # shared platform pool.
+            - name: RUDDER_KUBERNETES_WORKLOAD_POOL
+              value: platform
+            # CNPG must reconcile through GKE's private control-plane endpoint.
+            # The bootstrap derives this exact /32; broad HTTPS remains denied.
+            - name: RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR
+              value: ${RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR}
+            - name: RUDDER_BASE_DOMAIN
+              value: ${RUDDER_KUBERNETES_PUBLIC_DOMAIN}
+            - name: RUDDER_KUBERNETES_PUBLIC_DOMAIN
+              value: ${RUDDER_KUBERNETES_PUBLIC_DOMAIN}
+            - name: RUDDER_KUBERNETES_CERTIFICATE_ISSUER
+              value: ${RUDDER_KUBERNETES_CERTIFICATE_ISSUER}
+            - name: RUDDER_KUBERNETES_POSTGRES_OPERATOR
+              value: cloudnativepg
+            # This is the private ClusterIP broker. The control plane never
+            # receives IAM permissions to mutate the backup Google identity.
+            - name: RUDDER_KUBERNETES_BACKUP_IDENTITY_BROKER_URL
+              value: http://rudder-backup-identity-broker.rudder-system.svc.cluster.local
+            # The broker creates and verifies a binding for the generated
+            # per-environment CNPG ServiceAccount before a Cluster can use
+            # this dedicated GCS identity. No static storage key is present.
+            - name: RUDDER_KUBERNETES_BACKUP_GCS_BUCKET
+              value: ${RUDDER_BACKUP_BUCKET}
+            - name: RUDDER_KUBERNETES_BACKUP_GCP_SERVICE_ACCOUNT
+              value: ${RUDDER_BACKUP_GSA}
+            - name: RUDDER_KUBERNETES_BACKUP_GCS_IDENTITY_READY
+              value: "true"
+            - name: RUDDER_REGISTRY
+              value: ${RUDDER_REGISTRY}
+            # Production source builds are submitted to Cloud Build through
+            # this Pod's Workload Identity; it must never use local BuildKit.
+            - name: RUDDER_GCP_PROJECT_ID
+              value: ${RUDDER_GCP_PROJECT}
+            - name: RUDDER_GCP_REGION
+              value: ${RUDDER_GCP_REGION}
+            - name: RUDDER_GCP_BUILD_SOURCE_BUCKET
+              value: ${RUDDER_GCP_BUILD_SOURCE_BUCKET}
+            - name: RUDDER_GCP_BUILD_LOGS_BUCKET
+              value: ${RUDDER_GCP_BUILD_LOGS_BUCKET}
+            - name: RUDDER_GCP_BUILD_SERVICE_ACCOUNT
+              value: ${RUDDER_GCP_BUILD_SERVICE_ACCOUNT}
+          ports:
+            - containerPort: 8000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rudder-control-plane
+  namespace: rudder-system
+spec:
+  selector:
+    app.kubernetes.io/name: rudder-control-plane
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

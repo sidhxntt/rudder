@@ -1,16 +1,16 @@
 import asyncio
 import logging
-from uuid import UUID
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from rudder_cp.config import Settings
-from rudder_cp.models.github_import import GitHubImport
 from rudder_cp.models import Deployment, Instance, Node, Volume
 from rudder_cp.models.base import DeploymentStatus, NodeStatus
 from rudder_cp.models.base import InstanceStatus as ModelInstanceStatus
+from rudder_cp.models.github_import import GitHubImport
 from rudder_cp.services.agent_client import AgentClient, AgentError
 
 log = logging.getLogger(__name__)
@@ -68,6 +68,10 @@ async def _reconcile_unresponsive_nodes(
     unresponsive_nodes = db.exec(unresponsive_nodes_stmt).all()
 
     for node in unresponsive_nodes:
+        if _is_kubernetes_accounting_node(node):
+            # GKE owns Pod liveness. This row exists only while Instance.node_id
+            # is required for the legacy Docker-runtime schema.
+            continue
         node.status = NodeStatus.UNREACHABLE
         db.add(node)
 
@@ -80,6 +84,14 @@ async def _reconcile_unresponsive_nodes(
                 continue
             instance.status = ModelInstanceStatus.UNREACHABLE
             db.add(instance)
+
+
+def _is_kubernetes_accounting_node(node: Node) -> bool:
+    return bool(
+        isinstance(node.reported_state, dict)
+        and node.reported_state.get("runtime") == "kubernetes"
+        and node.reported_state.get("accounting_only") is True
+    )
 
 
 def _queue_replacements_for_lost_instances(

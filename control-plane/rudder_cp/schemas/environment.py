@@ -9,11 +9,7 @@ from rudder_cp.services.naming import NAME_DESCRIPTION, ResourceName
 
 
 class EnvironmentCreate(BaseModel):
-    """Body of ``POST /projects/{project_id}/environments``.
-
-    ``wg_subnet`` is not accepted from the client: it is a server-allocated
-    resource (see ``services.environments.allocate_wg_subnet``).
-    """
+    """Body of ``POST /projects/{project_id}/environments``."""
 
     name: ResourceName = Field(description=NAME_DESCRIPTION)
     is_production: bool = False
@@ -27,12 +23,7 @@ class EnvironmentUpdate(BaseModel):
 
 
 class EnvironmentReplace(BaseModel):
-    """Body of ``PUT /environments/{id}``.
-
-    ``wg_subnet`` is intentionally absent. It is allocated once at create time
-    and never renumbered, so it cannot participate in a full replacement
-    without breaking the mesh in Phase 3.
-    """
+    """Body of ``PUT /environments/{id}``."""
 
     name: ResourceName = Field(description=NAME_DESCRIPTION)
     is_production: bool = False
@@ -45,8 +36,4 @@ class EnvironmentRead(BaseModel):
     project_id: uuid.UUID
     name: str
     is_production: bool
-    wg_subnet: str | None = Field(
-        default=None,
-        description="Server-allocated /24 for this environment's WireGuard mesh (Phase 3).",
-    )
     created_at: datetime

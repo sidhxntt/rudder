@@ -122,11 +122,16 @@ environment.
 
 ## Relationship to Phase 4
 
-For the Kubernetes production track, this phase replaces the Docker-host
-networking portion of Phase 4: Kubernetes Services, namespaces, and NetworkPolicies
-provide private service discovery and isolation instead of a WireGuard mesh.
-Phase 4 remains the alternative path for the non-Kubernetes, multi-Docker-host
-runtime.
+This phase owns the private service network: Kubernetes Services, CoreDNS,
+namespaces, and NetworkPolicies replaced the planned WireGuard mesh outright
+([ADR 0004](../decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md)).
+Phase 4 does not re-solve networking. It takes this exact resource contract —
+namespace, Deployment/StatefulSet, ClusterIP Service, PVC, Ingress, quota,
+NetworkPolicy — off Kind and onto a private regional GKE cluster, and adds the
+production concerns Kind cannot prove: Artifact Registry digests, Workload
+Identity, managed HTTPS edge, durable state, and infrastructure-as-code.
+
+If this phase's contract changes, Phase 4 changes with it. Keep it stable.
 
 ## Done when
 

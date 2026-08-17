@@ -1,0 +1,12 @@
+# cert-manager is installed by bootstrap-platform.sh with a version-pinned
+# Helm chart. DNS credentials are supplied through Workload Identity, never
+# stored in this manifest.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rudder-cert-manager-contract
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/part-of: rudder
+data:
+  dnsChallengeIdentity: rudder-cert-manager

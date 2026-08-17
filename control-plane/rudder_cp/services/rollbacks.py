@@ -24,9 +24,11 @@ from rudder_cp.models import (
     InstanceStatus,
     Service,
 )
-from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, PublicRouteSpec, RuntimeSettings
+from rudder_cp.runtime.kubernetes import PublicRouteSpec
 from rudder_cp.runtime.models import dns_label
+from rudder_cp.runtime.targets import load_kubernetes_client
 from rudder_cp.services import traefik
+from rudder_cp.services.builder import validate_gke_image
 
 
 async def restore_immutable_deployment(
@@ -57,6 +59,8 @@ async def restore_immutable_deployment(
     # dashboard's live pointer. If the API call fails, the caller can record a
     # failed rollback operation without a false "live" deployment row.
     if settings.runtime == "kubernetes":
+        if settings.kubernetes_target == "gke":
+            validate_gke_image(source.image_tag or "")
         await _restore_kubernetes_public_route(session, source=source, settings=settings)
     for deployment in current:
         deployment.status = DeploymentStatus.SUPERSEDED
@@ -124,14 +128,7 @@ async def _restore_kubernetes_public_route(
             "rudder.route": dns_label(mapping.compose_service),
         },
     )
-    api = await AsyncKubernetesApi.from_kubeconfig(
-        RuntimeSettings(
-            local_domain=settings.kubernetes_local_domain,
-            ingress_class=settings.kubernetes_ingress_class,
-            readiness_timeout_seconds=settings.kubernetes_readiness_timeout_seconds,
-        ),
-        kubeconfig_path=settings.kubernetes_kubeconfig,
-    )
+    api = await load_kubernetes_client(settings)
     try:
         await api.promote_public_service(namespace, route)
     finally:

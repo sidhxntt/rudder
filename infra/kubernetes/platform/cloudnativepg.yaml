@@ -1,0 +1,11 @@
+# CNPG itself is Helm-managed. This ConfigMap is a small, discoverable contract
+# for the Rudder runtime: customer databases are rendered in their isolated
+# environment namespaces; the platform database is declared separately below.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rudder-cnpg-contract
+  namespace: rudder-system
+data:
+  operator: cloudnative-pg
+  backupIdentity: environment-specific-workload-identity

@@ -1,7 +1,7 @@
 # Rudder — Self-Hosted PaaS
 
-A Railway-style PaaS with a canvas UI. Multi-host container scheduling, WireGuard
-service mesh, environment cloning, and git-push deploys.
+A Railway-style PaaS with a canvas UI. Multi-host container scheduling, a private
+Kubernetes service network, environment cloning, and git-push deploys.
 
 **This is a learning build.** Single-tenant by design. Not multi-tenant, not
 production-hardened for untrusted workloads. See "Explicit Non-Goals".
@@ -47,7 +47,8 @@ git push
 Same flow for every language. Only the Dockerfile template differs.
 
 Add a Postgres as a one-click service and `DATABASE_URL` wires into the app
-automatically over the private mesh. The database never gets a public port.
+automatically over the private service network. The database never gets a public
+port.
 
 **Success = this works with no browser open:**
 
@@ -62,7 +63,7 @@ rudder logs api -f
 If any step requires the UI, the API is incomplete. See "Interfaces".
 
 **Scope: backends are primary, frontends are supported.** The moat is container
-orchestration — multi-host scheduling, a private service mesh, stateful services,
+orchestration — multi-host scheduling, a private service network, stateful services,
 environment cloning. Frontends ride the same pipeline (see "Phase 5.5") because a
 static build is just an artifact wrapped in nginx and run as a container, and an
 SSR app is already just a long-running container. That costs one new
@@ -92,8 +93,8 @@ Read this section before doing anything else.
    document doesn't say, ask.
 5. **Every phase must end demoable.** No phase leaves the system in a state
    where nothing runs.
-6. **Flag risk explicitly.** When touching the scheduler, WireGuard, or anything
-   concurrent, say so and explain the failure modes you considered.
+6. **Flag risk explicitly.** When touching the scheduler, runtime networking, or
+   anything concurrent, say so and explain the failure modes you considered.
 
 ### Where you are likely to be wrong
 
@@ -102,8 +103,10 @@ Be extra careful in these areas. Reason out loud before writing.
 - **Scheduler concurrency.** Two deploys racing, stale node capacity, a health
   check racing a traffic shift. Code that looks correct here is often wrong
   under load. Write tests that actually exercise concurrency.
-- **WireGuard peer lifecycle.** Adding and removing peers dynamically, key
-  rotation, IP allocation. Failures are silent — a peer just doesn't route.
+- **Private networking lifecycle.** NetworkPolicy ordering (default-deny must
+  exist before workloads), DNS resolution inside a namespace, and route promotion
+  on a candidate revision. Failures are silent — traffic just doesn't arrive, and
+  a too-permissive policy looks identical to a correct one from inside the Pod.
 - **Container lifecycle races.** Container reports healthy, then dies during
   traffic shift. Old container drains while new one crashes.
 - **State reconciliation.** DB says a service is running; the node disagrees.
@@ -128,7 +131,13 @@ Fixed. Do not substitute.
 | Registry | `registry:2`, local |
 | Proxy | Traefik v3, file provider, dynamic config |
 | TLS | Traefik ACME (Let's Encrypt), HTTP-01 |
-| Mesh | WireGuard (`wg` + `wg-quick`) |
+| Private service network | Kubernetes Services + CoreDNS + NetworkPolicy (Phase 3 on Kind, Phase 4 on GKE) |
+| Production runtime | GKE Standard, regional, VPC-native, private nodes — attach mode, Terraform-provisioned |
+| Production registry | Artifact Registry, immutable digests |
+| Production ingress | ingress-nginx (one controller) |
+| Production TLS | cert-manager + Let's Encrypt |
+| Production Postgres | CloudNativePG operator, in-cluster, WAL archived to object storage |
+| Infrastructure-as-code | Terraform, remote state in GCS |
 | Frontend | Next.js 15 App Router, TypeScript |
 | Canvas | React Flow |
 | Styling | Tailwind |
@@ -161,10 +170,34 @@ Pydantic for all boundary types, no bare `except`.
         │ Node Agent│    │ Node Agent│   │ Node Agent│
         │  Docker   │    │  Docker   │   │  Docker   │
         └───────────┘    └───────────┘   └───────────┘
-              └──────── WireGuard mesh ─────────┘
+              └────── shared Docker network ─────┘
 
         Traefik sits on an edge node, file-provider config
         written by the control plane.
+```
+
+That is the Phase 1–2 lab runtime. The production runtime is Kubernetes, and the
+control plane reaches it through a runtime adapter rather than an agent API:
+
+```
+                        ┌──────────────┐
+                        │ Control Plane│──── Postgres
+                        └──────┬───────┘
+                               │ Kubernetes API (runtime adapter)
+                        ┌──────▼──────────────────────────┐
+                        │ Kind (local) / GKE (production) │
+                        │                                 │
+                        │  rudder-system namespace        │
+                        │  rudder-<environment-id> ns     │
+                        │    app Deployment ── Ingress ───┼── public HTTPS
+                        │    worker Deployment            │
+                        │    postgres/redis StatefulSet   │
+                        │    PVCs, Secrets, NetworkPolicy │
+                        └─────────────────────────────────┘
+
+        Private traffic resolves by Kubernetes service DNS
+        (postgres.rudder-<environment-id>.svc.cluster.local).
+        Default-deny NetworkPolicy isolates every environment.
 ```
 
 **Control plane owns desired state. Nodes own actual state. A reconciler closes
@@ -231,7 +264,12 @@ Project
   id, name, owner_id → User
 
 Environment
-  id, project_id → Project, name, is_production, wg_subnet
+  id, project_id → Project, name, is_production
+  wg_subnet                     -- DEPRECATED, see ADR 0004. Isolation is the
+                                -- environment namespace plus its default-deny
+                                -- NetworkPolicy. Phase 4 removes the allocator
+                                -- that still populates this; the column then
+                                -- stays null.
   unique(project_id, name)
 
 Service
@@ -254,7 +292,9 @@ Volume
   -- volume pins a service to a node. enforce this in the scheduler.
 
 Node
-  id, hostname, ip_address, wg_public_key, wg_ip
+  -- Docker runtime only. The Kubernetes runtime has no Node rows: the cluster
+  -- schedules Pods. See ADR 0004.
+  id, hostname, ip_address, wg_public_key, wg_ip     -- wg_* DEPRECATED, null
   cpu_total, memory_total_mb, cpu_allocated, memory_allocated_mb
   status ∈ {healthy, unreachable, draining}
   last_heartbeat_at
@@ -270,7 +310,7 @@ Deployment
 Instance
   id, deployment_id → Deployment, node_id → Node
   container_id, status ∈ {starting, healthy, unhealthy, draining, stopped}
-  wg_ip, started_at
+  wg_ip, started_at             -- wg_ip DEPRECATED, null. See ADR 0004.
 
 Domain
   id, hostname (unique), environment_id → Environment
@@ -289,7 +329,13 @@ Domain
   pointing at different Deployments of the same Service.
 - Variable values encrypted at rest with a key from env. Use `cryptography`
   Fernet. Do not roll your own.
-- `wg_subnet` per environment gives network isolation between environments.
+- **Environment isolation is a Kubernetes namespace with a default-deny
+  NetworkPolicy**, not a `wg_subnet`. The `wg_*` columns are deprecated, kept only
+  to avoid a migration on a pre-production schema. `Node.wg_*` and `Instance.wg_ip`
+  are already always null. `Environment.wg_subnet` is still allocated on create by
+  leftover Phase 1 code and still appears in `EnvironmentRead`; Phase 4 removes
+  that allocator, and the column then stays null too. Do not build on it. See
+  ADR 0004.
 - `Domain` is the routing unit. **Traefik config is generated from Domains, never
   from Services.** Two targeting modes:
   - `target_type=service` — Railway semantics. Routes to whatever Deployment is
@@ -314,27 +360,42 @@ this document wins.
 | 1 | [Single-host deploy](phases/PHASE-1-single-host.md) | 3-4 wk | Push to GitHub, container comes up, public URL serves it |
 | 2 | [Multi-host](phases/PHASE-2-multi-host.md) | 3-4 wk | Two nodes, service lands on the less loaded one, node dies, service reschedules |
 | 3 | [Kubernetes runtime](phases/PHASE-3-kubernetes-runtime.md) | 3-5 wk | Imported Compose app deploys in an isolated namespace; failed revisions roll back |
-| 4 | [WireGuard mesh](phases/PHASE-4-mesh.md) | 2-3 wk | Multi-host mesh option: app reaches Postgres by hostname, DB has no public port |
+| 4 | [GKE production runtime](phases/PHASE-4-gke-production-runtime.md) | 3-5 wk | The Phase 3 namespace model runs on a private regional GKE cluster; only the app is publicly routed |
 | 5 | [Environments](phases/PHASE-5-environments.md) | 2 wk | Clone production to staging, everything rewires |
 | 6 | [Operations](phases/PHASE-6-operations.md) | 2-3 wk | Volumes, DB templates, logs, metrics, instant rollback |
 | 6.5 | [Frontends](phases/PHASE-6.5-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
 | 7 | [Deploy advisor](phases/PHASE-7-advisor.md) | 1-2 wk | Point at a repo, get a proposed service graph as ghost nodes |
 
-Total: 17-24 weeks on the Kubernetes production track.
+Total: 18-26 weeks on the Kubernetes production track.
 
-**Production runtime track.** Phase 3 follows the verified Phase 2
-control-plane semantics and introduces Kubernetes as a runtime adapter.
-Kubernetes Services, namespaces, and NetworkPolicies replace the Docker-host
-networking portion of the separate Phase 4 multi-Docker-host runtime.
+**Production runtime track.** Phase 3 follows the verified Phase 2 control-plane
+semantics and introduces Kubernetes as a runtime adapter, proven locally on Kind.
+Phase 4 carries that identical resource contract to GKE and adds what Kind cannot
+prove: private cluster networking, Artifact Registry digests, Workload Identity,
+a single managed HTTPS edge, durable managed state, and infrastructure-as-code.
+
+**WireGuard is cancelled.** Kubernetes Services, CoreDNS, namespaces, and
+NetworkPolicies are the private service network — Rudder allocates no mesh IPs,
+manages no peers, and writes no host-level DNS. See the GKE production runtime
+plan at `phases/PHASE-4-gke-production-runtime.md` and
+[ADR 0004](decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md).
+
+**Multi-cloud.** GCP is the first provider adapter, not the product assumption.
+Phase 4 writes the provider contract and its acceptance tests so EKS and AKS can
+satisfy the same behaviour later without changing deployment records, UI
+semantics, or the service graph. It creates no AWS or Azure resources. Scope and
+effort for those adapters: `phases/PHASE-4-gke-production-runtime.md` → "Cost of adding AWS and
+Azure".
 
 **Do not start a phase until the previous one is verified working end to end.**
 Each phase is demoable. "It compiles" and "the happy path worked once" are not
 verification -- every phase file has a `## Verify` section with actual commands.
 
-**Reordering.** Phase 5 is the easiest phase after 1 and has high payoff. If
-Phase 2 stalls -- and Phase 2 is the wall -- doing 4 before 2 costs nothing
-architecturally. Phase 6.5 depends only on D15 landing in Phase 1 and can move
-earlier if frontends become urgent.
+**Reordering.** Phase 5 is the easiest phase after 1, has high payoff, and does
+not need multi-host -- it can move earlier freely. Phase 6.5 depends only on D15
+landing in Phase 1 and can also move earlier if frontends become urgent. Phase 4
+cannot move earlier: it depends on a verified Phase 3 Kubernetes resource
+contract.
 
 
 ## Explicit Non-Goals

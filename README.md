@@ -134,6 +134,39 @@ instead.
 release, proves ingress reaches only `web`, deliberately fails a new candidate
 without disrupting the live route, then removes its temporary namespace.
 
+## Phase 4 — GKE landing zone (planned, not started)
+
+Phase 4 takes the Phase 3 resource contract unchanged onto a private regional GKE
+Standard cluster and adds what Kind cannot prove: Artifact Registry immutable
+digests, Workload Identity and least-privilege RBAC, one HTTPS edge, durable
+backed-up state, observability, and Terraform as the source of truth.
+
+**Kubernetes-only, including in production** — ingress-nginx, cert-manager, and
+Postgres under the CloudNativePG operator all run in the cluster. Managed GCP
+services are used only where nothing can run in-cluster by nature: the L4 load
+balancer, object storage, the registry, and workload identity. Terraform provisions
+the cluster once (**attach mode**); Rudder owns namespaces and workloads, never
+cluster lifecycle. Public hostnames sit under `rudder.invytt.com`. See
+[ADR 0005](docs/decisions/0005-phase-4-kubernetes-only-attach-mode.md).
+
+**WireGuard is cancelled.** The private service network is Kubernetes networking —
+Services, CoreDNS, namespaces, and default-deny NetworkPolicies. See
+[ADR 0004](docs/decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md).
+
+GCP is the first provider adapter, not the product assumption. Phase 4 writes the
+provider contract and its conformance tests so EKS and AKS can follow without
+changing deployment records, UI semantics, or the service graph; it creates no AWS
+or Azure resources. Effort for those adapters is estimated in
+[PHASE-4-gke-production-runtime.md](docs/phases/PHASE-4-gke-production-runtime.md) → "Cost of adding AWS and Azure".
+
+Prerequisites are sorted as of 2026-07-29: `invytt-2483d` audited, all ten APIs
+enabled, Terraform 1.15.8 and `gke-gcloud-auth-plugin` installed, and the four
+architecture decisions recorded. Phase 4 now waits on item 13 of
+[`docs/NEED-FROM-YOU.md`](docs/NEED-FROM-YOU.md) — budget confirmation, GoDaddy NS
+records for the `rudder` subdomain, the `rudder-vpc` reuse-or-replace call, and an
+acceptance repository. **Do not deploy customer workloads until that file's
+acceptance checklist passes.**
+
 ## Notes on the dev stack
 
 `buildkitd` runs with `network_mode: service:registry`. That is deliberate:

@@ -103,7 +103,7 @@ kubectl --context kind-rudder-kind wait --namespace ingress-nginx --for=conditio
 
 **Files:**
 - Create: `docs/phases/PHASE-3-kubernetes-runtime.md`
-- Rename: `PHASE-3-mesh.md` → `PHASE-4-mesh.md`
+- Rename: `PHASE-3-mesh.md` → `PHASE-4-gke-production-runtime.md`
 - Rename: `PHASE-4-environments.md` → `PHASE-5-environments.md`
 - Rename: `PHASE-5-operations.md` → `PHASE-6-operations.md`
 - Rename: `PHASE-5.5-frontends.md` → `PHASE-6.5-frontends.md`

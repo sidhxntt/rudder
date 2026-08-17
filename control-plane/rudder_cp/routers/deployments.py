@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from rudder_cp.config import get_settings
@@ -39,7 +39,9 @@ class DeploymentRead(BaseModel):
 class DeployRequest(BaseModel):
     """An explicit SHA is optional. Without one the build resolves the branch tip."""
 
-    commit_sha: str | None = None
+    # Keep invalid revision input out of the transactional path. The immutable
+    # artifact model deliberately stores canonical Git SHA-1 identifiers.
+    commit_sha: str | None = Field(default=None, max_length=40)
 
 
 class InstanceRead(BaseModel):

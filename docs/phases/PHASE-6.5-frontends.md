@@ -10,8 +10,8 @@ for the other half of an app.
 
 **Nothing here introduces a new execution model.** A static site is a build
 artifact wrapped in nginx and run as a container. An SSR app is a long-running
-container, which Rudder already does. Scheduler, reconciler, mesh, health checks —
-all unchanged.
+container, which Rudder already does. Scheduler, reconciler, private networking,
+health checks — all unchanged.
 
 ---
 
@@ -57,7 +57,8 @@ When the preset resolves to static output:
 
 From there **the existing pipeline handles everything.** `Service.kind=static`
 only changes two things: the health check becomes `GET /` expecting 200, and the
-service is skipped for mesh membership.
+service is not offered as a private dependency target (nothing resolves it by
+service DNS; it is a public edge leaf).
 
 Two-stage Dockerfile template in `control-plane/dockerfile_templates/static.Dockerfile.j2`.
 

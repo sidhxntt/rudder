@@ -99,10 +99,7 @@ async def update_environment(
     responses=error_responses(404, 409, 422),
     operation_id="replace_environment",
     summary="Replace an environment",
-    description=(
-        "Sets every writable field. `wg_subnet` is server-owned and is not "
-        "replaceable. Idempotent."
-    ),
+    description="Sets every writable field. Idempotent.",
 )
 async def replace_environment(
     environment_id: UUID, payload: EnvironmentReplace, session: SessionDep

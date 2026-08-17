@@ -1,0 +1,152 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rudder-backup-identity-broker
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/name: rudder-backup-identity-broker
+    app.kubernetes.io/part-of: rudder
+  annotations:
+    iam.gke.io/gcp-service-account: ${RUDDER_BACKUP_IDENTITY_BROKER_GSA}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rudder-backup-identity-broker
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/name: rudder-backup-identity-broker
+    app.kubernetes.io/part-of: rudder
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rudder-backup-identity-broker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rudder-backup-identity-broker
+        app.kubernetes.io/part-of: rudder
+    spec:
+      serviceAccountName: rudder-backup-identity-broker
+      nodeSelector:
+        rudder.pool: platform
+      tolerations:
+        - key: rudder.pool
+          operator: Equal
+          value: platform
+          effect: NoSchedule
+      containers:
+        - name: broker
+          image: ${RUDDER_CONTROL_PLANE_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn"]
+          args: ["rudder_cp.backup_broker:app", "--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: RUDDER_GCP_PROJECT_ID
+              value: ${RUDDER_GCP_PROJECT}
+            - name: RUDDER_KUBERNETES_BACKUP_GCP_SERVICE_ACCOUNT
+              value: ${RUDDER_BACKUP_GSA}
+          ports:
+            - containerPort: 8000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rudder-backup-identity-broker
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/name: rudder-backup-identity-broker
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rudder-backup-identity-broker
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# The broker is not public. Only the control-plane Pods can request exact
+# environment KSA bindings. It may resolve DNS and call Google IAM over TLS;
+# Kubernetes NetworkPolicy cannot express Google API FQDNs, so egress is
+# constrained to TCP/443 from this dedicated identity only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rudder-backup-identity-broker
+  namespace: rudder-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rudder-backup-identity-broker
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rudder-control-plane
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    # Pods resolve Google metadata and IAM hosts through the cluster DNS
+    # Service. GKE's Calico policy evaluation happens after this ClusterIP is
+    # translated, so retain the existing kube-dns selector below and permit
+    # the stable service address as well.
+    - to:
+        - ipBlock:
+            cidr: 10.112.0.10/32
+        - ipBlock:
+            cidr: 169.254.20.10/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # This cluster uses Calico NetworkPolicy enforcement. GKE Workload
+    # Identity exchanges the projected KSA token through its node-local
+    # metadata proxy before the broker can call Google IAM. These are GKE's
+    # exact Calico metadata ports, not broad plaintext egress.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - protocol: TCP
+          port: 987
+        - protocol: TCP
+          port: 988
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443

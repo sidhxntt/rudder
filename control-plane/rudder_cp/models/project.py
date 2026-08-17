@@ -19,10 +19,8 @@ class Project(SQLModel, table=True):
 class Environment(SQLModel, table=True):
     """A project's isolated copy of a service graph.
 
-    `wg_subnet` is what gives environments network isolation from each other in
-    Phase 3. It is allocated at create time even though nothing reads it until
-    then — an environment that exists without a subnet cannot be given one later
-    without renumbering.
+    Runtime isolation is provided by the namespace and NetworkPolicies rendered
+    by the Kubernetes runtime, not a host-level mesh CIDR.
     """
 
     __tablename__ = "environment"
@@ -34,5 +32,4 @@ class Environment(SQLModel, table=True):
     project_id: uuid.UUID = Field(foreign_key="project.id", sa_type=sa.Uuid, nullable=False)
     name: str = Field(sa_column=sa.Column(sa.String(32), nullable=False))
     is_production: bool = Field(default=False, nullable=False)
-    wg_subnet: str | None = Field(default=None, max_length=32)
     created_at: datetime = created_at_column()

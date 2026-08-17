@@ -15,20 +15,28 @@ file is a bug.
 | 1 | [PHASE-1-single-host.md](PHASE-1-single-host.md) | 3–4 wk | Push to GitHub, container comes up, public URL serves it |
 | 2 | [PHASE-2-multi-host.md](PHASE-2-multi-host.md) | 3–4 wk | Two nodes, service lands on the less loaded one, node dies, service reschedules |
 | 3 | [PHASE-3-kubernetes-runtime.md](PHASE-3-kubernetes-runtime.md) | 3–5 wk | Isolated Kubernetes namespace deploys an imported app and rolls back a failed revision |
-| 4 | [PHASE-4-mesh.md](PHASE-4-mesh.md) | 2–3 wk | Multi-host mesh option: app reaches Postgres by hostname, DB has no public port |
+| 4 | [PHASE-4-gke-production-runtime.md](PHASE-4-gke-production-runtime.md) | 3–5 wk | GKE landing zone: the Phase 3 namespace model runs on a private regional cluster, only the app is publicly routed |
 | 5 | [PHASE-5-environments.md](PHASE-5-environments.md) | 2 wk | Clone production to staging, everything rewires |
 | 6 | [PHASE-6-operations.md](PHASE-6-operations.md) | 2–3 wk | Volumes, DB templates, logs, metrics, instant rollback |
 | 6.5 | [PHASE-6.5-frontends.md](PHASE-6.5-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
 | 7 | [PHASE-7-advisor.md](PHASE-7-advisor.md) | 1–2 wk | Point at a repo, get a proposed service graph as ghost nodes |
 
-Total: 17–24 weeks on the Kubernetes production track.
+Total: 18–26 weeks on the Kubernetes production track.
 
 ## Production runtime track
 
-Phase 3 is the production Kubernetes runtime. It follows Phase 2: Kubernetes
-Services, namespaces, and NetworkPolicies provide internal discovery and
-isolation. Phase 4 documents the separate multi-Docker-host/WireGuard runtime
-for deployments that intentionally remain outside Kubernetes.
+Phase 3 is the Kubernetes runtime, verified locally on Kind: Kubernetes
+Services, CoreDNS, namespaces, and NetworkPolicies provide internal discovery
+and isolation. Phase 4 carries that same resource contract to a private regional
+GKE cluster and adds the production concerns Kind cannot prove — Artifact
+Registry, Workload Identity, managed HTTPS edge, durable state, and
+infrastructure-as-code.
+
+**WireGuard is cancelled as a Rudder deliverable.** The private service network
+is Kubernetes networking. The GKE landing-zone plan is
+`PHASE-4-gke-production-runtime.md`. See
+[ADR 0004](../decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md)
+for the decision and for which `wg_*` data-model fields are now deprecated.
 
 **Do not start a phase until the previous one is verified working end to end.**
 "It compiles" and "the happy path worked once" are not verification. Each file
@@ -36,9 +44,10 @@ has a `## Verify` section with the actual commands.
 
 ## Reordering
 
-Phase 5 is the easiest phase after 1 and has high payoff. If Phase 2 stalls —
-and Phase 2 is the wall — doing 4 before 2 costs nothing architecturally.
-Environment cloning does not need multi-host.
+Phase 5 is the easiest phase after 1 and has high payoff, and environment
+cloning does not need multi-host — it can run any time after Phase 1. Phase 4
+can no longer move earlier: it depends on the Phase 3 Kubernetes resource
+contract existing and being verified.
 
 Phase 6.5 depends on D15 (the `Domain` table) landing in Phase 1, and on nothing
 else. It can move earlier if frontends become urgent.

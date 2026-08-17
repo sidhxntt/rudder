@@ -1,0 +1,37 @@
+# Rudder's own relational state is independent of customer environment
+# databases. CNPG owns replication/failover and creates
+# `rudder-control-plane-db-app`, whose `uri` is consumed by the API and
+# migration Job. The database is never publicly exposed.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: rudder-control-plane-db
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/part-of: rudder
+    app.kubernetes.io/component: control-plane-database
+spec:
+  instances: 3
+  bootstrap:
+    initdb:
+      database: rudder
+      owner: rudder
+      dataChecksums: true
+  storage:
+    size: 20Gi
+  affinity:
+    nodeSelector:
+      rudder.pool: platform
+    tolerations:
+      - key: rudder.pool
+        operator: Equal
+        value: platform
+        effect: NoSchedule
+    podAntiAffinityType: required
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi

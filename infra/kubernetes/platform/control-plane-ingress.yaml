@@ -1,0 +1,30 @@
+# GitHub OAuth and webhook delivery need one stable, public HTTPS endpoint.
+# Application routes are created separately by Rudder only after workload
+# readiness succeeds.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rudder-control-plane
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/managed-by: rudder
+    app.kubernetes.io/component: control-plane
+  annotations:
+    cert-manager.io/cluster-issuer: ${RUDDER_KUBERNETES_CERTIFICATE_ISSUER}
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ${RUDDER_CONTROL_PLANE_HOST}
+      secretName: rudder-control-plane-tls
+  rules:
+    - host: ${RUDDER_CONTROL_PLANE_HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rudder-control-plane
+                port:
+                  name: http

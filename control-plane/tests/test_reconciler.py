@@ -70,6 +70,26 @@ async def test_reconcile_marks_unresponsive_node_as_unreachable(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_keeps_gke_accounting_projection_healthy(
+    session: Session, mock_agent_client: MagicMock
+):
+    """A GKE projection has no agent heartbeat; Kubernetes owns its health."""
+    node = Node(
+        hostname="gke-runtime",
+        ip_address="0.0.0.0",
+        last_heartbeat_at=datetime.now(UTC) - timedelta(seconds=60),
+        reported_state={"runtime": "kubernetes", "accounting_only": True},
+    )
+    session.add(node)
+    session.commit()
+
+    await reconcile_state(session, mock_agent_client)
+
+    session.refresh(node)
+    assert node.status == NodeStatus.HEALTHY
+
+
+@pytest.mark.asyncio
 async def test_reconcile_marks_missing_instance_as_unreachable(
     session: Session, mock_agent_client: MagicMock
 ):

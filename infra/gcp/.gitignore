@@ -1,0 +1,7 @@
+# Terraform caches and state can contain provider binaries, infrastructure
+# metadata, and secret values. Keep only reviewed configuration and lockfiles.
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+!terraform/*.tfvars.example

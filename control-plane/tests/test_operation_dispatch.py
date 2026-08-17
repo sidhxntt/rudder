@@ -233,13 +233,13 @@ async def test_kubernetes_rollback_repoints_only_the_stable_ingress(
 
         api = FakeKubernetesApi()
 
-        async def from_kubeconfig(*_args, **_kwargs):
+        async def load_kubernetes_client(*_args, **_kwargs):
             return api
 
         render = AsyncMock()
         monkeypatch.setattr(
-            "rudder_cp.services.rollbacks.AsyncKubernetesApi.from_kubeconfig",
-            from_kubeconfig,
+            "rudder_cp.services.rollbacks.load_kubernetes_client",
+            load_kubernetes_client,
         )
         monkeypatch.setattr("rudder_cp.services.rollbacks.traefik.render_all", render)
 

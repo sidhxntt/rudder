@@ -10,11 +10,17 @@ resolves identically for the push here and the pull on the node later.
 """
 
 import asyncio
+import json
+import re
 import shutil
+import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID
+
+import httpx
 
 from rudder_cp.config import Settings
 from rudder_cp.logs.store import BuildLogStore
@@ -55,6 +61,26 @@ class BuildResult:
     commit_sha: str
 
 
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def validate_gke_image(image: str) -> str:
+    """Accept only immutable Artifact Registry references for GKE releases."""
+
+    repository, separator, digest = image.partition("@")
+    hostname = repository.split("/", 1)[0]
+    if (
+        not separator
+        or not _SHA256_DIGEST.fullmatch(digest)
+        or not hostname.endswith("-docker.pkg.dev")
+        or repository.count("/") < 2
+    ):
+        raise ValueError(
+            "GKE releases require an Artifact Registry immutable digest reference."
+        )
+    return image
+
+
 async def build_image(
     request: BuildRequest,
     store: BuildLogStore,
@@ -79,7 +105,10 @@ async def build_image(
                 "dockerfile_path on the service."
             )
         else:
-            dockerfile_dir = workdir / "generated"
+            # Keep generated Dockerfiles in the checked-out source tree.  The
+            # local BuildKit path can use it directly, and the GKE Cloud Build
+            # path can archive one self-contained build context.
+            dockerfile_dir = repo_dir
             dockerfile_name = "Dockerfile"
             rendered = render_dockerfile(
                 detection,
@@ -90,17 +119,31 @@ async def build_image(
             await _log(store, request, f"detected {detection.language}; generated Dockerfile")
             await _log(store, request, rendered)
 
-        image_tag = f"{settings.registry}/{request.service_id}:{sha}"
-        await _buildctl(
-            request,
-            context=repo_dir,
-            dockerfile_dir=dockerfile_dir,
-            dockerfile_name=dockerfile_name,
-            image_tag=image_tag,
-            store=store,
-            settings=settings,
-        )
-        return BuildResult(image_tag=image_tag, commit_sha=sha)
+        repository = f"{settings.registry}/{request.service_id}"
+        image_tag = f"{repository}:{sha}"
+        image_reference = image_tag
+        if settings.kubernetes_target == "gke":
+            digest = await _cloud_build(
+                request=request,
+                context=repo_dir,
+                dockerfile_name=dockerfile_name,
+                image_tag=image_tag,
+                store=store,
+                settings=settings,
+            )
+            image_reference = validate_gke_image(f"{repository}@{digest}")
+            await _log(store, request, f"pushed immutable image {image_reference}")
+        else:
+            await _buildctl(
+                request,
+                context=repo_dir,
+                dockerfile_dir=dockerfile_dir,
+                dockerfile_name=dockerfile_name,
+                image_tag=image_tag,
+                store=store,
+                settings=settings,
+            )
+        return BuildResult(image_tag=image_reference, commit_sha=sha)
     except BuildFailed as exc:
         await _log(store, request, f"BUILD FAILED: {exc}")
         raise
@@ -202,7 +245,271 @@ async def _clone_at_sha(
     await _log(store, request, f"checked out {sha}")
 
 
-# ------------------------------------------------------------------ buildkit
+# ------------------------------------------------------------------ Cloud Build (GKE)
+
+
+_METADATA_TOKEN_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/instance/"
+    "service-accounts/default/token"
+)
+_CLOUD_BUILD_API = "https://cloudbuild.googleapis.com/v1"
+_GCS_UPLOAD_API = "https://storage.googleapis.com/upload/storage/v1"
+_GCS_API = "https://storage.googleapis.com/storage/v1"
+
+
+async def _cloud_build(
+    *,
+    request: BuildRequest,
+    context: Path,
+    dockerfile_name: str,
+    image_tag: str,
+    store: BuildLogStore,
+    settings: Settings,
+) -> str:
+    """Build an immutable GKE image with the managed Cloud Build service.
+
+    The control plane already checked out an exact Git SHA using the GitHub App
+    installation token.  It archives that tree, so Cloud Build never needs a
+    GitHub credential, and the archive is deleted after the build finishes.
+    Workload Identity supplies the control-plane's short-lived Google token;
+    no Google key is mounted in the Pod.
+    """
+    if not settings.gke_cloud_build_configured:
+        raise BuildFailed(
+            "GKE Cloud Build is not configured. Set the GCP project, region, source bucket, "
+            "logs bucket, and dedicated build service account."
+        )
+
+    archive = context.parent / "source.tar.gz"
+    await asyncio.to_thread(_archive_source, context, archive)
+    object_name = f"sources/{request.deployment_id}/{request.commit_sha or 'manual'}.tar.gz"
+    token: str | None = None
+    try:
+        token = await _gcp_access_token()
+        await _upload_source_archive(
+            archive=archive,
+            bucket=settings.gcp_build_source_bucket,
+            object_name=object_name,
+            token=token,
+        )
+        await _log(store, request, f"uploaded immutable source archive gs://{settings.gcp_build_source_bucket}/{object_name}")
+        build = await _start_cloud_build(
+            project_id=settings.gcp_project_id,
+            region=settings.gcp_region,
+            source_bucket=settings.gcp_build_source_bucket,
+            source_object=object_name,
+            logs_bucket=settings.gcp_build_logs_bucket,
+            build_service_account=settings.gcp_build_service_account,
+            dockerfile_name=dockerfile_name,
+            image_tag=image_tag,
+            token=token,
+        )
+        build_id = _cloud_build_id(build)
+        await _log(store, request, f"Cloud Build {build_id} queued")
+        completed = await _wait_for_cloud_build(
+            project_id=settings.gcp_project_id,
+            region=settings.gcp_region,
+            build_id=build_id,
+            token=token,
+            request=request,
+            store=store,
+        )
+        return _cloud_build_digest(completed, image_tag)
+    finally:
+        archive.unlink(missing_ok=True)
+        # The source object is not an artifact.  Leave no mutable source copy
+        # after the Cloud Build result has become the immutable deployment.
+        if token is not None:
+            try:
+                await _delete_source_archive(
+                    bucket=settings.gcp_build_source_bucket,
+                    object_name=object_name,
+                    token=token,
+                )
+            except BuildFailed:
+                # A completed build remains valid even when cleanup has a transient
+                # failure; retain an explicit log for operator follow-up.
+                await _log(store, request, "warning: could not delete Cloud Build source archive")
+
+
+def _archive_source(context: Path, destination: Path) -> None:
+    """Create a reproducible build context without Git metadata."""
+    with tarfile.open(destination, "w:gz") as archive:
+        for path in sorted(context.rglob("*")):
+            relative = path.relative_to(context)
+            if ".git" in relative.parts:
+                continue
+            archive.add(path, arcname=str(relative), recursive=False)
+
+
+async def _gcp_access_token() -> str:
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(_METADATA_TOKEN_URL, headers={"Metadata-Flavor": "Google"})
+            response.raise_for_status()
+            token = response.json().get("access_token")
+    except (httpx.HTTPError, ValueError) as exc:
+        raise BuildFailed(
+            "Could not obtain a Workload Identity access token for Cloud Build."
+        ) from exc
+    if not isinstance(token, str) or not token:
+        raise BuildFailed("Workload Identity did not return a Cloud Build access token.")
+    return token
+
+
+async def _upload_source_archive(
+    *, archive: Path, bucket: str, object_name: str, token: str
+) -> None:
+    url = f"{_GCS_UPLOAD_API}/b/{bucket}/o"
+    try:
+        contents = await asyncio.to_thread(archive.read_bytes)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                url,
+                params={"uploadType": "media", "name": object_name},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/gzip",
+                },
+                content=contents,
+            )
+            response.raise_for_status()
+    except (httpx.HTTPError, OSError) as exc:
+        raise BuildFailed("Could not upload the source archive for Cloud Build.") from exc
+
+
+async def _delete_source_archive(*, bucket: str, object_name: str, token: str) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.delete(
+                f"{_GCS_API}/b/{bucket}/o/{quote(object_name, safe='')}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if response.status_code != 404:
+                response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise BuildFailed("Could not delete the Cloud Build source archive.") from exc
+
+
+async def _start_cloud_build(
+    *,
+    project_id: str,
+    region: str,
+    source_bucket: str,
+    source_object: str,
+    logs_bucket: str,
+    build_service_account: str,
+    dockerfile_name: str,
+    image_tag: str,
+    token: str,
+) -> dict[str, object]:
+    body = {
+        "source": {"storageSource": {"bucket": source_bucket, "object": source_object}},
+        "steps": [
+            {
+                "name": "gcr.io/cloud-builders/docker",
+                "args": ["build", "--tag", image_tag, "--file", dockerfile_name, "."],
+            }
+        ],
+        "images": [image_tag],
+        "serviceAccount": f"projects/{project_id}/serviceAccounts/{build_service_account}",
+        "logsBucket": f"gs://{logs_bucket}",
+        "options": {"logging": "GCS_ONLY"},
+        "timeout": f"{_BUILD_TIMEOUT_SECONDS}s",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{_CLOUD_BUILD_API}/projects/{project_id}/locations/{region}/builds",
+                headers={"Authorization": f"Bearer {token}"},
+                json=body,
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise BuildFailed("Cloud Build could not start the image build.") from exc
+    if not isinstance(payload, dict):
+        raise BuildFailed("Cloud Build returned an invalid build response.")
+    return payload
+
+
+def _cloud_build_id(operation: dict[str, object]) -> str:
+    """Extract the build identifier from Cloud Build's create Operation.
+
+    ``projects.locations.builds.create`` returns a long-running Operation.
+    Its metadata contains the queued Build, which is the resource that the
+    regional ``builds.get`` endpoint accepts for status polling.
+    """
+    metadata = operation.get("metadata")
+    if not isinstance(metadata, dict):
+        raise BuildFailed("Cloud Build did not return operation metadata.")
+    build = metadata.get("build")
+    if not isinstance(build, dict):
+        raise BuildFailed("Cloud Build did not return a queued build.")
+    return _required_text(build, "id", "Cloud Build did not return a build id.")
+
+
+async def _wait_for_cloud_build(
+    *,
+    project_id: str,
+    region: str,
+    build_id: str,
+    token: str,
+    request: BuildRequest,
+    store: BuildLogStore,
+) -> dict[str, object]:
+    deadline = asyncio.get_running_loop().time() + _BUILD_TIMEOUT_SECONDS
+    last_status = ""
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{_CLOUD_BUILD_API}/projects/{project_id}/locations/{region}/builds/{build_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise BuildFailed("Could not read Cloud Build status.") from exc
+        if not isinstance(payload, dict):
+            raise BuildFailed("Cloud Build returned an invalid status response.")
+        status = str(payload.get("status", "STATUS_UNKNOWN"))
+        if status != last_status:
+            await _log(store, request, f"Cloud Build {build_id}: {status}")
+            last_status = status
+        if status == "SUCCESS":
+            return payload
+        if status in {"FAILURE", "INTERNAL_ERROR", "TIMEOUT", "CANCELLED", "EXPIRED"}:
+            raise BuildFailed(f"Cloud Build {build_id} ended with status {status}.")
+        if asyncio.get_running_loop().time() >= deadline:
+            raise BuildFailed(f"Cloud Build {build_id} timed out after {_BUILD_TIMEOUT_SECONDS}s.")
+        await asyncio.sleep(2)
+
+
+def _cloud_build_digest(build: dict[str, object], image_tag: str) -> str:
+    results = build.get("results")
+    if not isinstance(results, dict):
+        raise BuildFailed("Cloud Build returned no image results.")
+    images = results.get("images")
+    if not isinstance(images, list):
+        raise BuildFailed("Cloud Build returned no immutable image digest.")
+    for image in images:
+        if not isinstance(image, dict) or image.get("name") != image_tag:
+            continue
+        digest = image.get("digest")
+        if isinstance(digest, str) and _SHA256_DIGEST.fullmatch(digest):
+            return digest
+    raise BuildFailed("Cloud Build returned no immutable image digest.")
+
+
+def _required_text(payload: dict[str, object], key: str, error: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise BuildFailed(error)
+    return value
+
+
+# ------------------------------------------------------------------ buildkit (local only)
 
 
 async def _buildctl(
@@ -214,17 +521,19 @@ async def _buildctl(
     image_tag: str,
     store: BuildLogStore,
     settings: Settings,
-) -> None:
+    metadata_file: Path | None = None,
+) -> str | None:
     output_spec = ",".join(
         [
             "type=image",
             f"name={image_tag}",
             "push=true",
-            # The local registry runs without TLS (D7). The matching host-daemon
-            # insecure-registries entry is the documented one-time prerequisite.
-            "registry.insecure=true",
         ]
     )
+    if settings.kubernetes_target != "gke":
+        # The local registry runs without TLS (D7). Production Artifact
+        # Registry must use normal TLS and credentials instead.
+        output_spec = f"{output_spec},registry.insecure=true"
     command = [
         "buildctl",
         "--addr",
@@ -245,6 +554,8 @@ async def _buildctl(
         "--progress",
         "plain",
     ]
+    if metadata_file is not None:
+        command.extend(["--metadata-file", str(metadata_file)])
     await _log(store, request, f"building {image_tag}")
     code = await _stream(command, request, store, settings, timeout=_BUILD_TIMEOUT_SECONDS)
     if code != 0:
@@ -254,6 +565,20 @@ async def _buildctl(
             "host Docker daemon is missing localhost:5000 in insecure-registries."
         )
     await _log(store, request, f"pushed {image_tag}")
+    if metadata_file is None:
+        return None
+    return _read_image_digest(metadata_file)
+
+
+def _read_image_digest(metadata_file: Path) -> str:
+    try:
+        document = json.loads(metadata_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise BuildFailed("BuildKit did not write image metadata.") from exc
+    digest = document.get("containerimage.digest")
+    if not isinstance(digest, str) or not _SHA256_DIGEST.fullmatch(digest):
+        raise BuildFailed("BuildKit metadata has no valid immutable image digest.")
+    return digest
 
 
 # ------------------------------------------------------------------ subprocess

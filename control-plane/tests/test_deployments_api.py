@@ -132,6 +132,15 @@ def test_deploy_accepts_an_explicit_sha(client: TestClient, seed: dict[str, str]
     assert response.json()["commit_sha"] == "b" * 40
 
 
+def test_deploy_rejects_an_overlong_explicit_sha_before_database_write(
+    client: TestClient, seed: dict[str, str]
+) -> None:
+    response = client.post(f"/services/{seed['service']}/deploy", json={"commit_sha": "b" * 41})
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+    assert response.json()["details"]["errors"][0]["type"] == "string_too_long"
+
+
 def test_deploying_a_service_with_no_repo_is_a_readable_422(
     client: TestClient, seed: dict[str, str]
 ) -> None:

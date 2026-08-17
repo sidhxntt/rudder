@@ -1,0 +1,47 @@
+# This Job is deleted and recreated by the bootstrap command for every
+# platform release. Schema migration must finish before a new API deployment is
+# allowed to receive traffic.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rudder-control-plane-migrate
+  namespace: rudder-system
+  labels:
+    app.kubernetes.io/part-of: rudder
+    app.kubernetes.io/component: control-plane-migration
+spec:
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: rudder
+        app.kubernetes.io/component: control-plane-migration
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: rudder-control-plane
+      nodeSelector:
+        rudder.pool: platform
+      tolerations:
+        - key: rudder.pool
+          operator: Equal
+          value: platform
+          effect: NoSchedule
+      containers:
+        - name: migrate
+          image: ${RUDDER_CONTROL_PLANE_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: RUDDER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rudder-control-plane-db-app
+                  key: uri
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

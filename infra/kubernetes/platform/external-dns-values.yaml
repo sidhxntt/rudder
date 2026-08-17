@@ -1,0 +1,25 @@
+# Expanded by bootstrap-platform.sh immediately before Helm applies ExternalDNS.
+# Keep this controller constrained to the delegated Rudder zone and routes that
+# Rudder itself owns. TXT ownership makes `policy: sync` safe for co-existing
+# DNS records: only records owned by this controller may be removed.
+provider:
+  name: google
+
+sources:
+  - ingress
+
+policy: sync
+registry: txt
+txtOwnerId: rudder-${RUDDER_GKE_CLUSTER}
+domainFilters:
+  - ${RUDDER_DNS_NAME}
+labelFilter: app.kubernetes.io/managed-by=rudder
+
+serviceAccount:
+  create: true
+  name: external-dns
+
+extraArgs:
+  google-project: ${RUDDER_GCP_PROJECT}
+  google-zone-visibility: public
+  ingress-class: nginx
