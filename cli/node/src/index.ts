@@ -9,7 +9,7 @@ type State = { api: ApiClient; context: Context; credentials: { url?: string; to
 const usage = `rudder — Rudder control-plane CLI
 
 Usage: rudder [--url URL] [--project ID|NAME] [--env ID|NAME] [--service ID|NAME] [--json] [--no-interactive] <command>
-Commands: login logout whoami context project env service var deploy logs history rollback metrics operation import domain api`;
+Commands: login logout whoami context project env service var deploy logs history rollback status metrics operation import domain api`;
 
 function parse(argv: string[]): { args: string[]; flags: Flags } {
   const args: string[] = [], flags: Flags = {};
@@ -42,11 +42,12 @@ async function command(state: State, args: string[]): Promise<void> {
   if (noun === "env") return environment(state, action, rest);
   if (noun === "service") return service(state, action, rest);
   if (noun === "var") return variable(state, action, rest);
-  if (noun === "deploy") { const id = await resolve(state, "service", rest[0]); return void await request(state, "POST", `/services/${id}/deploy`, stringFlag(state.flags, "commit") ? { commit_sha: stringFlag(state.flags, "commit") } : undefined); }
+  if (noun === "deploy") { const id = await resolve(state, "service", rest[0]); const deployment = await state.api.request("POST", `/services/${id}/deploy`, stringFlag(state.flags, "commit") ? { commit_sha: stringFlag(state.flags, "commit") } : undefined) as { id?: string }; if (state.flags.follow && deployment.id) for await (const line of state.api.stream(`/deployments/${deployment.id}/build-log`)) console.log(line); else print(deployment, state.out); return; }
   if (noun === "history") { const id = await resolve(state, "service", rest[0]); return void await request(state, "GET", `/services/${id}/deployments`); }
   if (noun === "rollback") { const id = requireArg(rest, 0, "deployment id"); await confirm(state, `Roll back to deployment ${id}?`); return void await request(state, "POST", `/deployments/${id}/rollback`); }
   if (noun === "logs") { const id = await resolve(state, "service", rest[0]); if (!state.flags.follow) { const deployments = await state.api.request("GET", `/services/${id}/deployments`) as Array<{ id?: string }>; const deployment = stringFlag(state.flags, "deployment") ?? deployments[0]?.id; if (!deployment) throw new Error("No deployments found. Use `rudder deploy` first."); for await (const line of state.api.stream(`/deployments/${deployment}/build-log`)) console.log(line); return; } for await (const line of state.api.stream(`/services/${id}/runtime-log`)) console.log(line); return; }
   if (noun === "metrics") { const id = await resolve(state, "service", rest[0]); const window = stringFlag(state.flags, "window") ?? "1h"; return void await request(state, "GET", `/services/${id}/metrics?window=${encodeURIComponent(window)}`); }
+  if (noun === "status" || noun === "ps") { const environment = await resolve(state, "environment"); const services = await state.api.request("GET", `/environments/${environment}/services`) as Array<{ id: string; name: string }>; const rows = await Promise.all(services.map(async service => ({ service, deployments: await state.api.request("GET", `/services/${service.id}/deployments`), instances: await state.api.request("GET", `/services/${service.id}/instances`) }))); return void print(rows, state.out); }
   if (noun === "operation") return operation(state, action, rest);
   if (noun === "import") return githubImport(state, action, rest);
   if (noun === "domain") return domain(state, action, rest);
