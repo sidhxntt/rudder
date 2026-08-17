@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 from rudder_cp.config import get_settings
 from rudder_cp.db import get_engine
 from rudder_cp.models import Deployment, DeploymentStatus, Service
+from rudder_cp.services import environments
 
 log = logging.getLogger("rudder_cp.webhooks")
 
@@ -53,6 +54,17 @@ async def github_push(
 
     if x_github_event == "ping":
         return {"queued": [], "detail": "pong"}
+    if x_github_event == "pull_request":
+        payload = await request.json()
+        with Session(get_engine()) as session:
+            result = await environments.handle_pull_request(
+                session,
+                payload=payload,
+                agent=request.app.state.agent,
+                settings=settings,
+                github=request.app.state.github,
+            )
+        return result
     if x_github_event != "push":
         return {"queued": [], "detail": f"ignored event: {x_github_event}"}
 

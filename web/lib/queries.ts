@@ -116,6 +116,27 @@ export function useEnvironments(projectId: string | undefined) {
   });
 }
 
+export function useCloneEnvironment(projectId: string | undefined) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { environmentId: string; name: string }) =>
+      api.cloneEnvironment(args.environmentId, args.name),
+    onSuccess: () => {
+      if (projectId) void client.invalidateQueries({ queryKey: keys.environments(projectId) });
+    },
+  });
+}
+
+export function useDeleteEnvironment(projectId: string | undefined) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (environmentId: string) => api.deleteEnvironment(environmentId),
+    onSuccess: () => {
+      if (projectId) void client.invalidateQueries({ queryKey: keys.environments(projectId) });
+    },
+  });
+}
+
 export function useServices(environmentId: string | undefined) {
   return useQuery({
     queryKey: keys.services(environmentId ?? ""),

@@ -134,7 +134,7 @@ instead.
 release, proves ingress reaches only `web`, deliberately fails a new candidate
 without disrupting the live route, then removes its temporary namespace.
 
-## Phase 4 — GKE landing zone (planned, not started)
+## Phase 4 — GKE landing zone
 
 Phase 4 takes the Phase 3 resource contract unchanged onto a private regional GKE
 Standard cluster and adds what Kind cannot prove: Artifact Registry immutable
@@ -159,13 +159,26 @@ changing deployment records, UI semantics, or the service graph; it creates no A
 or Azure resources. Effort for those adapters is estimated in
 [PHASE-4-gke-production-runtime.md](docs/phases/PHASE-4-gke-production-runtime.md) → "Cost of adding AWS and Azure".
 
-Prerequisites are sorted as of 2026-07-29: `invytt-2483d` audited, all ten APIs
-enabled, Terraform 1.15.8 and `gke-gcloud-auth-plugin` installed, and the four
-architecture decisions recorded. Phase 4 now waits on item 13 of
-[`docs/NEED-FROM-YOU.md`](docs/NEED-FROM-YOU.md) — budget confirmation, GoDaddy NS
-records for the `rudder` subdomain, the `rudder-vpc` reuse-or-replace call, and an
-acceptance repository. **Do not deploy customer workloads until that file's
-acceptance checklist passes.**
+Phase 4 is verified for controlled beta on the shared platform pool. The
+authoritative acceptance record is
+[the Phase 4 checkpoint](docs/phases/checkpoints/PHASE-4-COMPLETION.md). A
+dedicated workloads node pool remains a future capacity expansion, not a Phase
+4 exit gate.
+
+## Phase 5 — environments
+
+An environment is an isolated declarative copy of a project's service graph.
+Use the **clone** control in the environment header to copy services, encrypted
+variables, canvas positions, and empty volume declarations into a new
+environment. Deployments, instances, build logs, user domains, and volume data
+are never copied. Service references resolve only within their environment and
+are checked for cycles when saved.
+
+GitHub `pull_request` webhooks create a capped, full PR environment from the
+production graph, queue its branch deployment, and comment the environment URL
+when the GitHub App is configured. Closing or merging the PR removes it; replay
+of either delivery is safe. Configure `RUDDER_GITHUB_PR_ENVIRONMENT_LIMIT` to
+set the cap (default: 10).
 
 ## Notes on the dev stack
 

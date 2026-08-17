@@ -95,6 +95,21 @@ class GitHubAppClient:
         """Mint a short-lived installation token for a source checkout."""
         return await self._installation_token(installation_id)
 
+    async def comment_on_pull_request(
+        self, installation_id: int, repo: str, number: int, body: str
+    ) -> None:
+        """Post the stable environment URL through the installation token."""
+        token = await self._installation_token(installation_id)
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient(base_url="https://api.github.com", headers=headers) as client:
+            response = await client.post(
+                f"/repos/{repo}/issues/{number}/comments", json={"body": body}
+            )
+        if response.status_code >= 400:
+            raise GitHubAppError(
+                f"Could not comment on pull request: GitHub returned {response.status_code}."
+            )
+
     async def _get(self, installation_id: int, path: str) -> Any:
         token = await self._installation_token(installation_id)
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}

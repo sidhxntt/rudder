@@ -226,6 +226,8 @@ class KubernetesReleaseResult:
 class KubernetesApi(Protocol):
     async def ensure_namespace(self, namespace: str, labels: dict[str, str]) -> None: ...
 
+    async def delete_namespace(self, namespace: str) -> None: ...
+
     async def ensure_guardrails(self, namespace: str, labels: dict[str, str]) -> None: ...
 
     async def ensure_cnpg_backup_service_account(
@@ -1021,6 +1023,16 @@ class AsyncKubernetesApi:
             namespace,
             body,
         )
+
+    async def delete_namespace(self, namespace: str) -> None:
+        """Remove an entire environment namespace, including its PVCs/routes."""
+        try:
+            await self.core.delete_namespace(
+                namespace, body=client.V1DeleteOptions(propagation_policy="Foreground")
+            )
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
 
     async def ensure_guardrails(self, namespace: str, labels: dict[str, str]) -> None:
         owner = {"app.kubernetes.io/managed-by": "rudder", **labels}

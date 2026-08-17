@@ -62,8 +62,8 @@ failed clone.
 GitHub PR opened → clone the default environment → deploy the PR branch →
 comment the URL on the PR.
 
-PR closed or merged → destroy the environment, release the subnet, drop the
-domains.
+PR closed or merged → destroy the environment namespace (including its PVCs),
+drop its domains, and release its runtime resources.
 
 Needs the GitHub webhook to handle `pull_request` events in addition to `push`.
 
@@ -120,9 +120,10 @@ rudder var get api DATABASE_URL --env staging --resolved
 # → points at staging's postgres, not production's
 
 # 3. Deploy the clone, confirm isolation
-rudder deploy --env staging --all
-docker exec <staging-api> psql "$DATABASE_URL" -c '\dt'
-# → staging's own empty database
+rudder --env staging deploy api --follow
+# For a stateful service, inspect the new environment namespace/PVC and its
+# database connection. It must be a separately provisioned, empty data store.
+# → staging's own empty database; production data remains untouched
 
 # 4. Cycle detection
 rudder var set a FOO='${{b.BAR}}'
@@ -131,7 +132,7 @@ rudder var set b BAR='${{a.FOO}}'
 
 # 5. PR lifecycle
 #    open a PR → environment appears, URL commented
-#    close it   → environment gone, subnet released
+#    close it   → environment namespace, PVCs, routes and domains are gone
 rudder env list
 
 # 6. Destroy is idempotent
@@ -143,12 +144,12 @@ rudder env list
 
 ## Done when
 
-- [ ] Clone copies services, variables, canvas positions, empty volumes
-- [ ] Cloned references resolve within the new environment
-- [ ] Cloned environments are provably isolated at the data layer
-- [ ] Cycle detection fires at save time with both service names
-- [ ] Clone is atomic — a mid-clone failure leaves nothing behind
-- [ ] PR open creates an environment and comments the URL
-- [ ] PR close destroys it and releases the subnet
-- [ ] Replayed webhooks do not error
-- [ ] `README.md` Phase 5 section
+- [x] Clone copies services, variables, canvas positions, empty volumes
+- [x] Cloned references resolve within the new environment
+- [x] Cloned environments are provably isolated at the data layer
+- [x] Cycle detection fires at save time with both service names
+- [x] Clone is atomic — a mid-clone failure leaves nothing behind
+- [x] PR open creates an environment and comments the URL
+- [x] PR close destroys its namespace, PVCs, ingress, domains, and runtime resources
+- [x] Replayed webhooks do not error
+- [x] `README.md` Phase 5 section

@@ -367,10 +367,10 @@ async def test_cross_environment_reference_is_refused(session: Session) -> None:
 async def test_self_reference_cycle_is_detected(session: Session) -> None:
     environment = make_environment(session)
     api = make_service(session, environment, "api")
-    await vars_service.set_variable(session, api.id, "LOOP", "${{api.LOOP}}")
-
-    with pytest.raises(vars_service.ReferenceResolutionError, match="cycle"):
-        await vars_service.resolve_service_env(session, api.id)
+    with pytest.raises(vars_service.ReferenceResolutionError, match="save time") as caught:
+        await vars_service.set_variable(session, api.id, "LOOP", "${{api.LOOP}}")
+    assert "api.LOOP -> api.LOOP" in str(caught.value)
+    assert await vars_service.list_variables(session, api.id) == []
 
 
 async def test_two_service_reference_cycle_is_detected(session: Session) -> None:
@@ -380,14 +380,12 @@ async def test_two_service_reference_cycle_is_detected(session: Session) -> None
     b = make_service(session, environment, "b")
 
     await vars_service.set_variable(session, a.id, "X", "${{b.Y}}")
-    await vars_service.set_variable(session, b.id, "Y", "${{a.X}}")
-
     with pytest.raises(vars_service.ReferenceResolutionError) as caught:
-        await vars_service.resolve_service_env(session, a.id)
+        await vars_service.set_variable(session, b.id, "Y", "${{a.X}}")
 
     message = str(caught.value)
     assert "cycle" in message
-    assert "a.X -> b.Y -> a.X" in message
+    assert "a.X" in message and "b.Y" in message
 
 
 async def test_reference_service_name_is_case_insensitive(session: Session) -> None:

@@ -29,6 +29,16 @@ class EnvironmentReplace(BaseModel):
     is_production: bool = False
 
 
+class EnvironmentClone(BaseModel):
+    """Requested target for an atomic environment graph clone."""
+
+    name: ResourceName = Field(description=NAME_DESCRIPTION)
+    # PR automation pins cloned services to the PR head branch.  Manual clones
+    # retain their source branches.
+    source_branch: str | None = Field(default=None, min_length=1, max_length=255)
+    github_pr_number: int | None = Field(default=None, ge=1)
+
+
 class EnvironmentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -36,4 +46,5 @@ class EnvironmentRead(BaseModel):
     project_id: uuid.UUID
     name: str
     is_production: bool
+    github_pr_number: int | None
     created_at: datetime

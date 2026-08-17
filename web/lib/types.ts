@@ -86,6 +86,7 @@ export interface Environment {
   project_id: string;
   name: string;
   is_production: boolean;
+  github_pr_number: number | null;
   /** Optional in the schema, not merely nullable — it can be absent entirely. */
   wg_subnet?: string | null;
   created_at: string;

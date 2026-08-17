@@ -18,6 +18,11 @@ RUN curl -fsSL "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_V
 
 WORKDIR /app
 
+# The development Compose file bind-mounts the source tree at /app. Keep the
+# image virtualenv outside that mount so development commands (including
+# Alembic) remain available after the mount replaces /app.
+ENV UV_PROJECT_ENVIRONMENT=/opt/rudder-venv
+
 # The control-plane image must use the exact dependency graph tested in CI.
 # Installing the project directly with pip ignores uv.lock and silently picks
 # newer packages at image-build time. Keep dependency resolution separate from
@@ -29,7 +34,7 @@ RUN pip install --no-cache-dir "uv==0.11.27" \
 COPY . .
 RUN uv sync --locked --no-dev
 
-ENV PATH="/app/.venv/bin:${PATH}"
+ENV PATH="/opt/rudder-venv/bin:${PATH}"
 
 EXPOSE 8000
 
