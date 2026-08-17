@@ -153,7 +153,11 @@ async def test_deleting_a_service_removes_its_volume_before_the_service(engine, 
         session.commit()
 
         await services.delete_service(
-            session, postgres.id, agent=RecordingAgent(), settings=settings
+            session,
+            postgres.id,
+            agent=RecordingAgent(),
+            settings=settings,
+            confirm_volume_deletion=True,
         )
 
         assert session.get(Service, postgres.id) is None

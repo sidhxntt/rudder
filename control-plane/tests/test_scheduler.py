@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from rudder_cp.models import Node, NodeStatus, Service
+from rudder_cp.models import Node, NodeStatus, Service, Volume
 from rudder_cp.services.scheduler import select_node_for_service
 
 
@@ -122,6 +122,49 @@ def test_select_node_for_service_no_capacity(session: Session):
     )
 
     with pytest.raises(Exception, match="No nodes with sufficient capacity available."):
+        select_node_for_service(session, service)
+
+
+def test_select_node_for_service_honours_volume_pin(session: Session):
+    pinned = Node(
+        hostname="pinned", ip_address="192.168.1.11", status=NodeStatus.HEALTHY,
+        cpu_total=4.0, memory_total_mb=8192,
+    )
+    preferred = Node(
+        hostname="preferred", ip_address="192.168.1.12", status=NodeStatus.HEALTHY,
+        cpu_total=4.0, memory_total_mb=8192,
+    )
+    service = Service(
+        name="database", cpu_limit=1.0, memory_limit_mb=1024, container_port=5432,
+        environment_id=uuid.uuid4(),
+    )
+    session.add_all([pinned, preferred, service])
+    session.commit()
+    session.add(Volume(service_id=service.id, mount_path="/var/lib/data", node_id=pinned.id))
+    session.commit()
+
+    assert select_node_for_service(session, service).id == pinned.id
+
+
+def test_select_node_for_service_refuses_to_move_volume_to_healthy_node(session: Session):
+    down = Node(
+        hostname="down", ip_address="192.168.1.13", status=NodeStatus.UNREACHABLE,
+        cpu_total=4.0, memory_total_mb=8192,
+    )
+    healthy = Node(
+        hostname="healthy", ip_address="192.168.1.14", status=NodeStatus.HEALTHY,
+        cpu_total=4.0, memory_total_mb=8192,
+    )
+    service = Service(
+        name="database", cpu_limit=1.0, memory_limit_mb=1024, container_port=5432,
+        environment_id=uuid.uuid4(),
+    )
+    session.add_all([down, healthy, service])
+    session.commit()
+    session.add(Volume(service_id=service.id, mount_path="/var/lib/data", node_id=down.id))
+    session.commit()
+
+    with pytest.raises(ValueError, match="pinned to an unavailable"):
         select_node_for_service(session, service)
 
 

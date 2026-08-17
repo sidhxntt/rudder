@@ -180,6 +180,20 @@ when the GitHub App is configured. Closing or merging the PR removes it; replay
 of either delivery is safe. Configure `RUDDER_GITHUB_PR_ENVIRONMENT_LIMIT` to
 set the cap (default: 10).
 
+## Phase 6 — operations
+
+Rudder now treats persistent Docker storage as node-local data: volume-backed
+services are pinned to their first host, are never rescheduled onto an empty
+host, and cannot scale past one replica. Managed Postgres, Redis, and MySQL can
+be created from the reviewed catalog with generated encrypted credentials.
+
+Runtime logs are collected from node agents into bounded rotating local files;
+follow them with `rudder logs <service> -f` (`--build` keeps the historical
+deployment-build log command). The canvas shows retained CPU traces. Metrics
+remain local to the control plane and compact from 10-second samples to minute
+and five-minute tiers before expiry. Rollback promotes a healthy immutable
+deployment without rebuilding it.
+
 ## Notes on the dev stack
 
 `buildkitd` runs with `network_mode: service:registry`. That is deliberate:

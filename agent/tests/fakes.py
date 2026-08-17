@@ -46,12 +46,14 @@ class FakeContainer:
         name: str,
         attrs: dict[str, Any] | None = None,
         recorder: FakeDockerClient | None = None,
+        logs: bytes = b"",
     ) -> None:
         self.id = container_id
         self.name = name
         self.attrs = attrs if attrs is not None else make_attrs()
         self.status = self.attrs["State"]["Status"]
         self._recorder = recorder
+        self._logs = logs
         self.started = False
         self.stopped = False
         self.removed = False
@@ -65,6 +67,12 @@ class FakeContainer:
         if self._recorder is not None and self._recorder.start_error is not None:
             raise self._recorder.start_error
         self.started = True
+
+    def logs(self, *, timestamps: bool, tail: int) -> bytes:
+        self._record("container.logs")
+        assert timestamps is True
+        assert tail == 10_000
+        return self._logs
 
     def stop(self, timeout: int | None = None) -> None:
         self._record("container.stop")

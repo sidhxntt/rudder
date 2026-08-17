@@ -127,6 +127,7 @@ async def delete_service(
     *,
     agent: AgentClient,
     settings: Settings,
+    confirm_volume_deletion: bool = False,
     owner_id: uuid.UUID | None = None,
 ) -> None:
     """Delete a service and everything that hangs off it.
@@ -136,6 +137,12 @@ async def delete_service(
     hand-deleting its variables, volumes, deployments and domains first.
     """
     service = _require_service(session, service_id, owner_id=owner_id)
+    volumes = list(session.exec(select(Volume).where(Volume.service_id == service.id)).all())
+    if volumes and not confirm_volume_deletion:
+        raise ConflictError(
+            "service has persistent volume data; repeat with confirm_volume_deletion=true",
+            details={"service_id": str(service.id), "volume_count": len(volumes)},
+        )
     await remove_runtime_containers(
         session, service_ids=[service.id], agent=agent, settings=settings
     )

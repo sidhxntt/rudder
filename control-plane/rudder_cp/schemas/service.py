@@ -119,5 +119,13 @@ class ServiceRead(BaseModel):
 
     canvas_x: float
     canvas_y: float
-
     created_at: datetime
+
+
+class RuntimeMetricRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    captured_at: datetime
+    cpu_percent: float
+    memory_bytes: int
+    resolution_seconds: int

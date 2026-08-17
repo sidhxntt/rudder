@@ -24,7 +24,16 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from rudder_cp.config import get_settings
 from rudder_cp.db import get_session
-from rudder_cp.models import Deployment, Domain, Environment, Project, Service, User, Variable, Volume
+from rudder_cp.models import (
+    Deployment,
+    Domain,
+    Environment,
+    Project,
+    Service,
+    User,
+    Variable,
+    Volume,
+)
 from rudder_cp.routers import domains as domains_router
 from rudder_cp.routers import environments as environments_router
 from rudder_cp.routers import projects as projects_router
@@ -193,6 +202,55 @@ def test_service_routes_hide_other_owners_services(client: TestClient, engine: E
     response = client.patch(f"/services/{foreign_service_id}", json={"name": "taken-over"})
     assert response.status_code == 404, response.text
     assert client.get(f"/services/{foreign_service_id}").status_code == 404
+
+
+@pytest.mark.parametrize("template", ["postgres", "redis", "mysql"])
+def test_database_template_is_private_durable_and_idempotent(
+    client: TestClient, engine: Engine, env_id: str, template: str
+) -> None:
+    response = client.post(f"/environments/{env_id}/database-templates/{template}")
+    assert response.status_code == 201, response.text
+    database = response.json()
+    assert database["name"] == template
+    assert database["kind"] == "database"
+
+    # Catalog databases deliberately have no publicly routed system Domain.
+    assert client.get(f"/services/{database['id']}/domains").json() == []
+    with Session(engine) as session:
+        variables = session.exec(
+            select(Variable).where(Variable.service_id == UUID(database["id"]))
+        ).all()
+        volumes = session.exec(
+            select(Volume).where(Volume.service_id == UUID(database["id"]))
+        ).all()
+        secret_values = [variable.value_encrypted for variable in variables]
+    assert volumes
+    assert secret_values
+
+    repeated = client.post(f"/environments/{env_id}/database-templates/{template}")
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json()["id"] == database["id"]
+    with Session(engine) as session:
+        after_repeat = session.exec(
+            select(Variable).where(Variable.service_id == UUID(database["id"]))
+        ).all()
+    assert [variable.value_encrypted for variable in after_repeat] == secret_values
+
+
+def test_volume_backed_service_delete_requires_confirmation(
+    client: TestClient, engine: Engine, env_id: str
+) -> None:
+    database = client.post(f"/environments/{env_id}/database-templates/postgres").json()
+    refused = client.delete(f"/services/{database['id']}")
+    assert refused.status_code == 409, refused.text
+    assert "persistent volume" in refused.json()["message"]
+
+    deleted = client.delete(f"/services/{database['id']}?confirm_volume_deletion=true")
+    assert deleted.status_code == 204, deleted.text
+    with Session(engine) as session:
+        assert session.exec(
+            select(Volume).where(Volume.service_id == UUID(database["id"]))
+        ).first() is None
 
 
 # --------------------------------------------------------------------------

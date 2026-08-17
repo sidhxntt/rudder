@@ -768,7 +768,7 @@ checkpoint.
 - Documentation alignment is **done** (2026-07-29): `docs/PRD.md`,
   `docs/phases/README.md`, `PHASE-3-kubernetes-runtime.md`,
   `PHASE-5-environments.md`, `PHASE-6-operations.md`,
-  `PHASE-6.5-frontends.md`, and `docs/NEED-FROM-YOU.md` no longer describe this
+  `PHASE-7-frontends.md`, and `docs/NEED-FROM-YOU.md` no longer describe this
   file as the legacy WireGuard alternative.
 - Remaining code debt from the cancellation, to clear during Phase 4. The subnet
   allocator is still **live**, not dormant — every environment create calls it and

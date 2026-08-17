@@ -248,6 +248,13 @@ async def _deploy_locked(
     try:
         env = await variables.resolve_service_env(session, service.id)
         node = scheduler.select_node_for_service(session, service)
+        # A named Docker volume is host-local. Pin every unassigned declaration
+        # before the remote create call so every later deployment is forced back
+        # to this node; losing the node is safer than silently starting empty.
+        for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all():
+            if volume.node_id is None:
+                volume.node_id = node.id
+                session.add(volume)
         # Reserve capacity while the scheduler's row locks are held, then
         # commit before making a remote agent call.  Holding a database
         # transaction open across Docker/image-pull I/O blocks the selected

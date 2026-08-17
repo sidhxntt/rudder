@@ -29,11 +29,13 @@ from .schemas import (
     ComposeResult,
     ComposeServiceState,
     ContainerSpec,
+    ContainerMetrics,
     ContainerState,
     DeleteResult,
     HealthProbeRequest,
     HealthProbeResult,
     InstanceStatus,
+    RuntimeLogSnapshot,
 )
 
 T = TypeVar("T")
@@ -297,6 +299,42 @@ class DockerOps:
         except docker.errors.DockerException as exc:
             raise errors.docker_unavailable(str(exc)) from exc
         return [state_from_container(container, draining=container.id in self._draining) for container in containers]
+
+    async def runtime_logs(self, container_id: str, *, max_bytes: int) -> RuntimeLogSnapshot:
+        """Return a bounded timestamped tail without retaining a reader in memory."""
+        container = await self._get(container_id)
+        try:
+            raw = await self._off_loop(container.logs, timestamps=True, tail=10_000)
+        except docker.errors.APIError as exc:
+            raise _translate_api_error(exc) from exc
+        except docker.errors.DockerException as exc:
+            raise errors.docker_unavailable(str(exc)) from exc
+        if not isinstance(raw, bytes):
+            raw = bytes(raw)
+        dropped_bytes = max(0, len(raw) - max_bytes)
+        return RuntimeLogSnapshot(
+            text=raw[-max_bytes:].decode("utf-8", errors="replace"),
+            dropped_bytes=dropped_bytes,
+        )
+
+    async def runtime_metrics(self, container_id: str) -> ContainerMetrics:
+        container = await self._get(container_id)
+        try:
+            stats = await self._off_loop(container.stats, stream=False)
+        except docker.errors.APIError as exc:
+            raise _translate_api_error(exc) from exc
+        except docker.errors.DockerException as exc:
+            raise errors.docker_unavailable(str(exc)) from exc
+        cpu = stats.get("cpu_stats", {})
+        previous = stats.get("precpu_stats", {})
+        cpu_delta = cpu.get("cpu_usage", {}).get("total_usage", 0) - previous.get("cpu_usage", {}).get(
+            "total_usage", 0
+        )
+        system_delta = cpu.get("system_cpu_usage", 0) - previous.get("system_cpu_usage", 0)
+        online_cpus = cpu.get("online_cpus") or len(cpu.get("cpu_usage", {}).get("percpu_usage", [])) or 1
+        cpu_percent = (cpu_delta / system_delta * online_cpus * 100) if system_delta > 0 else 0.0
+        memory_bytes = int(stats.get("memory_stats", {}).get("usage", 0) or 0)
+        return ContainerMetrics(cpu_percent=max(0.0, cpu_percent), memory_bytes=max(0, memory_bytes))
 
     # ------------------------------------------------------------------ delete
 

@@ -13,16 +13,19 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from rudder_cp.config import Settings
+from rudder_cp.logs.runtime import RuntimeLogStore
 from rudder_cp.logs.store import BuildLogStore
 from rudder_cp.models import Deployment, DeploymentStatus
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.deploy import run_deployment
 from rudder_cp.services.imports import app_dependency_state
+from rudder_cp.services.metrics import collect_runtime_metrics, compact_runtime_metrics
 from rudder_cp.services.monitor import reconcile_instances
 from rudder_cp.services.operation_dispatch import (
     queue_pending_operation_reconciliations,
     reconcile_pending_rollbacks,
 )
+from rudder_cp.services.runtime_logs import collect_runtime_logs
 
 log = logging.getLogger("rudder_cp.worker")
 
@@ -32,6 +35,7 @@ async def run_worker(
     engine: Engine,
     settings: Settings,
     store: BuildLogStore,
+    runtime_log_store: RuntimeLogStore,
     agent: AgentClient,
     stop: asyncio.Event,
     poll_interval: float = 2.0,
@@ -52,7 +56,13 @@ async def run_worker(
 
     while not stop.is_set():
         try:
-            await tick(engine=engine, settings=settings, store=store, agent=agent)
+            await tick(
+                engine=engine,
+                settings=settings,
+                store=store,
+                runtime_log_store=runtime_log_store,
+                agent=agent,
+            )
         except Exception:
             # A worker that dies stops every future deploy silently, which is
             # the worst possible failure mode. Log and keep the loop alive.
@@ -131,6 +141,7 @@ async def tick(
     engine: Engine,
     settings: Settings,
     store: BuildLogStore,
+    runtime_log_store: RuntimeLogStore,
     agent: AgentClient,
 ) -> int:
     """Run every currently queued deployment. Returns how many were attempted."""
@@ -185,5 +196,8 @@ async def tick(
     # only way the database and the node disagree without anyone asking.
     with Session(engine) as session:
         await reconcile_instances(session, agent, settings)
+        await collect_runtime_logs(session, agent, settings, runtime_log_store)
+        await collect_runtime_metrics(session, agent, settings)
+        compact_runtime_metrics(session)
 
     return len(ids)

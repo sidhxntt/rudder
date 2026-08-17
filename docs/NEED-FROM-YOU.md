@@ -217,11 +217,11 @@ of it; some needs you to look at a screen and confirm.
 
 ---
 
-## Before Phase 7 (advisor) — GATING
+## Before Phase 8 (advisor) — GATING
 
 ### 15. An Anthropic API key
 
-Only used in Phase 7. Nowhere else in the system touches an LLM — that's an
+Only used in Phase 8. Nowhere else in the system touches an LLM — that's an
 explicit rule in the PRD.
 
 `ANTHROPIC_API_KEY=` in `.env`. Same rule: write it yourself, don't paste it.
@@ -258,4 +258,4 @@ What that means practically:
 That's enough for all of Phase 1. Items 9–10 gated Phase 2 and are resolved.
 Items 11 and 12 are resolved as of 2026-07-29. **Item 13 is what now blocks
 Phase 4** — budget confirmation, GoDaddy NS records, the `rudder-vpc` call, and an
-acceptance repository. Item 15 waits until Phase 7.
+acceptance repository. Item 15 waits until Phase 8.

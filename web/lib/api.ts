@@ -311,6 +311,13 @@ export function listInstances(serviceId: string): Promise<Instance[]> {
   return requestJson<Instance[]>(`/services/${id(serviceId)}/instances`);
 }
 
+/** GET /services/{service_id}/metrics — retained CPU/memory telemetry. */
+export function listServiceMetrics(serviceId: string, window: "1h" | "24h" | "7d" = "1h") {
+  return requestJson<import("./types").RuntimeMetric[]>(
+    `/services/${id(serviceId)}/metrics?window=${window}`,
+  );
+}
+
 /**
  * POST /services/{service_id}/deploy → 202 with Deployment(status=queued).
  *

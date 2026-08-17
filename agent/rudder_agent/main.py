@@ -153,6 +153,24 @@ async def probe_container(request: web.Request) -> web.Response:
     return web.json_response(result.model_dump(mode="json"))
 
 
+async def runtime_logs(request: web.Request) -> web.Response:
+    container_id = request.match_info["container_id"]
+    raw_limit = request.query.get("max_bytes", "65536")
+    try:
+        max_bytes = int(raw_limit)
+    except ValueError as exc:
+        raise errors.invalid_request("max_bytes must be an integer", {"max_bytes": raw_limit}) from exc
+    if not 1 <= max_bytes <= 1_048_576:
+        raise errors.invalid_request("max_bytes must be between 1 and 1048576", {"max_bytes": raw_limit})
+    snapshot = await request.app[OPS_KEY].runtime_logs(container_id, max_bytes=max_bytes)
+    return web.json_response(snapshot.model_dump())
+
+
+async def runtime_metrics(request: web.Request) -> web.Response:
+    metrics = await request.app[OPS_KEY].runtime_metrics(request.match_info["container_id"])
+    return web.json_response(metrics.model_dump())
+
+
 async def compose_up(request: web.Request) -> web.Response:
     payload: ComposeUpRequest = await _read_model(request, ComposeUpRequest)
     result = await request.app[OPS_KEY].compose_up(payload.project_name, payload.manifest)
@@ -231,6 +249,8 @@ def create_app(ops: DockerOps, settings: AgentSettings | None = None) -> web.App
             web.get("/containers/{container_id}", get_container),
             web.delete("/containers/{container_id}", delete_container),
             web.post("/containers/{container_id}/health", probe_container),
+            web.get("/containers/{container_id}/runtime-logs", runtime_logs),
+            web.get("/containers/{container_id}/metrics", runtime_metrics),
             web.post("/compose/up", compose_up),
             web.post("/compose/down", compose_down),
             web.get("/compose/{project_name}/ps", compose_ps),
