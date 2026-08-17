@@ -132,6 +132,7 @@ export function useEnvironments(projectId: string | undefined) {
     queryKey: keys.environments(projectId ?? ""),
     queryFn: () => api.listEnvironments(projectId ?? ""),
     enabled: Boolean(projectId),
+    refetchInterval: LIVE_POLL_MS,
   });
 }
 
@@ -161,6 +162,7 @@ export function useServices(environmentId: string | undefined) {
     queryKey: keys.services(environmentId ?? ""),
     queryFn: () => api.listServices(environmentId ?? ""),
     enabled: Boolean(environmentId),
+    refetchInterval: LIVE_POLL_MS,
   });
 }
 
@@ -169,6 +171,7 @@ export function useDomains(environmentId: string | undefined) {
     queryKey: keys.domains(environmentId ?? ""),
     queryFn: () => api.listDomains(environmentId ?? ""),
     enabled: Boolean(environmentId),
+    refetchInterval: LIVE_POLL_MS,
   });
 }
 
@@ -204,6 +207,7 @@ export function useVariables(serviceId: string | undefined) {
     queryKey: keys.variables(serviceId ?? ""),
     queryFn: () => api.listVariables(serviceId ?? ""),
     enabled: Boolean(serviceId),
+    refetchInterval: LIVE_POLL_MS,
   });
 }
 

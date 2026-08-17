@@ -2,7 +2,8 @@
 
 **Target:** 2–3 weeks
 
-**Demo:** from a terminal, sign in with GitHub, import a repository, inspect its
+**Demo:** from a terminal, authenticate with the existing Rudder bearer-token
+endpoint, import a repository, inspect its
 service graph, deploy it, follow coloured logs, change an operation, inspect
 analytics, and restore an earlier release — with the same resulting state as
 the web console.
@@ -83,12 +84,11 @@ pleasant terminal experience.
 
 ### Authentication and context
 
-`rudder login` opens the same GitHub OAuth consent flow as the web console and
-waits for an explicit one-time CLI handoff. The control plane exchanges that
-short-lived handoff for the existing bearer-token session; it never exposes the
-browser cookie to the terminal. A cancelled browser flow leaves no credentials
-behind. `rudder whoami`, `rudder logout`, and `rudder auth status` use the same
-identity endpoint as the web header avatar/menu.
+`rudder login` consumes the existing `POST /auth/token` bearer-token endpoint;
+the browser continues to use the existing GitHub OAuth → cookie flow. The CLI
+never creates a CLI-only OAuth callback, handoff, session, or backend route.
+`RUDDER_TOKEN` is the process-local automation alternative. `rudder whoami`
+and `rudder logout` use the same identity/session contracts as the web client.
 
 The CLI keeps a non-secret selected project, environment, and service context.
 An explicit UUID or flag always wins over context; an ambiguous name is an
@@ -100,7 +100,7 @@ implicit mutation target in non-interactive mode.
 
 | Web-console capability | Interactive CLI | Automation contract |
 |---|---|---|
-| GitHub sign-in and account | `rudder login`, `rudder auth status`, `rudder logout` | `RUDDER_TOKEN`, `rudder whoami --json` |
+| Authentication and account | `rudder login`, `rudder whoami`, `rudder logout` | `RUDDER_TOKEN`, `rudder whoami --json` |
 | Projects and environments | `rudder project`, `rudder environment` guided create, rename, clone, select, delete | explicit subcommands, IDs/flags, `--yes` for delete |
 | GitHub import | `rudder import github` repository → branch → Compose/add-on review | `rudder import github --installation ID --repo OWNER/REPO --branch main --json` |
 | Canvas topology | `rudder service graph` renders a labelled release tree and ownership links | `rudder service graph --json` returns nodes and edges |
@@ -147,10 +147,11 @@ usage or incomplete non-interactive input, and 130 cancellation.
    detection, typed API client boundary, output formatter, and one error/exit
    contract. Preserve the Python CLI only as a migration reference until parity
    tests explicitly replace it.
-2. **Add authentication and targeting.** Implement OAuth CLI handoff in the
-   control plane, secure interactive token storage, process-local automation
-   token support, selected context, explicit-ID resolution, and consistent
-   project/environment/service selectors.
+2. **Add authentication and targeting.** Consume the existing bearer-token
+   endpoint, secure interactive token storage, process-local automation token
+   support, selected context, explicit-ID resolution, and consistent
+   project/environment/service selectors. No CLI-specific backend route is
+   introduced.
 3. **Port foundational resources.** Implement projects, environments, service
    lifecycle, variables, domains, GitHub import, and a textual service graph.
    The import wizard must show the exact Compose release that it will confirm.
@@ -214,9 +215,10 @@ npm run build
 # Machine-readable output is one JSON value and never contains Clack chrome.
 rudder --no-interactive project list --json | jq -e 'type == "array"'
 
-# Interactive smoke test (TTY): login uses browser handoff, selection is
-# cancellable, and a cancellation leaves no selected context or credentials.
-rudder login
+# Interactive smoke test (TTY): login uses the existing bearer-token endpoint;
+# selection is cancellable, and a cancellation leaves no selected context or
+# credentials.
+rudder login --email "$RUDDER_ADMIN_EMAIL" --password "$RUDDER_ADMIN_PASSWORD"
 rudder project use
 
 # Web ↔ CLI shared-state proof: create a project named `cli-sync-check` in the
@@ -251,10 +253,10 @@ rudder variable get DATABASE_URL; test $? -ne 0
   with documented interactive and non-interactive forms.
 - [ ] CLI mutations use only the same control-plane API resources as the web
   console; no direct Docker, Kubernetes, database, or agent mutations exist.
-- [ ] GitHub browser login, secure credential storage, logout, selected context,
+- [ ] Existing bearer-token login, secure credential storage, logout, selected context,
   and `RUDDER_TOKEN` automation authentication work without exposing tokens.
-- [ ] The first operational CLI command starts GitHub sign-in when no local
-  credential exists; non-interactive mode instead requires `RUDDER_TOKEN`.
+- [ ] The first operational CLI command requires an existing CLI credential;
+  non-interactive mode instead requires `RUDDER_TOKEN`.
 - [ ] Projects created in web are immediately visible in the CLI, and projects
   created or deleted by CLI appear or disappear in web after refresh.
 - [ ] GitHub import, service graph, deploy/history/permanent URLs, rollback,

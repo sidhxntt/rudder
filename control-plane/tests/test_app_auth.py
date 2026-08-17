@@ -20,14 +20,11 @@ from sqlmodel import Session, SQLModel, create_engine
 from rudder_cp.config import get_settings
 from rudder_cp.db import get_session
 from rudder_cp.main import create_app
-from rudder_cp.services.cli_oauth_handoff import CliOAuthHandoffs
 from rudder_cp.services.github_oauth import GitHubIdentity, GitHubOAuthClient
 
 # Endpoints that must stay reachable without a token, each for a stated reason.
 PUBLIC = {
     ("POST", "/auth/token"),  # issues the token; cannot require one
-    ("POST", "/auth/github/cli/start"),  # begins browser OAuth without a bearer token
-    ("POST", "/auth/github/cli/exchange"),  # exchanges an opaque, one-time handoff
     ("DELETE", "/auth/token"),  # logout must work with an expired token
     ("POST", "/webhooks/github"),  # authenticated by HMAC over the body
     ("POST", "/nodes/register"),  # authenticated by shared secret
@@ -143,36 +140,6 @@ def test_github_oauth_start_redirects_to_github(
     assert response.headers["location"].startswith("https://github.com/login/oauth/authorize?")
     query = parse_qs(urlparse(response.headers["location"]).query)
     assert query["scope"] == ["user:email"]
-
-
-def test_cli_github_handoff_exchanges_once_without_a_browser_cookie(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The browser receives no Rudder token; only the original CLI gets it once."""
-    settings = client.app.state.settings  # type: ignore[attr-defined]
-    settings.github_oauth_client_id = "client-id"
-    settings.github_oauth_client_secret = "client-secret"
-    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
-    client.app.state.cli_oauth_handoffs = CliOAuthHandoffs()  # type: ignore[attr-defined]
-
-    started = client.post("/auth/github/cli/start")
-    assert started.status_code == 201
-    handoff_id = started.json()["handoff_id"]
-    assert started.json()["authorization_url"].startswith("https://github.com/login/oauth/authorize?")
-
-    monkeypatch.setattr(GitHubOAuthClient, "exchange", _identity)
-    callback = client.get(
-        f"/auth/github/callback?code=valid&state={started.json()['state']}",
-        follow_redirects=False,
-    )
-    assert callback.status_code == 200
-    assert "rudder_token=" not in callback.headers.get("set-cookie", "")
-
-    exchanged = client.post("/auth/github/cli/exchange", json={"handoff_id": handoff_id})
-    assert exchanged.status_code == 200
-    assert exchanged.json()["access_token"]
-    reused = client.post("/auth/github/cli/exchange", json={"handoff_id": handoff_id})
-    assert reused.status_code == 401
 
 
 @pytest.mark.asyncio

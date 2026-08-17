@@ -2,9 +2,9 @@
 import * as p from "@clack/prompts";
 import { advisorRequest } from "./advisor.js";
 import { authenticationGate } from "./auth-guard.js";
+import { commandTarget } from "./command-target.js";
 import { ApiClient, ApiError } from "./client.js";
 import { loadConfig, mergeContext, saveConfig, type Context } from "./context.js";
-import { completeGitHubLogin } from "./github-login.js";
 import { formatServiceGraph, serviceGraph } from "./graph.js";
 import { fail, print, success, type Output } from "./output.js";
 
@@ -37,7 +37,7 @@ async function request(state: State, method: string, path: string, body?: unknow
 async function command(state: State, args: string[]): Promise<void> {
   const [noun, action, ...rest] = args;
   if (!noun || noun === "help" || noun === "--help") { console.log(usage); return; }
-  if (noun === "login") { const email = stringFlag(state.flags, "email"); const password = stringFlag(state.flags, "password"); if ((email === undefined) !== (password === undefined)) throw new Error("Pass both --email and --password, or omit both for GitHub browser login."); const result = email && password ? await state.api.request("POST", "/auth/token", { email, password }) as Record<string, unknown> : await githubLogin(state); await saveAccessToken(state, result); if (state.out.json) print(result, state.out); else success(`Logged in to ${state.api.baseUrl}.`, state.out); return; }
+  if (noun === "login") { const email = stringFlag(state.flags, "email") ?? await ask(state, "Email"); const password = stringFlag(state.flags, "password") ?? await ask(state, "Password", true); const result = await state.api.request("POST", "/auth/token", { email, password }) as Record<string, unknown>; await saveAccessToken(state, result); if (state.out.json) print(result, state.out); else success(`Logged in to ${state.api.baseUrl}.`, state.out); return; }
   if (noun === "logout") { state.credentials.token = undefined; await saveConfig(state.context, state.credentials); success("Logged out.", state.out); return; }
   if (noun === "whoami") return void await request(state, "GET", "/auth/me");
   if (noun === "context") { if (action === "show" || !action) return void print(state.context, state.out); if (action === "clear") { state.context = {}; await saveConfig(state.context, state.credentials); success("Context cleared.", state.out); return; } }
@@ -46,11 +46,11 @@ async function command(state: State, args: string[]): Promise<void> {
   if (noun === "env") return environment(state, action, rest);
   if (noun === "service") return service(state, action, rest);
   if (noun === "var") return variable(state, action, rest);
-  if (noun === "deploy") { const id = await resolve(state, "service", rest[0]); const deployment = await state.api.request("POST", `/services/${id}/deploy`, stringFlag(state.flags, "commit") ? { commit_sha: stringFlag(state.flags, "commit") } : undefined) as { id?: string }; if (state.flags.follow && deployment.id) for await (const line of state.api.stream(`/deployments/${deployment.id}/build-log`)) print(state.out.json ? { log: line } : line, state.out); else print(deployment, state.out); return; }
-  if (noun === "history") { const id = await resolve(state, "service", rest[0]); return void await request(state, "GET", `/services/${id}/deployments`); }
-  if (noun === "rollback") { const id = requireArg(rest, 0, "deployment id"); await confirm(state, `Roll back to deployment ${id}?`); return void await request(state, "POST", `/deployments/${id}/rollback`); }
-  if (noun === "logs") { const id = await resolve(state, "service", rest[0]); if (!state.flags.follow) { const deployments = await state.api.request("GET", `/services/${id}/deployments`) as Array<{ id?: string }>; const deployment = stringFlag(state.flags, "deployment") ?? deployments[0]?.id; if (!deployment) throw new Error("No deployments found. Use `rudder deploy` first."); for await (const line of state.api.stream(`/deployments/${deployment}/build-log`)) print(state.out.json ? { log: line } : line, state.out); return; } for await (const line of state.api.stream(`/services/${id}/runtime-log`)) print(state.out.json ? { log: line } : line, state.out); return; }
-  if (noun === "metrics") { const id = await resolve(state, "service", rest[0]); const window = stringFlag(state.flags, "window") ?? "1h"; return void await request(state, "GET", `/services/${id}/metrics?window=${encodeURIComponent(window)}`); }
+  if (noun === "deploy") { const id = await resolve(state, "service", commandTarget(action, rest)); const deployment = await state.api.request("POST", `/services/${id}/deploy`, stringFlag(state.flags, "commit") ? { commit_sha: stringFlag(state.flags, "commit") } : undefined) as { id?: string }; if (state.flags.follow && deployment.id) for await (const line of state.api.stream(`/deployments/${deployment.id}/build-log`)) print(state.out.json ? { log: line } : line, state.out); else print(deployment, state.out); return; }
+  if (noun === "history") { const id = await resolve(state, "service", commandTarget(action, rest)); return void await request(state, "GET", `/services/${id}/deployments`); }
+  if (noun === "rollback") { const id = commandTarget(action, rest); if (!id) throw new Error("Missing deployment id."); await confirm(state, `Roll back to deployment ${id}?`); return void await request(state, "POST", `/deployments/${id}/rollback`); }
+  if (noun === "logs") { const id = await resolve(state, "service", commandTarget(action, rest)); if (!state.flags.follow) { const deployments = await state.api.request("GET", `/services/${id}/deployments`) as Array<{ id?: string }>; const deployment = stringFlag(state.flags, "deployment") ?? deployments[0]?.id; if (!deployment) throw new Error("No deployments found. Use `rudder deploy` first."); for await (const line of state.api.stream(`/deployments/${deployment}/build-log`)) print(state.out.json ? { log: line } : line, state.out); return; } for await (const line of state.api.stream(`/services/${id}/runtime-log`)) print(state.out.json ? { log: line } : line, state.out); return; }
+  if (noun === "metrics") { const id = await resolve(state, "service", commandTarget(action, rest)); const window = stringFlag(state.flags, "window") ?? "1h"; return void await request(state, "GET", `/services/${id}/metrics?window=${encodeURIComponent(window)}`); }
   if (noun === "status" || noun === "ps") { const environment = await resolve(state, "environment"); const services = await state.api.request("GET", `/environments/${environment}/services`) as Array<{ id: string; name: string }>; const rows = await Promise.all(services.map(async service => ({ service, deployments: await state.api.request("GET", `/services/${service.id}/deployments`), instances: await state.api.request("GET", `/services/${service.id}/instances`) }))); return void print(rows, state.out); }
   if (noun === "operation") return operation(state, action, rest);
   if (noun === "import") return githubImport(state, action, rest);
@@ -60,7 +60,6 @@ async function command(state: State, args: string[]): Promise<void> {
 }
 
 async function ask(state: State, message: string, password = false): Promise<string> { if (state.flags["no-interactive"] || !process.stdin.isTTY) throw new Error(`${message} is required in non-interactive mode.`); const answer = await p.text({ message, ...(password ? { validate: v => v ? undefined : "Required" } : {}) }); if (p.isCancel(answer) || !answer) throw new Error("Aborted."); return answer; }
-async function githubLogin(state: State): Promise<Record<string, unknown>> { if (state.flags["no-interactive"]) throw new Error("GitHub browser login requires an interactive terminal; set RUDDER_TOKEN for automation."); if (!state.out.json) console.error("Opening GitHub to authenticate…"); const token = await completeGitHubLogin({ api: state.api }); return token; }
 async function saveAccessToken(state: State, result: Record<string, unknown>): Promise<void> {
   const token = result.access_token;
   if (typeof token !== "string") throw new Error("Control plane did not return an access token.");
@@ -78,8 +77,7 @@ async function requireAuthentication(state: State): Promise<void> {
   if (gate === "noninteractive-error") {
     throw new Error("Sign in first with `rudder login`, or set RUDDER_TOKEN for automation.");
   }
-  await saveAccessToken(state, await githubLogin(state));
-  success(`Authenticated with ${state.api.baseUrl}.`, state.out);
+  throw new Error("Sign in first with `rudder login`, or set RUDDER_TOKEN for automation.");
 }
 async function project(s: State, action: string | undefined, a: string[]): Promise<void> { if (action === "list") return void await request(s, "GET", "/projects"); if (action === "create") return void await request(s, "POST", "/projects", { name: requireArg(a, 0, "project name") }); const id = await resolve(s, "project", a[0]); if (action === "use") { s.context.project = id; delete s.context.environment; delete s.context.service; await saveConfig(s.context, s.credentials); return void success("Project selected.", s.out); } if (action === "delete") { await confirm(s, `Delete project ${id} and all its data?`); return void await request(s, "DELETE", `/projects/${id}`); } if (action === "get") return void await request(s, "GET", `/projects/${id}`); if (action === "settings") return void await request(s, "PATCH", `/projects/${id}`, jsonBody(s.flags)); throw new Error("project: list, create, get, use, settings, delete"); }
 async function environment(s: State, action: string | undefined, a: string[]): Promise<void> { const projectId = await resolve(s, "project"); if (action === "list") return void await request(s, "GET", `/projects/${projectId}/environments`); if (action === "create") return void await request(s, "POST", `/projects/${projectId}/environments`, { name: requireArg(a, 0, "environment name"), is_production: Boolean(s.flags.production) }); const id = await resolve(s, "environment", a[0]); if (action === "use") { s.context.environment = id; delete s.context.service; await saveConfig(s.context, s.credentials); return void success("Environment selected.", s.out); } if (action === "clone") return void await request(s, "POST", `/environments/${id}/clone`, { name: requireArg(a, 1, "clone name") }); if (action === "delete") { await confirm(s, `Destroy environment ${id}?`); return void await request(s, "DELETE", `/environments/${id}`); } if (action === "get") return void await request(s, "GET", `/environments/${id}`); if (action === "settings") return void await request(s, "PATCH", `/environments/${id}`, jsonBody(s.flags)); throw new Error("env: list, create, get, use, clone, settings, delete"); }
