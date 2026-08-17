@@ -106,7 +106,9 @@ export function useGitHubImport(importId: string | null) {
 const LIVE_POLL_MS = 2_000;
 
 export function useProjects() {
-  return useQuery({ queryKey: keys.projects, queryFn: api.listProjects });
+  // CLI and web mutations share the same control plane. Polling keeps the
+  // project inventory current when an operator works in a terminal elsewhere.
+  return useQuery({ queryKey: keys.projects, queryFn: api.listProjects, refetchInterval: LIVE_POLL_MS });
 }
 
 export function useUpdateProject() {

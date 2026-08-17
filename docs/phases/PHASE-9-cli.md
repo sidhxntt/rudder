@@ -219,6 +219,16 @@ rudder --no-interactive project list --json | jq -e 'type == "array"'
 rudder login
 rudder project use
 
+# Web ↔ CLI shared-state proof: create a project named `cli-sync-check` in the
+# web dashboard, then confirm it is immediately visible in the CLI. Create a
+# second uniquely named project through the CLI, reload the web dashboard, and
+# confirm it appears there too. Delete only that second test project through
+# the CLI with --yes, reload the dashboard, and confirm it disappears.
+rudder project list --json | jq -e '.[] | select(.name == "cli-sync-check")'
+rudder project create cli-created-sync-check
+rudder project list --json | jq -e '.[] | select(.name == "cli-created-sync-check")'
+rudder project delete cli-created-sync-check --yes
+
 # API parity fixture: execute the same import → deploy → logs → rollback flow
 # through the CLI and compare resources fetched from the control-plane API.
 cd ../control-plane
@@ -243,6 +253,10 @@ rudder variable get DATABASE_URL; test $? -ne 0
   console; no direct Docker, Kubernetes, database, or agent mutations exist.
 - [ ] GitHub browser login, secure credential storage, logout, selected context,
   and `RUDDER_TOKEN` automation authentication work without exposing tokens.
+- [ ] The first operational CLI command starts GitHub sign-in when no local
+  credential exists; non-interactive mode instead requires `RUDDER_TOKEN`.
+- [ ] Projects created in web are immediately visible in the CLI, and projects
+  created or deleted by CLI appear or disappear in web after refresh.
 - [ ] GitHub import, service graph, deploy/history/permanent URLs, rollback,
   build/runtime logs, operations, analytics, settings, and advisor flows work
   end to end.
