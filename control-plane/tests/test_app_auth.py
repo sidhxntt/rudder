@@ -241,6 +241,7 @@ def test_authorization_handoff_consumes_once_after_github_callback(
 
     assert callback.status_code == 200
     assert callback.headers["content-type"].startswith("text/html")
+    assert "set-cookie" not in callback.headers
     assert "access_token" not in callback.text
     consumed = client.post(f"/auth/authorizations/{started.json()['id']}/consume")
     assert consumed.status_code == 200
@@ -276,6 +277,11 @@ def test_github_callback_rejects_an_invalid_state_before_exchange(
 
 
 def test_authorization_start_reports_unconfigured_github_oauth(client: TestClient) -> None:
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings.github_oauth_client_id = ""
+    settings.github_oauth_client_secret = ""
+    settings.github_oauth_redirect_uri = ""
+
     response = client.post("/auth/authorizations")
 
     assert response.status_code == 503
