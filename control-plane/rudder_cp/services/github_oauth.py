@@ -83,11 +83,18 @@ class GitHubOAuthClient:
         if not all(configured):
             raise GitHubOAuthError("GitHub OAuth is not configured.")
 
-    def authorization_url(self) -> str:
+    def authorization_url(self, *, cli_handoff_id: str | None = None) -> str:
         self._require_config()
         now = datetime.now(UTC)
+        claims: dict[str, object] = {
+            "aud": _STATE_AUDIENCE,
+            "iat": now,
+            "exp": now + timedelta(minutes=10),
+        }
+        if cli_handoff_id is not None:
+            claims["cli_handoff_id"] = cli_handoff_id
         state = jwt.encode(
-            {"aud": _STATE_AUDIENCE, "iat": now, "exp": now + timedelta(minutes=10)},
+            claims,
             self.settings.jwt_secret,
             algorithm=JWT_ALGORITHM,
         )
@@ -100,6 +107,24 @@ class GitHubOAuthClient:
             }
         )
         return f"{_AUTHORIZE_URL}?{query}"
+
+    def cli_handoff_id(self, state: str) -> str | None:
+        """Read a validated CLI handoff claim, if this OAuth flow has one."""
+        try:
+            claims = jwt.decode(
+                state,
+                self.settings.jwt_secret,
+                algorithms=[JWT_ALGORITHM],
+                audience=_STATE_AUDIENCE,
+                options={"require": ["aud", "exp"]},
+            )
+        except jwt.PyJWTError:
+            # `exchange()` performs the authoritative validation before any
+            # GitHub code is consumed.  Treat an undecodable value as a normal
+            # browser flow here so it can report that single consistent error.
+            return None
+        handoff_id = claims.get("cli_handoff_id")
+        return handoff_id if isinstance(handoff_id, str) else None
 
     async def exchange(self, code: str, state: str) -> GitHubIdentity:
         self._require_config()

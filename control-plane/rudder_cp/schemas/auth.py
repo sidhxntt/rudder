@@ -48,6 +48,17 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
+class CliOAuthStartResponse(BaseModel):
+    handoff_id: str
+    authorization_url: str
+    state: str
+
+
+class CliOAuthExchangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    handoff_id: str = Field(min_length=20, max_length=128)
+
+
 class UserRead(BaseModel):
     """The single user, as the API sees them. Never carries ``password_hash``."""
 

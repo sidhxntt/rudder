@@ -30,17 +30,26 @@ clears the cookie and the client drops the token.
 from __future__ import annotations
 
 from typing import Annotated
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session
 
 from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import User
-from rudder_cp.schemas.auth import ErrorBody, LoginRequest, TokenResponse, UserRead
+from rudder_cp.schemas.auth import (
+    CliOAuthExchangeRequest,
+    CliOAuthStartResponse,
+    ErrorBody,
+    LoginRequest,
+    TokenResponse,
+    UserRead,
+)
 from rudder_cp.services import auth as auth_service
+from rudder_cp.services.cli_oauth_handoff import CliOAuthHandoffs, InvalidCliHandoff
 from rudder_cp.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 
 SESSION_COOKIE = "rudder_token"
@@ -194,12 +203,60 @@ async def github_start(request: Request) -> RedirectResponse:
         ) from exc
 
 
+def _cli_handoffs(request: Request) -> CliOAuthHandoffs:
+    handoffs = getattr(request.app.state, "cli_oauth_handoffs", None)
+    if not isinstance(handoffs, CliOAuthHandoffs):
+        handoffs = CliOAuthHandoffs()
+        request.app.state.cli_oauth_handoffs = handoffs
+    return handoffs
+
+
+@router.post(
+    "/github/cli/start",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CliOAuthStartResponse,
+)
+async def github_cli_start(request: Request) -> CliOAuthStartResponse:
+    """Create a short-lived browser OAuth handoff for an interactive CLI."""
+    try:
+        handoff_id = _cli_handoffs(request).create()
+        url = GitHubOAuthClient(request.app.state.settings).authorization_url(
+            cli_handoff_id=handoff_id
+        )
+        state = parse_qs(urlparse(url).query)["state"][0]
+        return CliOAuthStartResponse(handoff_id=handoff_id, authorization_url=url, state=state)
+    except GitHubOAuthError as exc:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "github_oauth_unavailable", str(exc)
+        ) from exc
+
+
+@router.post("/github/cli/exchange", response_model=TokenResponse | None)
+async def github_cli_exchange(
+    payload: CliOAuthExchangeRequest, request: Request
+) -> TokenResponse | None:
+    """Consume a completed CLI OAuth handoff once; pending handoffs return 202."""
+    try:
+        token = _cli_handoffs(request).consume(payload.handoff_id)
+    except InvalidCliHandoff as exc:
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED,
+            "invalid_cli_handoff",
+            "CLI login has expired or was already used.",
+        ) from exc
+    if token is None:
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=None)  # type: ignore[return-value]
+    return TokenResponse(access_token=token, expires_in=request.app.state.settings.jwt_ttl_seconds)
+
+
 @router.get("/github/callback", include_in_schema=False)
 async def github_callback(
     request: Request, code: str, state: str, session: SessionDep
 ) -> RedirectResponse:
+    oauth = GitHubOAuthClient(request.app.state.settings)
     try:
-        identity = await GitHubOAuthClient(request.app.state.settings).exchange(code, state)
+        handoff_id = oauth.cli_handoff_id(state)
+        identity = await oauth.exchange(code, state)
     except GitHubOAuthError as exc:
         raise ApiError(status.HTTP_401_UNAUTHORIZED, "github_oauth_failed", str(exc)) from exc
     user = await auth_service.find_or_create_github_user(
@@ -210,6 +267,17 @@ async def github_callback(
         avatar_url=identity.avatar_url,
     )
     issued = auth_service.issue_token(user.id)
+    if handoff_id is not None:
+        try:
+            _cli_handoffs(request).complete(handoff_id, issued.token)
+        except InvalidCliHandoff as exc:
+            raise ApiError(
+                status.HTTP_401_UNAUTHORIZED, "invalid_cli_handoff", "CLI login has expired."
+            ) from exc
+        return HTMLResponse(
+            "<html><body><p>Rudder CLI login complete. "
+            "You may return to the terminal.</p></body></html>"
+        )
     response = RedirectResponse(
         f"{request.app.state.settings.web_url.rstrip('/')}/dashboard?import=github",
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
