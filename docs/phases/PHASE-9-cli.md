@@ -14,6 +14,53 @@ CLI command maps to the same authenticated control-plane resource and mutation
 that the web console uses. An operator gets an excellent guided experience in a
 TTY; a script gets stable flags, JSON, exit codes, and no prompts.
 
+## Current launcher (local implementation)
+
+The local Node CLI now provides a GitHub-authenticated interactive launcher.
+Running `rudder` with no arguments from a TTY starts it; it does not attempt to
+launch in a non-TTY, with `--no-interactive`, or with `--json`.
+
+On the first interactive use, the CLI requests a short-lived authorization URL
+from the shared Rudder backend, opens that URL in a browser, and waits for the
+same backend handoff to return an access token. The browser flow authenticates
+with GitHub. If the browser cannot be opened, the CLI prints the URL for manual
+opening. This is shared backend authentication, not a CLI-specific control
+plane or a claim of browser/terminal state synchronization.
+
+After authentication, the launcher offers project/environment selection and a
+menu for deploy, status, logs, services, variables, advisor, sign-out, and
+exit. Selected targets are saved locally and can be overridden with
+`--project`, `--env`, and `--service`.
+
+For local verification:
+
+```bash
+cd cli/node
+npm install
+npm link
+rudder
+```
+
+`npm link` exposes the local `rudder` binary; it neither publishes the package
+nor pushes Phase 9 changes.
+
+The saved CLI URL, access token, and selected context are stored by default in
+`~/.config/rudder/config.json` (or the path in `RUDDER_CONFIG`). The file is
+sensitive because it holds the access token. `rudder logout` removes that local
+token but retains the URL and context; it does not remotely revoke a GitHub or
+backend session.
+
+Automation supplies a process-local token and disables prompts explicitly:
+
+```bash
+RUDDER_TOKEN=... rudder --no-interactive project list --json
+```
+
+With `--no-interactive`, browser sign-in and prompts are refused. A
+non-TTY command also cannot prompt: use `RUDDER_TOKEN` for an authenticated
+operator command. Bare `rudder` in a non-TTY prints usage rather than opening
+the launcher.
+
 ---
 
 ## Current baseline
@@ -45,9 +92,11 @@ CLIs under the `rudder` command.
   starts a Clack flow; `--no-interactive` refuses to guess. Every completed
   command has explicit flags and `--json` for CI and other programs.
 - **No secret disclosure.** Variables remain write-only. Tokens never appear in
-  normal output, JSON, error messages, or shell history. The CLI stores
-  interactive credentials in the OS credential store; `RUDDER_TOKEN` is
-  accepted only as a process-local automation credential and is never saved.
+  normal output, JSON, error messages, or shell history. The current launcher
+  stores its interactive access token in the documented local config file;
+  `RUDDER_TOKEN` is a process-local automation credential and is never saved.
+  Moving interactive credentials to an OS credential store remains a Phase 9
+  hardening requirement.
 - **Safety is consistent.** Destructive actions always show the exact affected
   resource in a TTY confirmation. Automation must pass `--yes`; no global
   `--force` exists.
@@ -84,11 +133,12 @@ pleasant terminal experience.
 
 ### Authentication and context
 
-`rudder login` consumes the existing `POST /auth/token` bearer-token endpoint;
-the browser continues to use the existing GitHub OAuth → cookie flow. The CLI
-never creates a CLI-only OAuth callback, handoff, session, or backend route.
+`rudder login` starts the shared `POST /auth/authorizations` browser handoff
+and consumes its resulting bearer token; GitHub authentication remains in the
+browser. The CLI does not create a CLI-only OAuth callback or control plane.
 `RUDDER_TOKEN` is the process-local automation alternative. `rudder whoami`
-and `rudder logout` use the same identity/session contracts as the web client.
+uses the same identity endpoint as the web client, while `rudder logout`
+clears only the CLI's locally saved token.
 
 The CLI keeps a non-secret selected project, environment, and service context.
 An explicit UUID or flag always wins over context; an ambiguous name is an
@@ -215,11 +265,9 @@ npm run build
 # Machine-readable output is one JSON value and never contains Clack chrome.
 rudder --no-interactive project list --json | jq -e 'type == "array"'
 
-# Interactive smoke test (TTY): login uses the existing bearer-token endpoint;
-# selection is cancellable, and a cancellation leaves no selected context or
-# credentials.
-rudder login --email "$RUDDER_ADMIN_EMAIL" --password "$RUDDER_ADMIN_PASSWORD"
-rudder project use
+# Interactive smoke test (TTY): `rudder` starts the shared GitHub browser
+# handoff, and choosing a project/environment saves the selected local context.
+rudder
 
 # Web ↔ CLI shared-state proof: create a project named `cli-sync-check` in the
 # web dashboard, then confirm it is immediately visible in the CLI. Create a
