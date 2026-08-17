@@ -20,8 +20,9 @@ file is a bug.
 | 6 | [PHASE-6-operations.md](PHASE-6-operations.md) | 2–3 wk | Volumes, DB templates, logs, metrics, instant rollback |
 | 7 | [PHASE-7-frontends.md](PHASE-7-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
 | 8 | [PHASE-8-advisor.md](PHASE-8-advisor.md) | 1–2 wk | Point at a repo, get a proposed service graph as ghost nodes |
+| 9 | [PHASE-9-cli.md](PHASE-9-cli.md) | 2–3 wk | Run every operator workflow from an interactive or scriptable terminal |
 
-Total: 18–26 weeks on the Kubernetes production track.
+Total: 20–29 weeks on the Kubernetes production track.
 
 ## Production runtime track
 
@@ -51,6 +52,10 @@ contract existing and being verified.
 
 Phase 7 depends on D15 (the `Domain` table) landing in Phase 1, and on nothing
 else. It can move earlier if frontends become urgent.
+
+Phase 9 is intentionally last: it establishes CLI parity with the complete web
+console through Phase 8. Its command surface must not outrun the API or invent
+direct runtime mutation paths.
 
 ## Structure of each file
 

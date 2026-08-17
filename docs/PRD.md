@@ -365,8 +365,9 @@ this document wins.
 | 6 | [Operations](phases/PHASE-6-operations.md) | 2-3 wk | Volumes, DB templates, logs, metrics, instant rollback |
 | 7 | [Frontends](phases/PHASE-7-frontends.md) | 1 wk | Vite SPA + Next.js deploy, every push gets a permanent URL |
 | 8 | [Deploy advisor](phases/PHASE-8-advisor.md) | 1-2 wk | Point at a repo, get a proposed service graph as ghost nodes |
+| 9 | [Operator CLI parity](phases/PHASE-9-cli.md) | 2-3 wk | Run every operator workflow from an interactive or scriptable terminal |
 
-Total: 18-26 weeks on the Kubernetes production track.
+Total: 20-29 weeks on the Kubernetes production track.
 
 **Production runtime track.** Phase 3 follows the verified Phase 2 control-plane
 semantics and introduces Kubernetes as a runtime adapter, proven locally on Kind.
@@ -396,6 +397,11 @@ not need multi-host -- it can move earlier freely. Phase 7 depends only on D15
 landing in Phase 1 and can also move earlier if frontends become urgent. Phase 4
 cannot move earlier: it depends on a verified Phase 3 Kubernetes resource
 contract.
+
+**CLI parity.** Phase 9 follows Phase 8. It replaces the initial thin Python
+wrapper with a TypeScript/Clack operator CLI that remains a peer of the canvas:
+both use the same REST resources, and neither can mutate a runtime directly.
+See `phases/PHASE-9-cli.md`.
 
 
 ## Explicit Non-Goals

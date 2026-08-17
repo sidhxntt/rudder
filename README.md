@@ -207,6 +207,16 @@ canvas deploy history exposes that link for review. Restoring a previous release
 only changes the service alias — permanent release URLs and their immutable
 artifacts stay intact. See [Phase 7](docs/phases/PHASE-7-frontends.md).
 
+## Phase 9 — operator CLI parity
+
+Phase 9 turns `rudder` into the complete terminal peer of the web console. It
+uses TypeScript and Clack for guided TTY workflows while retaining explicit
+flags and clean `--json` output for CI. It will cover GitHub import, service
+topology, deployments and rollback, coloured logs, operations, analytics,
+settings, and the advisor through the same control-plane API — never through
+direct Docker or Kubernetes shortcuts. See
+[Phase 9](docs/phases/PHASE-9-cli.md).
+
 ## Notes on the dev stack
 
 `buildkitd` runs with `network_mode: service:registry`. That is deliberate:
