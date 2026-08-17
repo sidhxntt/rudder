@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-17T00:00:00.000Z",
+  "title": "Design System: Rudder",
+  "extensions": {
+    "colorMeta": {
+      "accent": { "role": "primary", "displayName": "Release Emerald", "canonical": "#3ecf8e", "tonalRamp": ["#102d21", "#16412e", "#1f6043", "#278259", "#3ecf8e", "#77e8b3", "#b7f5d7", "#ecfff5"] },
+      "surface": { "role": "neutral", "displayName": "Canvas Night", "canonical": "#1c1c1c", "tonalRamp": ["#111111", "#171717", "#1c1c1c", "#202020", "#242424", "#3a3a3a", "#707070", "#ededed"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Deployment Thesis", "purpose": "Landing-page statements and major product moments." },
+      "body": { "displayName": "Operator Body", "purpose": "Clear explanatory copy and console content." },
+      "label": { "displayName": "Runtime Label", "purpose": "Commits, ports, status, and configuration identifiers." }
+    },
+    "shadows": [
+      { "name": "operator-lift", "value": "0 24px 80px rgba(0,0,0,0.35)", "purpose": "Featured service-graph proof on public pages." },
+      { "name": "console-elev-2", "value": "0 8px 24px rgba(0,0,0,0.5)", "purpose": "Raised console overlays and menus." }
+    ],
+    "motion": [
+      { "name": "action-standard", "value": "200ms ease-out", "purpose": "Primary-action hover and release-state feedback." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "lg", "value": "1024px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single emerald action used to start a deploy or confirm a consequential console action.",
+      "html": "<button class=\"ds-btn-primary\">DEPLOY FROM GITHUB</button>",
+      "css": ".ds-btn-primary{height:44px;padding:0 16px;border:1px solid #3ecf8e;border-radius:6px;background:#3ecf8e;color:#171717;font:500 14px Inter,Arial,sans-serif;transition:background-color 150ms ease,transform 200ms ease}.ds-btn-primary:hover{background:#24b47e;transform:translateY(-2px)}.ds-btn-primary:focus-visible{outline:1px solid #3ecf8e;outline-offset:2px}.ds-btn-primary:active{transform:translateY(0)}"
+    },
+    {
+      "name": "Outline Action",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "A quiet secondary control for navigation and alternative actions.",
+      "html": "<button class=\"ds-btn-outline\">RUN LOCALLY</button>",
+      "css": ".ds-btn-outline{height:44px;padding:0 16px;border:1px solid #3a3a3a;border-radius:6px;background:transparent;color:#ededed;font:500 14px Inter,Arial,sans-serif;transition:border-color 150ms ease,color 150ms ease}.ds-btn-outline:hover{border-color:#3ecf8e;color:#ededed}.ds-btn-outline:focus-visible{outline:1px solid #3ecf8e;outline-offset:2px}"
+    },
+    {
+      "name": "Runtime Field",
+      "kind": "input",
+      "refersTo": "runtime-field",
+      "description": "An operational key/value field for configuration and secrets.",
+      "html": "<input class=\"ds-runtime-field\" value=\"DATABASE_URL\" aria-label=\"Runtime field\">",
+      "css": ".ds-runtime-field{height:32px;width:100%;box-sizing:border-box;border:1px solid #3a3a3a;border-radius:6px;background:#171717;padding:0 8px;color:#ededed;font:12px ui-monospace,Menlo,monospace}.ds-runtime-field:hover{border-color:#707070}.ds-runtime-field:focus{outline:1px solid rgba(62,207,142,.3);border-color:#3ecf8e}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Visible Control Plane",
+    "overview": "Rudder is a dark operational surface: quiet in its foundations, explicit when a release is alive, building, or failing. Architecture is shown as precise service geometry, not decorative illustration.",
+    "keyCharacteristics": ["Dense near-black operator surfaces", "One emerald action/status accent", "Diagrams as product proof"],
+    "rules": [
+      { "name": "The One Accent Rule", "body": "Emerald is reserved for action, success, and the active release path.", "section": "colors" },
+      { "name": "The Evidence Rule", "body": "Monospace appears only where the interface is naming code, a commit, a port, a command, or a measured state.", "section": "typography" }
+    ],
+    "dos": ["Do show the system doing real work.", "Do use charcoal tonal layers and 1px hairlines.", "Do respect reduced motion."],
+    "donts": ["Don't use invented benchmarks or cloud availability claims.", "Don't turn the green accent into generic decoration.", "Don't replace operational diagrams with icon-card grids."]
+  }
+}

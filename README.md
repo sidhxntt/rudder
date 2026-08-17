@@ -8,6 +8,8 @@ Single-tenant by design. This is a learning build, not a multi-tenant product.
 
 **Specification lives in [`docs/`](docs/).** [`docs/PRD.md`](docs/PRD.md) is the
 source of truth; [`docs/phases/`](docs/phases/) holds the build instructions.
+See [`docs/ENVIRONMENT-SETUP.md`](docs/ENVIRONMENT-SETUP.md) for the complete
+development, integration, and production environment-variable reference.
 
 ---
 
@@ -193,6 +195,17 @@ deployment-build log command). The canvas shows retained CPU traces. Metrics
 remain local to the control plane and compact from 10-second samples to minute
 and five-minute tiers before expiry. Rollback promotes a healthy immutable
 deployment without rebuilding it.
+
+## Phase 7 — frontends
+
+Rudder recognises Vite, Create React App, Astro static, and Next static-export
+projects when no repository Dockerfile is supplied. It builds them into a
+minimal unprivileged nginx image, with correct SPA fallback and cache behaviour;
+Next SSR remains an ordinary application container. A successful release gets a
+permanent deployment-pinned URL alongside the normal service URL, and the
+canvas deploy history exposes that link for review. Restoring a previous release
+only changes the service alias — permanent release URLs and their immutable
+artifacts stay intact. See [Phase 7](docs/phases/PHASE-7-frontends.md).
 
 ## Notes on the dev stack
 

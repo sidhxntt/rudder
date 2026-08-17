@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 
 from rudder_cp.db import get_session
 from rudder_cp.models import Environment, GitHubImport
+from rudder_cp.routers.auth import CurrentUser
 from rudder_cp.services.compose import (
     ComposeValidationError,
     GeneratedProcess,
@@ -242,6 +243,7 @@ async def confirm_github_import(
     payload: GitHubImportConfirmRequest,
     request: Request,
     session: SessionDep,
+    user: CurrentUser,
 ) -> GitHubImportConfirm:
     """Confirm the review screen, create the app graph, and queue its deploys."""
     try:
@@ -273,6 +275,7 @@ async def confirm_github_import(
         )
         created = await provision_import(
             session,
+            owner_id=user.id,
             installation_id=payload.installation_id,
             repository=payload.repository,
             branch=payload.branch,

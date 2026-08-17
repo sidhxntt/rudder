@@ -60,7 +60,7 @@ def pg_enum(enum_cls: type[StrEnum], name: str) -> sa.Enum:
 class ServiceKind(StrEnum):
     APP = "app"
     DATABASE = "database"
-    # Phase 5.5. Nothing creates a static service in Phase 1, but the value
+    # Phase 7. Nothing creates a static service in Phase 1, but the value
     # exists so the enum does not need a migration later.
     STATIC = "static"
 

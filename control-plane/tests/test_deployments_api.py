@@ -38,6 +38,7 @@ from rudder_cp.models import (
 from rudder_cp.routers import deployments as deployments_router
 from rudder_cp.routers import webhooks as webhooks_router
 from rudder_cp.schemas.common import install_error_handlers
+from rudder_cp.services import rollbacks
 from rudder_cp.services.imports import AddonProposal, provision_import
 
 SECRET = "hook-secret"
@@ -190,7 +191,7 @@ def test_rollback_repoints_to_a_healthy_immutable_release_without_creating_a_dep
 ) -> None:
     """Restore changes the live pointer; it never queues a build."""
     render = AsyncMock()
-    monkeypatch.setattr(deployments_router.traefik, "render_all", render)
+    monkeypatch.setattr(rollbacks.traefik, "render_all", render)
     with Session(engine) as session:
         source = Deployment(
             service_id=UUID(seed["service"]),

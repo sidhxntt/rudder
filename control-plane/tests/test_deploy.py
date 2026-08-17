@@ -433,6 +433,11 @@ async def test_successful_deploy_goes_live(engine, service, settings):
         deployment = session.get(Deployment, outcome.deployment_id)
         assert deployment.became_live_at is not None
         assert deployment.image_tag.endswith(":abc123")
+        release_domain = session.exec(
+            select(Domain).where(Domain.deployment_id == deployment.id)
+        ).one()
+        assert release_domain.hostname == f"d-{deployment.id.hex[:12]}.localhost"
+        assert release_domain.target_type.value == "deployment"
         instances = session.exec(select(Instance)).all()
         assert [i.status for i in instances] == [InstanceStatus.HEALTHY]
 

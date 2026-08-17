@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useDeleteVariable, usePutVariable, useVariables } from "@/lib/queries";
 
 const MASK = "••••••••••••";
@@ -51,7 +53,7 @@ export function Variables({ serviceId }: { serviceId: string }) {
               </td>
               <td className="px-sm py-sm">
                 {editingKey === variable.key ? (
-                  <input
+                  <Input
                     autoFocus
                     type="password"
                     value={draftValue}
@@ -61,7 +63,7 @@ export function Variables({ serviceId }: { serviceId: string }) {
                       if (event.key === "Escape") setEditingKey(null);
                     }}
                     placeholder="new value"
-                    className="w-full rounded-sm border border-hairline-strong bg-surface-inset px-sm py-xs font-mono text-micro text-ink placeholder:text-ink-faint"
+                    className="h-auto"
                   />
                 ) : (
                   <span className="font-mono text-micro text-ink-faint">{MASK}</span>
@@ -69,32 +71,33 @@ export function Variables({ serviceId }: { serviceId: string }) {
               </td>
               <td className="px-lg py-sm text-right">
                 {editingKey === variable.key ? (
-                  <button
-                    type="button"
+                  <Button
                     onClick={() => submitEdit(variable.key)}
-                    className="rounded-sm border border-hairline-strong px-sm py-xs text-micro text-ink hover:border-ink-faint"
+                    variant="outline"
+                    size="sm"
                   >
                     save
-                  </button>
+                  </Button>
                 ) : (
                   <span className="flex justify-end gap-sm">
-                    <button
-                      type="button"
+                    <Button
                       onClick={() => {
                         setEditingKey(variable.key);
                         setDraftValue("");
                       }}
-                      className="text-micro text-ink-mute hover:text-ink"
+                      variant="ghost"
+                      size="sm"
                     >
                       edit
-                    </button>
-                    <button
-                      type="button"
+                    </Button>
+                    <Button
                       onClick={() => deleteVariable.mutate(variable.key)}
-                      className="text-micro text-ink-faint hover:text-status-failed"
+                      variant="ghost"
+                      size="sm"
+                      className="hover:text-status-failed"
                     >
                       remove
-                    </button>
+                    </Button>
                   </span>
                 )}
               </td>
@@ -107,14 +110,14 @@ export function Variables({ serviceId }: { serviceId: string }) {
         <p className="px-lg py-md text-micro text-ink-faint">no variables set</p>
       ) : null}
 
-      <div className="flex items-center gap-sm px-lg py-md">
-        <input
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-sm px-lg py-md">
+        <Input
           value={newKey}
           onChange={(event) => setNewKey(event.target.value)}
           placeholder="KEY"
-          className="w-[45%] rounded-sm border border-hairline bg-surface-inset px-sm py-xs font-mono text-micro text-ink placeholder:text-ink-faint"
+          className="w-full border-hairline"
         />
-        <input
+        <Input
           type="password"
           value={newValue}
           onChange={(event) => setNewValue(event.target.value)}
@@ -122,15 +125,15 @@ export function Variables({ serviceId }: { serviceId: string }) {
             if (event.key === "Enter") submitNew();
           }}
           placeholder="value"
-          className="flex-1 rounded-sm border border-hairline bg-surface-inset px-sm py-xs font-mono text-micro text-ink placeholder:text-ink-faint"
+          className="w-full border-hairline"
         />
-        <button
-          type="button"
+        <Button
           onClick={submitNew}
-          className="rounded-sm border border-hairline-strong px-sm py-xs text-micro text-ink hover:border-ink-faint"
+          variant="outline"
+          size="sm"
         >
-          add
-        </button>
+          Add
+        </Button>
       </div>
 
       <p className="px-lg pb-lg text-micro text-ink-faint">

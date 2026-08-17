@@ -181,6 +181,19 @@ export function listProjects(): Promise<Project[]> {
   return requestJson<Project[]>("/projects");
 }
 
+/** PATCH /projects/{id} */
+export function updateProject(projectId: string, patch: { name: string }): Promise<Project> {
+  return requestJson<Project>(`/projects/${id(projectId)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/** DELETE /projects/{id} */
+export function deleteProject(projectId: string): Promise<void> {
+  return requestEmpty(`/projects/${id(projectId)}`, { method: "DELETE" });
+}
+
 /** GET /github/import/status — whether the operator configured the GitHub App. */
 export function getGitHubImportStatus(): Promise<GitHubImportStatus> {
   return requestJson<GitHubImportStatus>("/github/import/status");

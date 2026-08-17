@@ -16,6 +16,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
@@ -66,6 +67,9 @@ def client_fixture(
     engine: Engine, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[TestClient]:
     monkeypatch.setenv("RUDDER_JWT_SECRET", "crud-service-owner-test-secret-32")
+    # Catalog services carry generated credentials, which are encrypted at
+    # rest.  Keep this isolated test app configured exactly as production is.
+    monkeypatch.setenv("RUDDER_SECRET_KEYS", Fernet.generate_key().decode())
     get_settings.cache_clear()
     app = FastAPI()
     app.state.settings = get_settings().model_copy(

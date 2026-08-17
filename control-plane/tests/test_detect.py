@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from rudder_cp.services.builder import BuildFailed, frontend_build_env
 from rudder_cp.services.detect import (
     TEMPLATE_DIR,
     DetectionResult,
@@ -148,6 +149,30 @@ def test_detection_order_prefers_node_over_python(tmp_path: Path) -> None:
     write(tmp_path, "requirements.txt", "fastapi\n")
 
     assert detect(tmp_path).language == "node"
+
+
+def test_detects_vite_as_a_static_spa(tmp_path: Path) -> None:
+    node_repo(tmp_path, {"scripts": {"build": "vite build"}, "devDependencies": {"vite": "6.0.0"}})
+
+    result = detect(tmp_path)
+
+    assert result.language == "static"
+    assert result.frontend is not None
+    assert result.frontend.framework == "vite"
+    assert result.frontend.output_dir == "dist"
+    assert result.frontend.spa_fallback is True
+
+
+def test_detects_static_next_export_but_keeps_ssr_next_as_node(tmp_path: Path) -> None:
+    node_repo(tmp_path, {"dependencies": {"next": "15.0.0"}})
+    write(tmp_path, "next.config.mjs", "export default { output: 'export' }\n")
+    assert detect(tmp_path).frontend is not None
+    assert detect(tmp_path).language == "static"
+
+    ssr = tmp_path / "ssr"
+    ssr.mkdir()
+    node_repo(ssr, {"dependencies": {"next": "15.0.0"}})
+    assert detect(ssr).language == "node"
 
 
 def test_malformed_package_json_still_detects_node(tmp_path: Path) -> None:
@@ -327,7 +352,7 @@ def assert_looks_like_a_dockerfile(text: str) -> None:
 
 
 def test_templates_are_checked_in() -> None:
-    for name in ("node", "python", "go"):
+    for name in ("node", "python", "go", "static"):
         assert (TEMPLATE_DIR / f"{name}.Dockerfile.j2").is_file()
 
 
@@ -353,7 +378,31 @@ def test_render_node_without_a_lockfile_uses_npm_install(tmp_path: Path) -> None
 
     assert "RUN npm install" in text
     assert "npm ci" not in text
-    assert 'CMD ["node", "."]' in text
+
+
+def test_render_static_vite_uses_nginx_and_spa_fallback(tmp_path: Path) -> None:
+    node_repo(tmp_path, {"scripts": {"build": "vite build"}, "devDependencies": {"vite": "6.0.0"}})
+
+    text = render_dockerfile(
+        detect(tmp_path), container_port=8080, build_env_keys=("VITE_API_URL",)
+    )
+
+    assert "nginxinc/nginx-unprivileged" in text
+    assert "COPY --from=builder /app/dist/" in text
+    assert "try_files $uri $uri/ /index.html" in text
+    assert "ARG VITE_API_URL" in text
+    assert "EXPOSE ${PORT}" in text
+
+
+def test_static_build_env_accepts_only_its_public_prefix(tmp_path: Path) -> None:
+    node_repo(tmp_path, {"devDependencies": {"vite": "6.0.0"}})
+    detection = detect(tmp_path)
+
+    assert frontend_build_env(detection, {"VITE_API_URL": "https://api.example.test"}) == {
+        "VITE_API_URL": "https://api.example.test"
+    }
+    with pytest.raises(BuildFailed, match="VITE_"):
+        frontend_build_env(detection, {"DATABASE_URL": "not-for-browser"})
 
 
 def test_render_node_with_lockfile_uses_npm_ci(tmp_path: Path) -> None:

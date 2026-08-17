@@ -75,6 +75,38 @@ async def create_system_domain(
     return domain
 
 
+async def create_deployment_domain(session: Session, *, deployment: Deployment) -> Domain:
+    """Give a healthy immutable release its own permanent, pinned URL.
+
+    This is intentionally an internal operation: users can add custom domains,
+    but a deployment URL is a platform artifact and must be created exactly
+    once at promotion. UUID prefixes are DNS-safe and the unique hostname
+    constraint remains the final collision guard.
+    """
+    existing = session.exec(
+        select(Domain).where(Domain.deployment_id == deployment.id)
+    ).first()
+    if existing is not None:
+        return existing
+    service = session.get(Service, deployment.service_id)
+    if service is None:
+        raise NotFoundError(f"deployment {deployment.id} has no service")
+    hostname = f"d-{deployment.id.hex[:12]}.{get_settings().base_domain}"
+    _require_hostname_free(session, hostname)
+    domain = Domain(
+        hostname=hostname,
+        environment_id=service.environment_id,
+        target_type=DomainTargetType.DEPLOYMENT,
+        service_id=None,
+        deployment_id=deployment.id,
+        is_system=False,
+        tls_enabled=resolve_tls_enabled(None),
+    )
+    session.add(domain)
+    _flush_or_conflict(session, hostname)
+    return domain
+
+
 async def rename_system_domain(
     session: Session, *, environment: Environment, service: Service
 ) -> None:

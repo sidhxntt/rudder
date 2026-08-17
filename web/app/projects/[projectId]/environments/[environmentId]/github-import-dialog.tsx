@@ -3,6 +3,8 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   useConfirmGitHubImport,
   useGitHubBranches,
@@ -106,7 +108,7 @@ function FormSelect({
 }
 
 export function GitHubImportDialog({
-  triggerClassName = "rounded-md border border-ink-faint/40 bg-surface-raised px-3 py-2 text-caption text-ink hover:border-accent hover:text-accent",
+  triggerClassName = "",
   triggerLabel = "Import from GitHub",
 }: {
   triggerClassName?: string;
@@ -116,6 +118,7 @@ export function GitHubImportDialog({
   const search = useSearchParams();
   const [open, setOpen] = useState(false);
   const queryInstallation = search.get("installation_id");
+  const queryImport = search.get("import");
   const [installationId, setInstallationId] = useState<number | null>(null);
   const [repository, setRepository] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
@@ -181,6 +184,10 @@ export function GitHubImportDialog({
   useEffect(() => {
     if (queryInstallation) setOpen(true);
   }, [queryInstallation]);
+
+  useEffect(() => {
+    if (queryImport === "github") setOpen(true);
+  }, [queryImport]);
 
   useEffect(() => {
     const rows = repositories.data ?? [];
@@ -283,9 +290,9 @@ export function GitHubImportDialog({
 
   return (
     <>
-      <button className={triggerClassName} onClick={() => setOpen(true)}>
+      <Button variant="default" className={triggerClassName} onClick={() => setOpen(true)}>
         {triggerLabel}
-      </button>
+      </Button>
       {open ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-surface/80 p-4 backdrop-blur-sm sm:p-6">
           <section
@@ -498,7 +505,7 @@ export function GitHubImportDialog({
                             <div>
                               <p className="text-caption font-medium text-ink">Private add-ons</p>
                               <div className="mt-2 space-y-2">
-                                {preview.data.addons.map((addon) => <label key={addon} className="flex items-center gap-2 text-caption text-ink"><input type="checkbox" checked={selectedAddons.includes(addon)} onChange={() => toggleAddon(addon)} />Provision private {addon}</label>)}
+                                {preview.data.addons.map((addon) => <label key={addon} className="flex items-center gap-2 text-caption text-ink"><Checkbox checked={selectedAddons.includes(addon)} onChange={() => toggleAddon(addon)} />Provision private {addon}</label>)}
                                 {preview.data.externally_managed.map((addon) => <p key={addon} className="text-micro text-ink-mute">{addon} already has an external connection and will not be provisioned.</p>)}
                               </div>
                             </div>
@@ -519,7 +526,7 @@ export function GitHubImportDialog({
                           <div>
                             <p className="text-caption font-medium text-ink">Public URLs</p>
                             <ul className="mt-2 divide-y divide-hairline border-y border-hairline">
-                              {preview.data.services.map((service) => <li key={service.name} className="flex items-center justify-between gap-3 py-2 text-caption"><div><p className="font-medium text-ink">{service.name}</p><p className="text-micro text-ink-mute">{service.role}{service.container_port ? ` · :${service.container_port}` : ""}</p></div>{service.is_public ? <label className="flex shrink-0 items-center gap-2 text-accent"><input type="checkbox" checked={selectedPublicServices.includes(service.name)} onChange={() => togglePublicService(service.name)} />Public</label> : <span className="text-micro text-ink-faint">Private</span>}</li>)}
+                              {preview.data.services.map((service) => <li key={service.name} className="flex items-center justify-between gap-3 py-2 text-caption"><div><p className="font-medium text-ink">{service.name}</p><p className="text-micro text-ink-mute">{service.role}{service.container_port ? ` · :${service.container_port}` : ""}</p></div>{service.is_public ? <label className="flex shrink-0 items-center gap-2 text-accent"><Checkbox checked={selectedPublicServices.includes(service.name)} onChange={() => togglePublicService(service.name)} />Public</label> : <span className="text-micro text-ink-faint">Private</span>}</li>)}
                             </ul>
                           </div>
                           <details className="border border-hairline bg-surface px-3 py-2">

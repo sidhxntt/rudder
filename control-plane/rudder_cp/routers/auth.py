@@ -203,10 +203,17 @@ async def github_callback(
     except GitHubOAuthError as exc:
         raise ApiError(status.HTTP_401_UNAUTHORIZED, "github_oauth_failed", str(exc)) from exc
     user = await auth_service.find_or_create_github_user(
-        session, github_id=identity.id, login=identity.login, email=identity.email
+        session,
+        github_id=identity.id,
+        login=identity.login,
+        email=identity.email,
+        avatar_url=identity.avatar_url,
     )
     issued = auth_service.issue_token(user.id)
-    response = RedirectResponse("/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    response = RedirectResponse(
+        f"{request.app.state.settings.web_url.rstrip('/')}/dashboard?import=github",
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
     _set_session_cookie(response, issued.token, issued.expires_in, request.app.state.settings)
     return response
 

@@ -28,9 +28,16 @@ services:
 
   registry:
     image: registry:2
-    # Published on the host so the host Docker daemon can pull `localhost:5000/...`.
+    # BuildKit shares this container's network namespace.  Keep the registry's
+    # internal port equal to its host port so a non-default local port (for
+    # example 5001 when 5000 is occupied) still produces one pullable image
+    # address for both BuildKit and the host Docker daemon.
+    environment:
+      REGISTRY_HTTP_ADDR: "0.0.0.0:${RUDDER_REGISTRY_PORT:-5000}"
+    # Published on the host so the host Docker daemon can pull the exact image
+    # address in RUDDER_REGISTRY (normally localhost:<RUDDER_REGISTRY_PORT>).
     ports:
-      - "${RUDDER_REGISTRY_PORT:-5000}:5000"
+      - "${RUDDER_REGISTRY_PORT:-5000}:${RUDDER_REGISTRY_PORT:-5000}"
       - "1234:1234" # buildkitd shares this network namespace, see below
     volumes:
       - registrydata:/var/lib/registry

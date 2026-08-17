@@ -6,6 +6,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  MarkerType,
   ReactFlow,
   applyNodeChanges,
   type Edge,
@@ -14,16 +15,23 @@ import {
   type NodeTypes,
   type OnNodeDrag,
 } from "@xyflow/react";
+import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 
-import { useDomains, useServices, useUpdateServicePosition } from "@/lib/queries";
+import {
+  useDomains,
+  useEnvironments,
+  useServices,
+  useUpdateServicePosition,
+} from "@/lib/queries";
+import { Button } from "@/components/ui/button";
 import { serviceUrl } from "@/lib/status";
 import type { Service } from "@/lib/types";
 
 import { DetailPanel } from "./detail-panel";
 import { composeManagedByServiceId, composeReleaseOwnerId } from "./compose-lifecycle";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
-import { GitHubImportDialog } from "./github-import-dialog";
+import { ProjectSettings } from "./project-settings";
 
 const nodeTypes: NodeTypes = { service: ServiceNode };
 
@@ -31,6 +39,56 @@ const nodeTypes: NodeTypes = { service: ServiceNode };
 const FALLBACK_COLUMN = 288;
 const FALLBACK_ROW = 176;
 const FALLBACK_PER_COLUMN = 3;
+
+/** All protected return controls lead to the signed-in workspace, never the public site. */
+export function workspaceDashboardHref(): "/dashboard" {
+  return "/dashboard";
+}
+
+export type CanvasOperatorContext = {
+  eyebrow: "Deployment topology";
+  title: string;
+  description: string;
+  command: string | null;
+};
+
+/**
+ * The canvas should orient an operator before it asks them to interpret a
+ * topology. This remains intentionally factual: it describes only the
+ * service map and the panel already available in this route.
+ */
+export function canvasOperatorContext({
+  serviceCount,
+  selectedServiceName,
+}: {
+  serviceCount: number;
+  selectedServiceName: string | null;
+}): CanvasOperatorContext {
+  if (serviceCount === 0) {
+    return {
+      eyebrow: "Deployment topology",
+      title: "No service topology yet",
+      description: "Create a service to map its release and private dependencies here.",
+      command: "rudder service create",
+    };
+  }
+
+  if (selectedServiceName) {
+    return {
+      eyebrow: "Deployment topology",
+      title: `${selectedServiceName} selected`,
+      description: "Inspect its release, runtime, and private connections in the panel.",
+      command: null,
+    };
+  }
+
+  return {
+    eyebrow: "Deployment topology",
+    title: `${serviceCount} ${serviceCount === 1 ? "service" : "services"} mapped`,
+    description: "Select a service to inspect it, or drag it to arrange the release path.",
+    command: null,
+  };
+}
 
 /**
  * Where to draw a service that has never been dragged.
@@ -53,24 +111,76 @@ function initialPosition(service: Service, index: number): { x: number; y: numbe
 }
 
 /**
- * No edges. Service-to-service links would have to come from reference
- * Variables (`${{postgres.DATABASE_URL}}`), and the API never returns a
- * variable's value — so the relationship is not derivable client-side. Phase 1
- * step 10 asks for nodes, and nodes are what this draws.
+ * Imported Compose releases have one route-owning application and a set of
+ * services that share its lifecycle. That persisted ownership is enough to
+ * render a truthful topology without exposing variable values or guessing at
+ * application-level connections.
  */
-const NO_EDGES: Edge[] = [];
+export function composeEdges(services: Service[], releaseOwnerId: string | undefined): Edge[] {
+  if (!releaseOwnerId) return [];
+
+  const serviceById = new Map(services.map((service) => [service.id, service]));
+  const owner = serviceById.get(releaseOwnerId);
+  if (!owner) return [];
+
+  return services.flatMap((service) => {
+    const ownerId = composeManagedByServiceId(service, releaseOwnerId);
+    if (ownerId !== releaseOwnerId || service.id === releaseOwnerId) return [];
+
+    // Lifecycle ownership shows that the services were released together. It
+    // does not prove an application-level dependency, so the edge deliberately
+    // names only that recorded release relationship.
+    const relationship = "included in release";
+
+    return [{
+      id: `compose-${releaseOwnerId}-${service.id}`,
+      source: releaseOwnerId,
+      target: service.id,
+      type: "smoothstep",
+      label: relationship,
+      ariaLabel: `${owner.name} includes ${service.name} in its release`,
+      focusable: true,
+      interactionWidth: 18,
+      markerEnd: { type: MarkerType.ArrowClosed, color: "var(--rd-hairline-strong)" },
+      style: { stroke: "var(--rd-hairline-strong)", strokeWidth: 1.25 },
+      labelStyle: { fill: "var(--rd-text-mute)", fontSize: 11, fontWeight: 500 },
+      labelBgStyle: { fill: "var(--rd-surface)", fillOpacity: 0.92 },
+      labelBgPadding: [4, 3] as [number, number],
+      labelBgBorderRadius: 4,
+    } satisfies Edge];
+  });
+}
 
 export function EnvironmentCanvas({ environmentId }: { environmentId: string }) {
+  const params = useParams();
+  const router = useRouter();
+  const projectId = typeof params?.projectId === "string" ? params.projectId : undefined;
+  const environments = useEnvironments(projectId);
   const services = useServices(environmentId);
   const domains = useDomains(environmentId);
   const updatePosition = useUpdateServicePosition(environmentId);
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null);
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
 
   const serviceList = useMemo(() => services.data ?? [], [services.data]);
   const domainList = useMemo(() => domains.data ?? [], [domains.data]);
   const composeAppServiceId = useMemo(() => composeReleaseOwnerId(serviceList), [serviceList]);
+  const edges = useMemo(() => composeEdges(serviceList, composeAppServiceId), [composeAppServiceId, serviceList]);
+
+  // A local bootstrap can replace an environment while a browser still has its
+  // old URL open. Resolve the project again instead of leaving the canvas on a
+  // permanent 404; the project route selects its production environment.
+  useEffect(() => {
+    if (
+      projectId &&
+      environments.isSuccess &&
+      !environments.data?.some((environment) => environment.id === environmentId)
+    ) {
+      router.replace(`/projects/${projectId}`);
+    }
+  }, [environmentId, environments.data, environments.isSuccess, projectId, router]);
 
   // Rebuild nodes when the service set changes. Positions already on screen are
   // kept: a drag in flight must not be yanked back by a poll. Layout is UI
@@ -123,19 +233,66 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
 
   const onNodeClick = useCallback((_event: MouseEvent, node: Node) => {
     setSelectedServiceId(node.id);
+    setProjectSettingsOpen(false);
   }, []);
 
   const selectedService = serviceList.find((service) => service.id === selectedServiceId) ?? null;
+  const operatorContext = canvasOperatorContext({
+    serviceCount: serviceList.length,
+    selectedServiceName: selectedService?.name ?? null,
+  });
 
   return (
     <div className="flex h-full min-h-0 w-full">
       <div className="relative min-w-0 flex-1">
-        <div className="absolute left-5 top-5 z-10">
-          <GitHubImportDialog />
-        </div>
+        <section
+          aria-label="Deployment canvas context"
+          aria-live="polite"
+          className="absolute left-5 top-5 z-10 w-[20rem] overflow-hidden rounded-md border border-hairline-strong bg-surface-soft/95 shadow-elev-2 backdrop-blur-sm"
+        >
+          <div className="flex items-center justify-between gap-md border-b border-hairline px-md py-sm">
+            <span className="font-mono text-micro font-medium uppercase tracking-[0.12em] text-ink-mute">
+              {operatorContext.eyebrow}
+            </span>
+            <div className="flex items-center gap-xs" aria-label="Canvas actions">
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => router.push(workspaceDashboardHref())}
+                aria-label="Back to workspace dashboard"
+                title="Back to workspace dashboard"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4 fill-none stroke-current stroke-[1.8]">
+                  <path d="M19 12H5M11 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label="Open project settings"
+                title="Project settings"
+                onClick={() => {
+                  setSelectedServiceId(null);
+                  setProjectSettingsOpen(true);
+                }}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4 fill-none stroke-current stroke-[1.7]">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.08 2.08-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20.3h-2.96v-.12A1.7 1.7 0 0 0 10.74 18.6a1.7 1.7 0 0 0-1.88.34l-.06.06-2.08-2.08.06-.06A1.7 1.7 0 0 0 7.12 15a1.7 1.7 0 0 0-1.56-1.04H5.44v-2.96h.12A1.7 1.7 0 0 0 7.12 9.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06L8.8 5.94l.06.06a1.7 1.7 0 0 0 1.88.34 1.7 1.7 0 0 0 1.04-1.56v-.12h2.96v.12a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.08 2.08-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.04h.12v2.96h-.12A1.7 1.7 0 0 0 19.4 15Z" />
+                </svg>
+              </Button>
+            </div>
+          </div>
+          <div className="px-md py-md">
+            <p className="text-heading-md text-ink">{operatorContext.title}</p>
+            <p className="mt-xxs max-w-[31ch] text-caption leading-relaxed text-ink-mute">
+              {operatorContext.description}
+            </p>
+          </div>
+        </section>
         <ReactFlow
           nodes={nodes}
-          edges={NO_EDGES}
+          edges={edges}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onNodeDragStop={onNodeDragStop}
@@ -146,6 +303,7 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
           fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
           minZoom={0.4}
           maxZoom={1.6}
+          proOptions={{ hideAttribution: true }}
           style={{ backgroundColor: "var(--rd-surface)" }}
         >
           <Background
@@ -159,10 +317,20 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
 
         {services.isSuccess && serviceList.length === 0 ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <p className="text-caption text-ink-faint">
-              no services in this environment — create one with{" "}
-              <span className="font-mono text-ink-mute">rudder service create</span>
-            </p>
+            <section aria-labelledby="empty-topology-title" className="w-full max-w-sm px-lg text-center">
+              <svg viewBox="0 0 168 72" aria-hidden="true" className="mx-auto h-[4.5rem] w-[10.5rem] fill-none">
+                <path d="M53 36h62M53 36l18-18M53 36l18 18" stroke="var(--rd-hairline-strong)" strokeWidth="1.5" strokeLinecap="round" />
+                <circle cx="42" cy="36" r="10" stroke="var(--rd-accent)" strokeWidth="1.5" />
+                <circle cx="126" cy="18" r="10" stroke="var(--rd-hairline-strong)" strokeWidth="1.5" />
+                <circle cx="126" cy="54" r="10" stroke="var(--rd-hairline-strong)" strokeWidth="1.5" />
+                <circle cx="42" cy="36" r="3" fill="var(--rd-accent)" />
+              </svg>
+              <h2 id="empty-topology-title" className="mt-lg text-heading-lg text-ink">Start with a service</h2>
+              <p className="mx-auto mt-xs max-w-[34ch] text-caption leading-relaxed text-ink-mute">
+                Your release path and private dependencies will appear here as services are added.
+              </p>
+              <p className="mt-md font-mono text-micro text-accent">{operatorContext.command}</p>
+            </section>
           </div>
         ) : null}
 
@@ -173,10 +341,26 @@ export function EnvironmentCanvas({ environmentId }: { environmentId: string }) 
         ) : null}
       </div>
 
-      {selectedService ? (
+      {projectSettingsOpen ? (
+        <aside className="flex w-[30rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
+          <div className="flex items-center justify-between gap-md border-b border-hairline px-lg py-md">
+            <h2 className="text-heading-md text-ink">Project settings</h2>
+            <button
+              type="button"
+              onClick={() => setProjectSettingsOpen(false)}
+              aria-label="Close project settings"
+              className="rounded-xs px-xs py-xxs text-micro text-ink-faint hover:text-ink"
+            >
+              ✕
+            </button>
+          </div>
+          <ProjectSettings />
+        </aside>
+      ) : selectedService ? (
         <DetailPanel
           service={selectedService}
           url={serviceUrl(selectedService, domainList)}
+          domains={domainList}
           managedByServiceId={composeManagedByServiceId(selectedService, composeAppServiceId)}
           onClose={() => setSelectedServiceId(null)}
         />

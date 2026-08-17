@@ -1,4 +1,8 @@
 .env
+.env.local.development
+.env.local.production
+!.env.local.development.example
+!.env.local.production.example
 *.pyc
 __pycache__/
 .venv/

@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import {
   useAutoscalingOperation,
   useBackupOperation,
@@ -68,8 +70,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-const inputClass =
-  "w-full rounded-sm border border-hairline-strong bg-surface-inset px-sm py-xs font-mono text-micro text-ink placeholder:text-ink-faint";
+const selectClass =
+  "h-8 w-full rounded-sm border border-hairline-strong bg-surface-inset px-sm py-xs font-mono text-micro text-ink outline-none transition-[border-color,box-shadow] duration-150 hover:border-ink-faint focus:border-accent focus:ring-1 focus:ring-accent/30";
 const buttonClass =
   "rounded-sm border border-hairline-strong px-sm py-xs text-micro text-ink hover:border-ink-faint disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -215,30 +217,30 @@ export function Operations({ service }: { service: Service }) {
           <Section title="Run">
             <div className="grid grid-cols-2 gap-sm">
               <Field label="Manual replicas">
-                <input aria-label="Manual replicas" className={inputClass} inputMode="numeric" value={replicaValue} onChange={(event) => setReplicaValue(event.target.value)} />
+                <Input aria-label="Manual replicas" inputMode="numeric" value={replicaValue} onChange={(event) => setReplicaValue(event.target.value)} />
               </Field>
               <div className="flex items-end">
                 <button type="button" className={buttonClass} disabled={scale.isPending} onClick={() => scale.mutate(Number(replicaValue))}>Apply scale</button>
               </div>
             </div>
             <div className="mt-sm grid grid-cols-2 gap-sm">
-              <Field label="CPU request"><input aria-label="CPU request" className={inputClass} placeholder="500m" value={cpuRequest} onChange={(event) => setCpuRequest(event.target.value)} /></Field>
-              <Field label="CPU limit"><input aria-label="CPU limit" className={inputClass} placeholder="1" value={cpuLimit} onChange={(event) => setCpuLimit(event.target.value)} /></Field>
-              <Field label="Memory request (MB)"><input aria-label="Memory request" className={inputClass} inputMode="numeric" value={memoryRequest} onChange={(event) => setMemoryRequest(event.target.value)} /></Field>
-              <Field label="Memory limit (MB)"><input aria-label="Memory limit" className={inputClass} inputMode="numeric" value={memoryLimit} onChange={(event) => setMemoryLimit(event.target.value)} /></Field>
+              <Field label="CPU request"><Input aria-label="CPU request" placeholder="500m" value={cpuRequest} onChange={(event) => setCpuRequest(event.target.value)} /></Field>
+              <Field label="CPU limit"><Input aria-label="CPU limit" placeholder="1" value={cpuLimit} onChange={(event) => setCpuLimit(event.target.value)} /></Field>
+              <Field label="Memory request (MB)"><Input aria-label="Memory request" inputMode="numeric" value={memoryRequest} onChange={(event) => setMemoryRequest(event.target.value)} /></Field>
+              <Field label="Memory limit (MB)"><Input aria-label="Memory limit" inputMode="numeric" value={memoryLimit} onChange={(event) => setMemoryLimit(event.target.value)} /></Field>
             </div>
             <button type="button" className={`${buttonClass} mt-sm`} disabled={resources.isPending} onClick={() => resources.mutate({ cpu_request: cpuRequest || undefined, cpu_limit: cpuLimit || undefined, memory_request_mb: memoryRequest ? Number(memoryRequest) : undefined, memory_limit_mb: memoryLimit ? Number(memoryLimit) : undefined })}>Save resources</button>
             <div className="mt-md border-t border-hairline-faint pt-sm">
               <p className="text-micro text-ink-secondary">Autoscaling</p>
-              <div className="mt-xs grid grid-cols-2 gap-sm"><Field label="Minimum"><input aria-label="Minimum replicas" className={inputClass} inputMode="numeric" value={autoscaleMin} onChange={(event) => setAutoscaleMin(event.target.value)} /></Field><Field label="Maximum"><input aria-label="Maximum replicas" className={inputClass} inputMode="numeric" value={autoscaleMax} onChange={(event) => setAutoscaleMax(event.target.value)} /></Field></div>
+              <div className="mt-xs grid grid-cols-2 gap-sm"><Field label="Minimum"><Input aria-label="Minimum replicas" inputMode="numeric" value={autoscaleMin} onChange={(event) => setAutoscaleMin(event.target.value)} /></Field><Field label="Maximum"><Input aria-label="Maximum replicas" inputMode="numeric" value={autoscaleMax} onChange={(event) => setAutoscaleMax(event.target.value)} /></Field></div>
               <button type="button" className={`${buttonClass} mt-sm`} disabled={autoscaling.isPending} onClick={() => autoscaling.mutate({ min_replicas: Number(autoscaleMin), max_replicas: Number(autoscaleMax), target_cpu_percent: 80 })}>Apply autoscaling</button>
               <p className="pt-xs text-micro text-ink-faint">Autoscaling and manual replica intent are mutually exclusive in Kubernetes.</p>
             </div>
           </Section>
 
           <Section title="Release">
-            <div className="grid grid-cols-[1fr_auto] gap-sm"><Field label="Rollout strategy"><select aria-label="Rollout strategy" className={inputClass} value={rolloutStrategy} onChange={(event) => setRolloutStrategy(event.target.value as "rolling" | "blue_green" | "canary")}><option value="rolling">rolling</option><option value="blue_green">blue/green</option><option value="canary">canary</option></select></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={rollout.isPending} onClick={() => rollout.mutate({ strategy: rolloutStrategy, canary_steps: rolloutStrategy === "canary" ? canarySteps.split(",").map((step) => Number(step.trim())).filter(Boolean) : undefined })}>Save rollout</button></div></div>
-            {rolloutStrategy === "canary" ? <Field label="Canary steps (%)"><input aria-label="Canary steps" className={`${inputClass} mt-sm`} value={canarySteps} onChange={(event) => setCanarySteps(event.target.value)} /></Field> : null}
+            <div className="grid grid-cols-[1fr_auto] gap-sm"><Field label="Rollout strategy"><select aria-label="Rollout strategy" className={selectClass} value={rolloutStrategy} onChange={(event) => setRolloutStrategy(event.target.value as "rolling" | "blue_green" | "canary")}><option value="rolling">rolling</option><option value="blue_green">blue/green</option><option value="canary">canary</option></select></Field><div className="flex items-end"><button type="button" className={buttonClass} disabled={rollout.isPending} onClick={() => rollout.mutate({ strategy: rolloutStrategy, canary_steps: rolloutStrategy === "canary" ? canarySteps.split(",").map((step) => Number(step.trim())).filter(Boolean) : undefined })}>Save rollout</button></div></div>
+            {rolloutStrategy === "canary" ? <Field label="Canary steps (%)"><Input aria-label="Canary steps" className="mt-sm" value={canarySteps} onChange={(event) => setCanarySteps(event.target.value)} /></Field> : null}
             <div className="mt-md border-t border-hairline-faint pt-sm">
               <p className="text-micro text-ink-secondary">Restore immutable release</p>
               <p className="pt-xxs text-micro text-ink-faint">
@@ -291,15 +293,15 @@ export function Operations({ service }: { service: Service }) {
           </Section>
 
           <Section title="Jobs & placement">
-            <Field label="Node selector (key=value, comma separated)"><input aria-label="Node selector" className={inputClass} value={nodeSelector} onChange={(event) => setNodeSelector(event.target.value)} /></Field>
-            <div className="mt-sm flex gap-md text-micro text-ink-mute"><label><input type="checkbox" checked={topologySpread} onChange={(event) => setTopologySpread(event.target.checked)} /> spread across nodes</label><label><input type="checkbox" checked={antiAffinity} onChange={(event) => setAntiAffinity(event.target.checked)} /> anti-affinity</label></div>
-            <Field label="Maximum unavailable during maintenance"><input aria-label="Maximum unavailable during maintenance" className={`${inputClass} mt-sm`} inputMode="numeric" min="1" placeholder="automatic" value={maxUnavailable} onChange={(event) => setMaxUnavailable(event.target.value)} /></Field>
+            <Field label="Node selector (key=value, comma separated)"><Input aria-label="Node selector" value={nodeSelector} onChange={(event) => setNodeSelector(event.target.value)} /></Field>
+            <div className="mt-sm flex gap-md text-micro text-ink-mute"><label className="flex items-center gap-xs"><Checkbox checked={topologySpread} onChange={(event) => setTopologySpread(event.target.checked)} />spread across nodes</label><label className="flex items-center gap-xs"><Checkbox checked={antiAffinity} onChange={(event) => setAntiAffinity(event.target.checked)} />anti-affinity</label></div>
+            <Field label="Maximum unavailable during maintenance"><Input aria-label="Maximum unavailable during maintenance" className="mt-sm" inputMode="numeric" min="1" placeholder="automatic" value={maxUnavailable} onChange={(event) => setMaxUnavailable(event.target.value)} /></Field>
             <button type="button" className={`${buttonClass} mt-sm`} disabled={placement.isPending} onClick={() => { const selector = Object.fromEntries(nodeSelector.split(",").map((part) => part.trim()).filter(Boolean).map((part) => { const [key, ...value] = part.split("="); return [key.trim(), value.join("=").trim()]; })); placement.mutate({ node_selector: selector, topology_spread: topologySpread, anti_affinity: antiAffinity, max_unavailable: maxUnavailable ? Number(maxUnavailable) : undefined }); }}>Apply placement</button>
             <p className="pt-xs text-micro text-ink-faint">For HA app workloads only. Leave blank to let Rudder keep at least N−1 replicas available.</p>
             {jobCommandsAvailable ? (
               <>
-                <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="One-off command (must be approved by the service template)"><input aria-label="One-off command" className={inputClass} placeholder="npm run migrate" value={jobCommand} onChange={(event) => setJobCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={runJob.isPending || !jobCommand.trim()} onClick={() => runJob.mutate({ command: jobCommand.trim().split(/\s+/) })}>Run job</button></div>
-                <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="Schedule"><input aria-label="Schedule cron" className={inputClass} value={scheduleCron} onChange={(event) => setScheduleCron(event.target.value)} /></Field><Field label="Scheduled command"><input aria-label="Scheduled command" className={`${inputClass} mt-sm`} placeholder="npm run cleanup" value={scheduleCommand} onChange={(event) => setScheduleCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={schedule.isPending || !scheduleCommand.trim()} onClick={() => schedule.mutate({ cron: scheduleCron, command: scheduleCommand.trim().split(/\s+/) })}>Add schedule</button>{schedules.map((item) => { const entry = record(item); return <div key={String(entry.operation_id)} className="mt-xs flex justify-between text-micro text-ink-mute"><span>{text(record(entry.spec).cron, "schedule")}</span><button type="button" className="text-ink-faint hover:text-status-failed" onClick={() => deleteSchedule.mutate(String(entry.operation_id))}>remove</button></div>; })}</div>
+                <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="One-off command (must be approved by the service template)"><Input aria-label="One-off command" placeholder="npm run migrate" value={jobCommand} onChange={(event) => setJobCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={runJob.isPending || !jobCommand.trim()} onClick={() => runJob.mutate({ command: jobCommand.trim().split(/\s+/) })}>Run job</button></div>
+                <div className="mt-md border-t border-hairline-faint pt-sm"><Field label="Schedule"><Input aria-label="Schedule cron" value={scheduleCron} onChange={(event) => setScheduleCron(event.target.value)} /></Field><Field label="Scheduled command"><Input aria-label="Scheduled command" className="mt-sm" placeholder="npm run cleanup" value={scheduleCommand} onChange={(event) => setScheduleCommand(event.target.value)} /></Field><button type="button" className={`${buttonClass} mt-sm`} disabled={schedule.isPending || !scheduleCommand.trim()} onClick={() => schedule.mutate({ cron: scheduleCron, command: scheduleCommand.trim().split(/\s+/) })}>Add schedule</button>{schedules.map((item) => { const entry = record(item); return <div key={String(entry.operation_id)} className="mt-xs flex justify-between text-micro text-ink-mute"><span>{text(record(entry.spec).cron, "schedule")}</span><button type="button" className="text-ink-faint hover:text-status-failed" onClick={() => deleteSchedule.mutate(String(entry.operation_id))}>remove</button></div>; })}</div>
               </>
             ) : <p className="mt-md border-t border-hairline-faint pt-sm text-micro text-ink-faint">No approved one-off or scheduled commands are configured for this service.</p>}
           </Section>
@@ -322,9 +324,8 @@ export function Operations({ service }: { service: Service }) {
           {backupAvailable ? (
             <div className="mt-sm grid grid-cols-2 gap-sm">
               <Field label="Backup retention (days)">
-                <input
+                <Input
                   aria-label="Backup retention days"
-                  className={inputClass}
                   inputMode="numeric"
                   value={retentionDays}
                   onChange={(event) => setRetentionDays(event.target.value)}
@@ -346,9 +347,8 @@ export function Operations({ service }: { service: Service }) {
           {readReplicasAvailable ? (
             <div className="mt-sm grid grid-cols-2 gap-sm">
               <Field label="Read replicas">
-                <input
+                <Input
                   aria-label="Read replicas"
-                  className={inputClass}
                   inputMode="numeric"
                   value={readReplicas}
                   onChange={(event) => setReadReplicas(event.target.value)}
@@ -371,18 +371,16 @@ export function Operations({ service }: { service: Service }) {
             <>
               <div className="mt-sm grid grid-cols-2 gap-sm">
                 <Field label="Current storage (MB)">
-                  <input
+                  <Input
                     aria-label="Current storage"
-                    className={inputClass}
                     inputMode="numeric"
                     value={storageCurrent}
                     onChange={(event) => setStorageCurrent(event.target.value)}
                   />
                 </Field>
                 <Field label="Requested storage (MB)">
-                  <input
+                  <Input
                     aria-label="Requested storage"
-                    className={inputClass}
                     inputMode="numeric"
                     value={storageRequested}
                     onChange={(event) => setStorageRequested(event.target.value)}
@@ -416,7 +414,7 @@ export function Operations({ service }: { service: Service }) {
         </Section>
       )}
 
-      <Section title="Observability"><div className="flex gap-md text-micro text-ink-mute"><label><input aria-label="Enable Prometheus" type="checkbox" checked={prometheus} onChange={(event) => setPrometheus(event.target.checked)} /> Prometheus</label><label><input aria-label="Enable Grafana" type="checkbox" checked={grafana} onChange={(event) => setGrafana(event.target.checked)} /> Grafana</label></div><button type="button" className={`${buttonClass} mt-sm`} disabled={observability.isPending} onClick={() => observability.mutate({ prometheus, grafana })}>Save observability</button></Section>
+      <Section title="Observability"><div className="flex gap-md text-micro text-ink-mute"><label className="flex items-center gap-xs"><Checkbox aria-label="Enable Prometheus" checked={prometheus} onChange={(event) => setPrometheus(event.target.checked)} />Prometheus</label><label className="flex items-center gap-xs"><Checkbox aria-label="Enable Grafana" checked={grafana} onChange={(event) => setGrafana(event.target.checked)} />Grafana</label></div><button type="button" className={`${buttonClass} mt-sm`} disabled={observability.isPending} onClick={() => observability.mutate({ prometheus, grafana })}>Save observability</button></Section>
       <Section title="Operation history"><OperationHistory history={operations.data?.history ?? []} /></Section>
       {mutationError ? <p role="alert" className="px-lg py-sm text-micro text-status-failed">{errorText(mutationError)}</p> : null}
     </div>

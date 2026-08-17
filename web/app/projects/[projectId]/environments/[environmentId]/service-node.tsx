@@ -1,13 +1,15 @@
 "use client";
 
-import type { NodeProps } from "@xyflow/react";
+import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { useParams } from "next/navigation";
+import { useEffect, useState } from "react";
 
-import { useDeployments, useInstances, useServiceMetrics } from "@/lib/queries";
+import { Input } from "@/components/ui/input";
+import { useDeployments, useInstances, useRenameService } from "@/lib/queries";
 import { deriveServiceStatus, latestDeployment } from "@/lib/status";
 import type { ServiceKind } from "@/lib/types";
 
 import { StatusDot } from "./status-dot";
-import { MetricSparkline } from "./metric-sparkline";
 
 export type ServiceNodeData = {
   serviceId: string;
@@ -32,10 +34,27 @@ const KIND_LABEL: Record<ServiceKind, string> = {
  */
 export function ServiceNode(props: NodeProps) {
   const data = props.data as ServiceNodeData;
+  const params = useParams();
+  const environmentId = typeof params?.environmentId === "string" ? params.environmentId : undefined;
   const lifecycleServiceId = data.managedByServiceId ?? data.serviceId;
   const deployments = useDeployments(lifecycleServiceId);
   const instances = useInstances(lifecycleServiceId);
-  const metrics = useServiceMetrics(lifecycleServiceId);
+  const rename = useRenameService(environmentId);
+  const [editingName, setEditingName] = useState(false);
+  const [name, setName] = useState(data.name);
+
+  useEffect(() => {
+    if (!editingName) setName(data.name);
+  }, [data.name, editingName]);
+
+  async function saveName() {
+    if (!name.trim() || name.trim() === data.name) {
+      setEditingName(false);
+      return;
+    }
+    await rename.mutateAsync({ serviceId: data.serviceId, name: name.trim() });
+    setEditingName(false);
+  }
 
   const status = deriveServiceStatus(deployments.data ?? [], instances.data ?? []);
   const latest = latestDeployment(deployments.data ?? []);
@@ -48,8 +67,42 @@ export function ServiceNode(props: NodeProps) {
         props.selected ? "border-accent" : "border-hairline hover:border-hairline-strong",
       ].join(" ")}
     >
+      <Handle
+        type="target"
+        position={Position.Left}
+        aria-label={`Connection into ${data.name}`}
+        className="!h-2 !w-2 !border-0 !bg-transparent"
+      />
       <div className="flex items-center justify-between gap-sm border-b border-hairline-faint px-md py-sm">
-        <span className="truncate text-caption font-medium text-ink">{data.name}</span>
+        {editingName ? (
+          <Input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onBlur={() => void saveName()}
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Enter") void saveName();
+              if (event.key === "Escape") setEditingName(false);
+            }}
+            aria-label={`Rename ${data.name}`}
+            className="nodrag h-7 min-w-0 font-sans"
+          />
+        ) : (
+          <button
+            type="button"
+            onDoubleClick={(event) => {
+              event.stopPropagation();
+              setEditingName(true);
+            }}
+            title="Double-click to rename service"
+            className="nodrag min-w-0 truncate text-left text-caption font-medium text-ink outline-none hover:text-accent focus-visible:text-accent"
+          >
+            {data.name}
+          </button>
+        )}
         <span className="shrink-0 rounded-xs border border-hairline px-xs py-xxs text-micro text-ink-mute">
           {data.role ?? KIND_LABEL[data.kind]}
         </span>
@@ -77,9 +130,12 @@ export function ServiceNode(props: NodeProps) {
           <span className="block truncate text-micro text-ink-faint">no public domain</span>
         )}
       </div>
-      <div className="border-t border-hairline-faint px-md py-sm">
-        <MetricSparkline metrics={metrics.data ?? []} />
-      </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        aria-label={`Connection out of ${data.name}`}
+        className="!h-2 !w-2 !border-0 !bg-transparent"
+      />
     </div>
   );
 }

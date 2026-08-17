@@ -46,6 +46,8 @@ export type DomainTargetType = "service" | "deployment";
 export interface User {
   id: string;
   email: string;
+  github_login: string | null;
+  github_avatar_url: string | null;
   created_at: string;
 }
 
@@ -121,6 +123,7 @@ export interface Service {
  * only thing a drag may ever send is a position.
  */
 export interface ServiceUpdate {
+  name?: string;
   canvas_x?: number;
   canvas_y?: number;
 }
