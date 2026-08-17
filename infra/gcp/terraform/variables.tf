@@ -78,3 +78,9 @@ variable "backup_retention_days" {
     error_message = "Backup retention must be at least seven days."
   }
 }
+
+variable "alert_notification_channels" {
+  description = "Cloud Monitoring notification-channel resource names for Phase 4 incidents. Empty preserves incident creation without routing a notification."
+  type        = list(string)
+  default     = []
+}

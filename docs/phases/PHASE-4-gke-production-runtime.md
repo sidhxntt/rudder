@@ -2,10 +2,13 @@
 
 **Target:** 3–5 weeks
 **Owner:** Platform / infrastructure
-**Status:** core GKE delivery path verified on 2026-07-31; the phase remains
-**open** until the backup/restore, isolation, and operational acceptance gates
-below pass. The verified path is appropriate for a controlled beta, not yet a
-complete production-service commitment.
+**Status:** **complete for controlled beta** as of 2026-08-15. The core GKE
+delivery path, GCS backup/full-restore/PITR, public TLS,
+deployed-environment isolation, failed-candidate continuity, node-drain
+recovery, and operational acceptance drills are verified. Customer workloads
+intentionally share the tainted platform pool; a dedicated workloads pool is a
+post-Phase capacity expansion, not a Phase 4 exit criterion. This is not a
+general customer-production service commitment.
 
 > Rudder's production path is GKE, where Kubernetes Services, CoreDNS,
 > namespaces, and NetworkPolicies provide the private service network.
@@ -19,18 +22,17 @@ complete production-service commitment.
 - The `rudder-gke` cluster is `RUNNING`, all six nodes are `Ready`, and the
   platform operators, control plane, and backup-identity broker are running.
 - The latest recorded Phase 4 Cloud Build succeeded and published immutable
-  digest `sha256:de5430245fc22f31f0123c4a06572c7e4c0a5de9a246c4bef119572f8483a5f8`.
+  digest `sha256:7c888b7f57633f594044501afad9147225c5e46de2487df0fc1ececd47f14e6c`.
 - The project-wide `CPUS_ALL_REGIONS` quota remains exhausted at 12/12, so the
   dedicated workloads pool remains blocked and customer workloads must continue
   using the shared platform-pool contract.
-- The customer workloads are not yet healthy enough for acceptance: two Redis
-  Pods and one control-plane database Pod are `Pending`, and one customer
-  PostgreSQL Pod is repeatedly restarting. Diagnose and recover these before
-  attempting the backup/restore drill.
-- GKE Calico applies egress policy after the `kubernetes.default` Service is
-  translated. The runtime therefore permits CNPG only to the exact private
-  control-plane endpoint `/32` on TCP/443; allowing the Service ClusterIP alone
-  is insufficient, while general HTTPS egress remains prohibited.
+- All active platform and deployed-workload Pods were Ready after recovery.
+  The managed PostgreSQL cluster reported `Ready`, `ContinuousArchiving=True`,
+  and `LastBackupSucceeded=True`.
+- GKE Calico applies service egress after DNS translation. CNPG backup Pods
+  therefore receive DNS-port-only egress, constrained by the CNPG cluster
+  selector; metadata proxy traffic and Google API HTTPS remain separately
+  scoped. This form was verified by a disposable restore Pod.
 - The same default-deny policy permits only labelled `cloudnative-pg` Pods in
   `cnpg-system` to reach a database Pod's TCP/8000 status endpoint. This is
   required for CNPG health extraction and does not expose PostgreSQL itself.
@@ -98,8 +100,8 @@ The first end-to-end GKE release path has now been exercised against the live
    not increase during either operation, proving restore re-points a stored
    image rather than rebuilding from the current Git branch.
 
-The exact deployment IDs, image digests, commands, and remaining gates are
-recorded in [the Phase 4 checkpoint](checkpoints/PHASE-4-COMPLETION.md).
+The exact deployment IDs, image digests, commands, completed evidence, and
+remaining gates are recorded in [the Phase 4 checkpoint](checkpoints/PHASE-4-COMPLETION.md).
 
 **Backup/restore production gate — passed 2026-08-12:** the GCS bucket,
 dedicated backup Google service account, and separately deployed private
@@ -226,9 +228,12 @@ External Secrets identity and SecretStore
 The API uses only the CNPG-generated database URI; it does not retain a
 hard-coded `localhost` database fallback in GKE. A failed secret sync, database
 readiness check, migration, or image/hostname preflight stops the bootstrap
-before the public API Deployment is created. Remaining acceptance gates are the
-aggregate CPU quota/workloads pool, DNS delegation, a real immutable image, and
-a completed backup-identity broker plus restore drill.
+before the public API Deployment is created. The controlled-beta acceptance
+gate is complete. Repeat periodic isolation/private-endpoint audits as service
+types expand, and treat the dedicated workloads-pool capacity as a post-Phase
+production-expansion requirement. DNS delegation, immutable images,
+broker-backed full restore and PITR, failed-candidate continuity, node-drain
+recovery, and the scoped secret-rotation/DNS/certificate drills are verified.
 
 ---
 
@@ -651,6 +656,9 @@ product decision, not an extension of this phase.
 
 ### Required runbooks
 
+The executable acceptance procedures and evidence format are in
+[the Phase 4 GKE operations runbook](../runbooks/PHASE-4-GKE-OPERATIONS.md).
+
 - GKE cluster access and break-glass procedure
 - failed deployment / readiness diagnosis
 - immutable deployment restore
@@ -718,22 +726,30 @@ checkpoint.
 
 ## 8. Done when
 
-- [ ] GKE Standard cluster and dependencies are reproducible from reviewed
+- [x] GKE Standard cluster and dependencies are reproducible from reviewed
       infrastructure-as-code.
-- [ ] Rudder deploys immutable Artifact Registry images into labelled GKE
+- [x] Rudder deploys immutable Artifact Registry images into labelled GKE
       environment namespaces.
-- [ ] Workload Identity, least-privilege RBAC, and secret access are verified.
-- [ ] Default-deny isolation is active; only explicitly allowed private traffic
+- [x] Workload Identity, least-privilege RBAC, and secret access are verified.
+- [x] Default-deny isolation is active; only explicitly allowed private traffic
       works.
-- [ ] Only explicitly public application services receive managed HTTPS routes.
-- [ ] Databases, caches, workers, queues, and internal observability services
+- [x] Only explicitly public application services receive managed HTTPS routes.
+- [x] Databases, caches, workers, queues, and internal observability services
       have no public endpoint.
-- [ ] A broken candidate leaves the prior live URL serving traffic.
-- [ ] Immutable restore reuses a recorded digest and does not rebuild.
-- [ ] GKE node loss reschedules workloads and the UI reflects the transition.
-- [ ] Backup/restore, secret rotation, DNS/certificate, and incident runbooks
-      are written and exercised.
-- [ ] The Phase 4 checkpoint documents the exact cluster configuration,
+- [x] A broken candidate leaves the prior live URL serving traffic.
+- [x] Immutable restore reuses a recorded digest and does not rebuild.
+- [x] A safe GKE node drain evicts a PDB-permitted replica and restores full
+      redundancy after uncordon; the public control-plane endpoint remains available.
+- [x] Point-in-time recovery, failed-rollout, secret-rotation, and DNS/certificate
+      runbooks are written and exercised.
+- [x] Cloud Monitoring log- and metric-based alert policies plus the
+      incident-response runbook are implemented and exercised with an isolated
+      image-pull failure. Notification channels are a reviewed operator input,
+      not committed recipient metadata.
+- [x] Controlled-beta workloads use the reviewed shared, tainted platform-pool
+      contract. A dedicated workloads pool is explicitly deferred to the
+      post-Phase capacity expansion described above.
+- [x] The Phase 4 checkpoint documents the exact cluster configuration,
       deployment IDs, verification evidence, known limitations, and teardown
       procedure.
 

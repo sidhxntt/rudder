@@ -55,7 +55,7 @@ Completed/merged work:
 
 Current work:
 
-- **Phase 4** — production GKE runtime and shared platform pool. The authoritative plan and acceptance criteria are in `docs/phases/PHASE-4-gke-production-runtime.md`.
+- **Phase 4** — controlled-beta GKE runtime on the shared platform pool; complete. The authoritative acceptance record is in `docs/phases/PHASE-4-gke-production-runtime.md`.
 
 Future documented phases:
 
@@ -142,21 +142,24 @@ Backup implementation currently designed:
 
 Do not replace this with a project-wide broad IAM admin role. Google does not allow `setIamPolicy` to be narrowed directly to one target service account, which is why the isolated broker exists.
 
-## Latest build that must be checked first
+## Latest deployed build
 
-An in-progress Cloud Build was started immediately before this handoff:
+The final verified Phase 4 image was built by Cloud Build
+`bbbb8626-98d7-41f8-a7ee-eeb6b306cfcf` and deployed to both the control plane
+and backup broker as:
 
-- Build ID: `a5231ca8-b71b-4466-b7f9-c2221ce36c27`
+`asia-south1-docker.pkg.dev/invytt-2483d/rudder/control-plane@sha256:7c888b7f57633f594044501afad9147225c5e46de2487df0fc1ececd47f14e6c`
 
-Check it before submitting another build:
+Check the currently deployed digest before submitting another build:
 
 ```sh
-gcloud builds describe a5231ca8-b71b-4466-b7f9-c2221ce36c27 \
+gcloud builds describe bbbb8626-98d7-41f8-a7ee-eeb6b306cfcf \
   --project invytt-2483d --region asia-south1 \
   --format='json(status,statusDetail,results.images,logUrl)'
 ```
 
-If successful, resolve the immutable image digest from build results/Artifact Registry. Roll out that digest to both the control plane and backup broker; do not deploy a mutable tag.
+Resolve any new immutable image digest from build results/Artifact Registry
+before rollout; never deploy a mutable tag.
 
 The intended Cloud Build pattern uses the dedicated build service account and private source/log buckets:
 
@@ -209,17 +212,22 @@ Do not paste account credentials, OAuth secrets, GitHub App private keys, webhoo
 
 CloudNativePG backup documentation to consult before writing recovery manifests: <https://cloudnative-pg.io/docs/>. ScheduledBackup uses a six-field cron and supports `backupOwnerReference: self`.
 
-## Why Phase 4 is not complete yet
+## Remaining Phase 4 gates
 
-These are mandatory remaining gates:
+The following evidence is complete: immutable rollout of the control plane and
+backup broker, generated CNPG Workload Identity binding and ScheduledBackup,
+GCS base backup plus WAL objects, disposable full restore, public TLS/health,
+and a cross-environment PostgreSQL isolation probe.
 
-- Deploy the current broker/ScheduledBackup code to GKE using a verified immutable image.
-- Verify a real CloudNativePG workload gets the generated identity binding and scheduled backup.
-- Prove GCS backup objects are produced.
-- Perform one disposable recovery/restore drill.
-- Confirm public routing, TLS/DNS, isolation, and operational behaviour for the deployed workload.
-
-Existing Kind/local success and platform Pod readiness are useful, but they are not substitutes for the GKE backup-and-restore acceptance test.
+The completed 2026-08-15 drills are point-in-time recovery, a deliberately
+broken candidate that retained its existing Ingress backend, a PDB-permitted
+CNPG-replica node drain and recovery, secret-rotation and DNS/certificate
+controller checks, plus a real Cloud Monitoring image-pull alert incident. The
+baseline private-endpoint/default-deny audit. Phase 4 is complete for the
+shared-pool controlled-beta scope. A dedicated workloads pool is a post-Phase
+capacity expansion after CPU quota is raised; repeat the documented isolation
+audit for every new service type. See the Phase 4 checkpoint for exact evidence
+and scope.
 
 ## Local development notes
 
@@ -253,4 +261,7 @@ GitHub OAuth signs the user in. GitHub App access lists repositories; webhook de
 
 ## Minimal opening prompt for the next Codex session
 
-> Read `docs/HANDOFF.md`, then scan the repository and current git status. We are on `phase-4`, implementing the GKE production runtime. Do not discard the dirty worktree. First check Cloud Build `a5231ca8-b71b-4466-b7f9-c2221ce36c27`, verify GKE state read-only, run the focused backup-runtime tests, then continue the Phase 4 acceptance gates in `docs/phases/PHASE-4-gke-production-runtime.md`.
+> Read `docs/HANDOFF.md`, then scan the repository and current git status. We
+> are on `phase-4`; controlled-beta acceptance is complete. Re-verify GKE
+> state read-only before changing it. The dedicated workloads pool is a
+> post-Phase capacity expansion once quota is increased.

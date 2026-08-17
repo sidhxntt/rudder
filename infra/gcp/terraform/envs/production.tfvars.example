@@ -8,3 +8,7 @@ cluster_name = "rudder-gke"
 # Set true only after the project-wide CPUS_ALL_REGIONS quota is approved for
 # at least 18 vCPUs. The current system and platform pools already use 12.
 enable_workloads_pool = false
+
+# Populate with existing Cloud Monitoring notification-channel resource names.
+# Keep this out of source control when channel metadata is sensitive.
+# alert_notification_channels = ["projects/invytt-2483d/notificationChannels/1234567890"]
