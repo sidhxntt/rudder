@@ -18,7 +18,6 @@ export type GitHubLoginDependencies = {
 
 const POLL_INTERVAL_MS = 1_000;
 const AUTHORIZATION_TIMEOUT_MS = 5 * 60 * 1_000;
-const BROWSER_OPEN_TIMEOUT_MS = 1_000;
 
 /** Complete the shared browser authorization handoff and return its bearer token. */
 export async function completeGitHubLogin({
@@ -55,10 +54,8 @@ async function openInBrowser(url: string): Promise<void> {
   const args = platform() === "win32" ? ["/c", "start", "", url] : [url];
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { detached: true, stdio: "ignore" });
-    const timeout = setTimeout(() => { child.unref(); resolve(); }, BROWSER_OPEN_TIMEOUT_MS);
-    child.once("error", error => { clearTimeout(timeout); child.unref(); reject(error); });
+    child.once("error", error => { child.unref(); reject(error); });
     child.once("exit", code => {
-      clearTimeout(timeout);
       child.unref();
       if (code === 0) resolve();
       else reject(new Error(`Browser opener exited with status ${code ?? "unknown"}.`));

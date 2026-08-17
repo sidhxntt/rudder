@@ -42,4 +42,27 @@ describe("completeGitHubLogin", () => {
 
     expect(writeError).toHaveBeenCalledWith(expect.stringContaining("https://github.com/login/oauth/authorize?state=signed"));
   });
+
+  it("prints a copyable URL when the browser process fails after the old success timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
+      spawn.mockImplementationOnce(() => {
+        setTimeout(() => child.emit("exit", 1), 1_001);
+        return child;
+      });
+      const request = vi.fn()
+        .mockResolvedValueOnce({ id: "opaque", authorization_url: "https://github.com/login/oauth/authorize?state=signed" })
+        .mockResolvedValueOnce({ access_token: "cli-token" });
+      const writeError = vi.fn();
+      const login = completeGitHubLogin({ api: { request } as never, writeError });
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      await login;
+
+      expect(writeError).toHaveBeenCalledWith(expect.stringContaining("https://github.com/login/oauth/authorize?state=signed"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
