@@ -229,6 +229,16 @@ async def set_variable(session: Session, service_id: uuid.UUID, key: str, value:
     variable.is_reference = is_reference(value)
 
     session.add(variable)
+    # The reference target is allowed not to exist yet, but once the target
+    # does exist we reject cycles at write time.  Flush first so a newly-created
+    # row participates in the graph; rollback leaves the prior value intact.
+    session.flush()
+    service = await _require_service(session, service_id)
+    try:
+        validate_no_reference_cycles(session, service.environment_id)
+    except ReferenceResolutionError:
+        session.rollback()
+        raise
     session.commit()
     session.refresh(variable)
     return variable
@@ -397,6 +407,60 @@ def _find_sibling(
 
 def _context(origin: Service, origin_key: str) -> str:
     return f"Cannot resolve variable {origin_key!r} on service {origin.name!r}"
+
+
+def validate_no_reference_cycles(session: Session, environment_id: uuid.UUID) -> None:
+    """Reject every resolvable reference loop in one environment.
+
+    Missing services or keys deliberately add no edge: forward references are
+    legal and remain deploy-time errors until they are defined.  A DFS gives a
+    concise user-facing path once the last edge of a cycle is saved.
+    """
+    services = list(
+        session.exec(select(Service).where(Service.environment_id == environment_id)).all()
+    )
+    service_by_name = {service.name.lower(): service for service in services}
+    variables = list(
+        session.exec(
+            select(Variable).where(Variable.service_id.in_([service.id for service in services]))
+        ).all()
+    ) if services else []
+    by_node = {(variable.service_id, variable.key): variable for variable in variables}
+
+    edges: dict[tuple[uuid.UUID, str], tuple[uuid.UUID, str]] = {}
+    for node, variable in by_node.items():
+        if not variable.is_reference:
+            continue
+        reference = parse_reference(decrypt_value(variable.value_encrypted))
+        target_service = service_by_name.get(reference.service_name.lower()) if reference else None
+        target = (target_service.id, reference.key) if target_service and reference else None
+        if target in by_node:
+            edges[node] = target
+
+    visiting: list[tuple[uuid.UUID, str]] = []
+    visited: set[tuple[uuid.UUID, str]] = set()
+
+    def label(node: tuple[uuid.UUID, str]) -> str:
+        service = next(service for service in services if service.id == node[0])
+        return f"{service.name}.{node[1]}"
+
+    def visit(node: tuple[uuid.UUID, str]) -> None:
+        if node in visiting:
+            cycle = visiting[visiting.index(node) :] + [node]
+            raise ReferenceResolutionError(
+                f"reference cycle at save time: {' -> '.join(label(item) for item in cycle)}"
+            )
+        if node in visited:
+            return
+        visiting.append(node)
+        target = edges.get(node)
+        if target is not None:
+            visit(target)
+        visiting.pop()
+        visited.add(node)
+
+    for node in edges:
+        visit(node)
 
 
 # --- internals ----------------------------------------------------------------

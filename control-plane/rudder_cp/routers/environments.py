@@ -14,6 +14,7 @@ from sqlmodel import Session
 from rudder_cp.db import get_session
 from rudder_cp.schemas.common import error_responses, translate_errors
 from rudder_cp.schemas.environment import (
+    EnvironmentClone,
     EnvironmentCreate,
     EnvironmentRead,
     EnvironmentReplace,
@@ -58,6 +59,22 @@ async def list_environments(project_id: UUID, session: SessionDep) -> list[Envir
     with translate_errors():
         rows = await environment_ops.list_environments(session, project_id)
     return [EnvironmentRead.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/environments/{environment_id}/clone",
+    status_code=status.HTTP_201_CREATED,
+    response_model=EnvironmentRead,
+    responses=error_responses(404, 409, 422),
+    operation_id="clone_environment",
+    summary="Clone an environment's declarative service graph",
+)
+async def clone_environment(
+    environment_id: UUID, payload: EnvironmentClone, session: SessionDep
+) -> EnvironmentRead:
+    with translate_errors():
+        environment = await environment_ops.clone_environment(session, environment_id, payload)
+    return EnvironmentRead.model_validate(environment)
 
 
 @router.get(

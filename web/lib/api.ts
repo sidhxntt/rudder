@@ -255,6 +255,23 @@ export function listEnvironments(projectId: string): Promise<Environment[]> {
   return requestJson<Environment[]>(`/projects/${id(projectId)}/environments`);
 }
 
+/** POST /environments/{environment_id}/clone */
+export function cloneEnvironment(environmentId: string, name: string): Promise<Environment> {
+  return requestJson<Environment>(`/environments/${id(environmentId)}/clone`, {
+    method: "POST",
+    body: { name },
+  });
+}
+
+/** DELETE /environments/{environment_id} */
+export async function deleteEnvironment(environmentId: string): Promise<void> {
+  const response = await fetch(`${BASE}/environments/${id(environmentId)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) throw await toApiError(response);
+}
+
 /** GET /environments/{environment_id}/services */
 export function listServices(environmentId: string): Promise<Service[]> {
   return requestJson<Service[]>(`/environments/${id(environmentId)}/services`);

@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     github_oauth_client_id: str = ""
     github_oauth_client_secret: str = ""
     github_oauth_redirect_uri: str = ""
+    # Full PR environments are intentionally capped: each owns its own data
+    # volumes and can consume real cluster capacity.
+    github_pr_environment_limit: int = 10
 
     @property
     def resolved_github_app_private_key(self) -> str:

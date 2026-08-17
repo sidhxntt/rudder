@@ -404,6 +404,19 @@ async def test_failed_candidate_cleanup_never_deletes_persistent_volume_claims()
 
 
 @pytest.mark.asyncio
+async def test_environment_namespace_cleanup_is_idempotent() -> None:
+    """Environment teardown owns the namespace; a replayed close sees 404."""
+    api = object.__new__(AsyncKubernetesApi)
+    api.core = SimpleNamespace(delete_namespace=AsyncMock())
+
+    await api.delete_namespace("rudder-abcdef012345")
+
+    api.core.delete_namespace.assert_awaited_once()
+    body = api.core.delete_namespace.await_args.kwargs["body"]
+    assert body.propagation_policy == "Foreground"
+
+
+@pytest.mark.asyncio
 async def test_rudder_managed_postgres_becomes_a_private_cnpg_cluster_with_standbys() -> None:
     """Read replicas are PostgreSQL standbys, never generic Postgres copies."""
     api = FakeKubernetesApi()

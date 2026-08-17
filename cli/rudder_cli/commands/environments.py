@@ -1,4 +1,4 @@
-"""rudder env create|list|use."""
+"""rudder env create|clone|destroy|list|use."""
 
 from __future__ import annotations
 
@@ -52,18 +52,54 @@ def list_(ctx: typer.Context) -> None:
         return
     current = state.context.environment.id if state.context.environment else None
     table(
-        ["", "NAME", "ID", "PRODUCTION", "WG_SUBNET"],
+        ["", "NAME", "ID", "PRODUCTION", "PR"],
         [
             [
                 "*" if str(e.id) == current else "",
                 e.name,
                 str(e.id),
                 "yes" if e.is_production else "no",
-                str(e.wg_subnet or "-"),
+                str(getattr(e, "github_pr_number", None) or "-"),
             ]
             for e in environments
         ],
     )
+
+
+@app.command("clone")
+def clone(ctx: typer.Context, name: str) -> None:
+    """Clone the selected environment's declarative graph and select it."""
+    state: State = ctx.obj
+    source = resolve_environment(state)
+    result = state.api.request_json(
+        "POST", f"/environments/{source.id}/clone", json={"name": name}
+    )
+    environment = EnvironmentRead.from_dict(result)
+    select_environment(state, environment)
+    if state.json_out:
+        emit_json(environment.to_dict())
+        return
+    out(f"Cloned {source.name} to {environment.name} ({environment.id}).")
+    out(f"Selected environment {environment.name}.")
+
+
+@app.command("destroy")
+def destroy(
+    ctx: typer.Context,
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm deletion.")] = False,
+) -> None:
+    """Destroy the selected non-production environment and all its data."""
+    state: State = ctx.obj
+    environment = resolve_environment(state)
+    if environment.is_production:
+        raise typer.BadParameter("refusing to destroy the production environment")
+    if not yes:
+        raise typer.BadParameter("pass --yes to destroy an environment")
+    state.api.request_json("DELETE", f"/environments/{environment.id}")
+    state.context.environment = None
+    state.context.service = None
+    state.context.save()
+    out(f"Destroyed environment {environment.name}.")
 
 
 @app.command("use")

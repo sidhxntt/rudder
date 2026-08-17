@@ -74,6 +74,18 @@ class Api:
             return response.parsed
         raise self._api_error(response.status_code, response.content)
 
+    def request_json(self, method: str, url: str, *, json: dict[str, Any] | None = None) -> Any:
+        """Call a newly-added API operation before the generated SDK is refreshed.
+
+        This deliberately reuses the generated SDK's authenticated httpx client;
+        it is a small compatibility bridge, not a second transport stack.
+        """
+        with self._transport_errors():
+            response = self.client.get_httpx_client().request(method, url, json=json)
+        if response.status_code not in _SUCCESS:
+            raise self._api_error(response.status_code, response.content)
+        return response.json() if response.content else None
+
     @contextmanager
     def stream(self, method: str, url: str) -> Iterator[httpx.Response]:
         """Stream a response using the SDK's own authenticated transport.
