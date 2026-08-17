@@ -5,6 +5,7 @@ import { authenticationGate } from "./auth-guard.js";
 import { commandTarget } from "./command-target.js";
 import { ApiClient, ApiError } from "./client.js";
 import { loadConfig, mergeContext, saveConfig, type Context } from "./context.js";
+import { completeGitHubLogin } from "./github-login.js";
 import { formatServiceGraph, serviceGraph } from "./graph.js";
 import { fail, print, success, type Output } from "./output.js";
 
@@ -37,7 +38,7 @@ async function request(state: State, method: string, path: string, body?: unknow
 async function command(state: State, args: string[]): Promise<void> {
   const [noun, action, ...rest] = args;
   if (!noun || noun === "help" || noun === "--help") { console.log(usage); return; }
-  if (noun === "login") { const email = stringFlag(state.flags, "email") ?? await ask(state, "Email"); const password = stringFlag(state.flags, "password") ?? await ask(state, "Password", true); const result = await state.api.request("POST", "/auth/token", { email, password }) as Record<string, unknown>; await saveAccessToken(state, result); if (state.out.json) print(result, state.out); else success(`Logged in to ${state.api.baseUrl}.`, state.out); return; }
+  if (noun === "login") { if (state.flags["no-interactive"] || !process.stdin.isTTY) throw new Error("GitHub sign-in requires an interactive terminal. Set RUDDER_TOKEN for automation."); const result = await completeGitHubLogin({ api: state.api }); await saveAccessToken(state, result); if (!state.out.json) success(`Logged in to ${state.api.baseUrl}.`, state.out); return; }
   if (noun === "logout") { state.credentials.token = undefined; await saveConfig(state.context, state.credentials); success("Logged out.", state.out); return; }
   if (noun === "whoami") return void await request(state, "GET", "/auth/me");
   if (noun === "context") { if (action === "show" || !action) return void print(state.context, state.out); if (action === "clear") { state.context = {}; await saveConfig(state.context, state.credentials); success("Context cleared.", state.out); return; } }
@@ -59,7 +60,6 @@ async function command(state: State, args: string[]): Promise<void> {
   throw new Error(`Unknown command: ${noun}. Run \`rudder help\`.`);
 }
 
-async function ask(state: State, message: string, password = false): Promise<string> { if (state.flags["no-interactive"] || !process.stdin.isTTY) throw new Error(`${message} is required in non-interactive mode.`); const answer = await p.text({ message, ...(password ? { validate: v => v ? undefined : "Required" } : {}) }); if (p.isCancel(answer) || !answer) throw new Error("Aborted."); return answer; }
 async function saveAccessToken(state: State, result: Record<string, unknown>): Promise<void> {
   const token = result.access_token;
   if (typeof token !== "string") throw new Error("Control plane did not return an access token.");
@@ -77,7 +77,8 @@ async function requireAuthentication(state: State): Promise<void> {
   if (gate === "noninteractive-error") {
     throw new Error("Sign in first with `rudder login`, or set RUDDER_TOKEN for automation.");
   }
-  throw new Error("Sign in first with `rudder login`, or set RUDDER_TOKEN for automation.");
+  await saveAccessToken(state, await completeGitHubLogin({ api: state.api }));
+  success(`Logged in to ${state.api.baseUrl}.`, state.out);
 }
 async function project(s: State, action: string | undefined, a: string[]): Promise<void> { if (action === "list") return void await request(s, "GET", "/projects"); if (action === "create") return void await request(s, "POST", "/projects", { name: requireArg(a, 0, "project name") }); const id = await resolve(s, "project", a[0]); if (action === "use") { s.context.project = id; delete s.context.environment; delete s.context.service; await saveConfig(s.context, s.credentials); return void success("Project selected.", s.out); } if (action === "delete") { await confirm(s, `Delete project ${id} and all its data?`); return void await request(s, "DELETE", `/projects/${id}`); } if (action === "get") return void await request(s, "GET", `/projects/${id}`); if (action === "settings") return void await request(s, "PATCH", `/projects/${id}`, jsonBody(s.flags)); throw new Error("project: list, create, get, use, settings, delete"); }
 async function environment(s: State, action: string | undefined, a: string[]): Promise<void> { const projectId = await resolve(s, "project"); if (action === "list") return void await request(s, "GET", `/projects/${projectId}/environments`); if (action === "create") return void await request(s, "POST", `/projects/${projectId}/environments`, { name: requireArg(a, 0, "environment name"), is_production: Boolean(s.flags.production) }); const id = await resolve(s, "environment", a[0]); if (action === "use") { s.context.environment = id; delete s.context.service; await saveConfig(s.context, s.credentials); return void success("Environment selected.", s.out); } if (action === "clone") return void await request(s, "POST", `/environments/${id}/clone`, { name: requireArg(a, 1, "clone name") }); if (action === "delete") { await confirm(s, `Destroy environment ${id}?`); return void await request(s, "DELETE", `/environments/${id}`); } if (action === "get") return void await request(s, "GET", `/environments/${id}`); if (action === "settings") return void await request(s, "PATCH", `/environments/${id}`, jsonBody(s.flags)); throw new Error("env: list, create, get, use, clone, settings, delete"); }
