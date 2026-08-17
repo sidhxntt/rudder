@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     github_pr_environment_limit: int = 10
 
     # Phase 8: absence disables only non-deterministic failure diagnosis.
-    openai_api_key: str = ""
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
     advisor_repository_root: str = ""
 
     @property
