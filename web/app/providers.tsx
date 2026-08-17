@@ -8,11 +8,11 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
 
 import { isUnauthorized } from "@/lib/api";
 import { SessionProvider, useSession } from "@/lib/session";
 
-import { LoginScreen } from "./login-screen";
 import { Sidebar } from "./sidebar";
 import { TopBar } from "./top-bar";
 
@@ -62,6 +62,8 @@ function QueryLayer({ children }: { children: ReactNode }) {
 function Gate({ children }: { children: ReactNode }) {
   const { state } = useSession();
   const client = useQueryClient();
+  const pathname = usePathname();
+  const isPublicRoute = pathname === "/";
 
   // One operator's data must never be left in the cache for the next one, and
   // stale panels must not flash back on re-login. Clearing on the way out
@@ -69,6 +71,11 @@ function Gate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.status === "anonymous") client.clear();
   }, [state.status, client]);
+
+  // The public homepage must remain readable before a session check completes.
+  // Every console route (including the older /projects URLs) keeps the original
+  // authenticated shell and sign-in behavior.
+  if (isPublicRoute) return <>{children}</>;
 
   if (state.status === "loading") {
     return (
@@ -78,7 +85,7 @@ function Gate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (state.status === "anonymous") return <LoginScreen />;
+  if (state.status === "anonymous") return <RedirectToLanding />;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
@@ -89,4 +96,15 @@ function Gate({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
+}
+
+/** Protected console routes never render a second sign-in product surface. */
+export function RedirectToLanding() {
+  const router = useRouter();
+
+  useEffect(() => {
+    router.replace("/");
+  }, [router]);
+
+  return null;
 }

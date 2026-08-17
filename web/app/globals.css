@@ -70,13 +70,43 @@
 }
 
 .react-flow__controls-button {
-  background-color: var(--rd-surface-raised);
-  border-bottom: 1px solid var(--rd-hairline);
-  fill: var(--rd-text-secondary);
+  width: 32px;
+  height: 32px;
+  background: transparent !important;
+  border-bottom: 0 !important;
+  fill: var(--rd-text-secondary) !important;
+  transition: background-color 140ms ease, fill 140ms ease, transform 140ms ease;
 }
 
 .react-flow__controls-button:hover {
-  background-color: var(--rd-surface-soft);
+  background: color-mix(in srgb, var(--rd-surface-soft) 58%, transparent) !important;
+  fill: var(--rd-accent) !important;
+}
+
+.react-flow__controls-button:active {
+  transform: scale(0.94);
+}
+
+.react-flow__controls-button svg {
+  fill: var(--rd-text-secondary) !important;
+}
+
+.react-flow__controls-button:hover svg {
+  fill: var(--rd-accent) !important;
+}
+
+.react-flow__controls {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--rd-hairline-strong) 74%, transparent) !important;
+  border-radius: var(--rd-radius-md);
+  background: color-mix(in srgb, var(--rd-surface-raised) 36%, transparent) !important;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--rd-surface) 58%, transparent) !important;
+  backdrop-filter: blur(14px) saturate(125%) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(125%) !important;
+}
+
+.react-flow__controls-button + .react-flow__controls-button {
+  border-top: 1px solid var(--rd-hairline);
 }
 
 .react-flow__node {
@@ -85,4 +115,20 @@
 
 .react-flow__node.dragging {
   cursor: grabbing;
+}
+
+/* Compose topology: quiet at rest, but discoverable by mouse and keyboard. */
+.react-flow__edge-path {
+  transition: stroke 140ms ease;
+}
+
+.react-flow__edge:hover .react-flow__edge-path,
+.react-flow__edge:focus .react-flow__edge-path {
+  stroke: var(--rd-accent);
+  stroke-width: 1.75;
+}
+
+.react-flow__edge-textbg {
+  stroke: var(--rd-hairline);
+  stroke-width: 0.5;
 }

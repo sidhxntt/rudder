@@ -173,7 +173,14 @@ async def test_github_oauth_exchange_uses_the_verified_primary_email(
 
         async def get(self, url: str, **_kwargs: object) -> Response:
             if url.endswith("/user"):
-                return Response({"id": 1234, "login": "octocat", "email": None})
+                return Response(
+                    {
+                        "id": 1234,
+                        "login": "octocat",
+                        "email": None,
+                        "avatar_url": "https://avatars.githubusercontent.com/u/1234",
+                    }
+                )
             return Response(
                 [
                     {"email": "secondary@example.test", "primary": False, "verified": True},
@@ -188,17 +195,18 @@ async def test_github_oauth_exchange_uses_the_verified_primary_email(
     identity = await oauth.exchange("code", state)
 
     assert identity.email == "owner@example.test"
+    assert identity.avatar_url == "https://avatars.githubusercontent.com/u/1234"
 
 
 async def _identity(_self: GitHubOAuthClient, _code: str, _state: str) -> GitHubIdentity:
     return GitHubIdentity(id=1234, login="octocat", email="octocat@github.test")
 
 
-def test_github_oauth_callback_sets_rudder_session(
+def test_github_oauth_callback_opens_the_dashboard_import_flow(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(GitHubOAuthClient, "exchange", _identity)
     response = client.get("/auth/github/callback?code=valid&state=valid", follow_redirects=False)
     assert response.status_code == 307
-    assert response.headers["location"] == "/"
+    assert response.headers["location"] == "http://localhost:3000/dashboard?import=github"
     assert "rudder_token=" in response.headers["set-cookie"]

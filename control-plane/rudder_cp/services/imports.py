@@ -153,6 +153,7 @@ def compose_project_name(project_id: uuid.UUID) -> str:
 async def provision_import(
     session: Session,
     *,
+    owner_id: uuid.UUID | None = None,
     installation_id: int,
     repository: str,
     branch: str,
@@ -211,7 +212,7 @@ async def provision_import(
         raise ValueError("Choose a declared web service for the application public URL.")
 
     project = await projects.create_project(
-        session, ProjectCreate(name=_project_name(repository))
+        session, ProjectCreate(name=_project_name(repository)), owner_id=owner_id
     )
     environment = session.exec(
         select(Environment).where(

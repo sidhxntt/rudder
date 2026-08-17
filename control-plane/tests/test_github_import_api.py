@@ -12,6 +12,7 @@ from rudder_cp.config import get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import User
 from rudder_cp.routers import imports as imports_router
+from rudder_cp.routers.auth import get_current_user
 
 
 class FakeGitHub:
@@ -92,8 +93,10 @@ def import_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
-        session.add(User(email="owner@example.com", password_hash="x"))
+        owner = User(email="owner@example.com", password_hash="x")
+        session.add(owner)
         session.commit()
+        owner_id = owner.id
 
     app = FastAPI()
     app.state.settings = get_settings()
@@ -105,6 +108,9 @@ def import_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=owner_id, email="owner@example.com", password_hash="x"
+    )
     with TestClient(app) as client:
         yield client
     engine.dispose()

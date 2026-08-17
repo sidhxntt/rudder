@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font-size",
+        "value": "11px",
+        "createdAt": "2026-08-17T16:38:37.537Z",
+        "reason": "Domain-appropriate commit, port, and service-graph labels use the existing compact mono detail scale."
+      }
+    ]
+  }
+}

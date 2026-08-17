@@ -6,21 +6,22 @@ request — a build takes minutes and an HTTP client will not wait.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from rudder_cp.config import get_settings
+from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import Deployment, DeploymentStatus, Instance, InstanceStatus, Service
-from rudder_cp.services import traefik
+from rudder_cp.services.rollbacks import restore_immutable_deployment
 
 router = APIRouter(tags=["deployments"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 class DeploymentRead(BaseModel):
@@ -120,57 +121,13 @@ async def create_deployment(
         "No build, image pull, or container restart is performed."
     ),
 )
-async def rollback_deployment(deployment_id: uuid.UUID, session: SessionDep) -> Deployment:
-    """Restore a prior healthy release by moving the live traffic pointer."""
-    source = session.get(Deployment, deployment_id)
-    if source is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "not_found", "message": "No such deployment", "details": {}},
-        )
-    if source.status not in {DeploymentStatus.LIVE, DeploymentStatus.SUPERSEDED}:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "rollback_not_available",
-                "message": "Only successful deployments can be rolled back to.",
-                "details": {"deployment_id": str(source.id), "status": source.status.value},
-            },
-        )
-    healthy_target = session.exec(
-        select(Instance).where(
-            Instance.deployment_id == source.id,
-            Instance.status == InstanceStatus.HEALTHY,
-        )
-    ).first()
-    if healthy_target is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "rollback_target_unavailable",
-                "message": "This immutable release no longer has a healthy running target.",
-                "details": {"deployment_id": str(source.id)},
-            },
-        )
-
-    current = session.exec(
-        select(Deployment).where(
-            Deployment.service_id == source.service_id,
-            Deployment.status == DeploymentStatus.LIVE,
-            Deployment.id != source.id,
-        )
-    ).all()
-    for deployment in current:
-        deployment.status = DeploymentStatus.SUPERSEDED
-        session.add(deployment)
-    source.status = DeploymentStatus.LIVE
-    source.error_message = None
-    source.became_live_at = datetime.now(UTC)
-    session.add(source)
-    session.commit()
-    await traefik.render_all(session, get_settings())
-    session.refresh(source)
-    return source
+async def rollback_deployment(
+    deployment_id: uuid.UUID, session: SessionDep, settings: SettingsDep
+) -> Deployment:
+    """Restore by moving the existing immutable traffic target only."""
+    return await restore_immutable_deployment(
+        session, deployment_id=deployment_id, settings=settings
+    )
 
 
 @router.get(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
@@ -17,6 +18,7 @@ _TOKEN_URL = "https://github.com/login/oauth/access_token"
 _PROFILE_URL = "https://api.github.com/user"
 _EMAILS_URL = "https://api.github.com/user/emails"
 _STATE_AUDIENCE = "github-oauth-state"
+_RETRYABLE_GITHUB_STATUS_CODES = frozenset({429, 502, 503, 504})
 
 
 class GitHubOAuthError(Exception):
@@ -28,6 +30,7 @@ class GitHubIdentity:
     id: int
     login: str
     email: str | None
+    avatar_url: str | None = None
 
 
 def _verified_primary_email(payload: object) -> str | None:
@@ -46,6 +49,24 @@ def _verified_primary_email(payload: object) -> str | None:
         ):
             return email.strip()
     return None
+
+
+async def _get_with_retry(
+    client: httpx.AsyncClient, url: str, *, headers: dict[str, str]
+) -> httpx.Response:
+    """Retry brief GitHub API outages during the OAuth callback.
+
+    The authorization code has already been exchanged at this point. A
+    temporary 503 from either identity endpoint should not make a user restart
+    the complete browser OAuth flow.
+    """
+    response = await client.get(url, headers=headers)
+    for attempt in range(2):
+        if getattr(response, "status_code", None) not in _RETRYABLE_GITHUB_STATUS_CODES:
+            return response
+        await asyncio.sleep(0.25 * (attempt + 1))
+        response = await client.get(url, headers=headers)
+    return response
 
 
 class GitHubOAuthClient:
@@ -105,19 +126,19 @@ class GitHubOAuthClient:
             )
             if token.is_error or not token.json().get("access_token"):
                 raise GitHubOAuthError("GitHub declined the authorization code.")
-            profile = await client.get(
+            headers = {
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token.json()['access_token']}",
+            }
+            profile = await _get_with_retry(
+                client,
                 _PROFILE_URL,
-                headers={
-                    "Accept": "application/vnd.github+json",
-                    "Authorization": f"Bearer {token.json()['access_token']}",
-                },
+                headers=headers,
             )
-            emails = await client.get(
+            emails = await _get_with_retry(
+                client,
                 _EMAILS_URL,
-                headers={
-                    "Accept": "application/vnd.github+json",
-                    "Authorization": f"Bearer {token.json()['access_token']}",
-                },
+                headers=headers,
             )
         if profile.is_error:
             raise GitHubOAuthError("GitHub profile lookup failed.")
@@ -126,8 +147,12 @@ class GitHubOAuthClient:
         value = profile.json()
         if not isinstance(value.get("id"), int) or not isinstance(value.get("login"), str):
             raise GitHubOAuthError("GitHub returned an incomplete profile.")
+        avatar_url = value.get("avatar_url")
         return GitHubIdentity(
             id=value["id"],
             login=value["login"],
             email=_verified_primary_email(emails.json()),
+            # Do not manufacture arbitrary URLs: only pass through GitHub's
+            # optional profile field, and use the initial fallback otherwise.
+            avatar_url=avatar_url if isinstance(avatar_url, str) and avatar_url else None,
         )

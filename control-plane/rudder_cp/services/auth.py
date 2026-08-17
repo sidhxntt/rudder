@@ -133,6 +133,7 @@ async def find_or_create_github_user(
     github_id: int,
     login: str,
     email: str | None,
+    avatar_url: str | None = None,
 ) -> User:
     """Find a user by immutable GitHub ID, or create one for a first OAuth login.
 
@@ -175,9 +176,11 @@ async def find_or_create_github_user(
                 session.flush()
                 owner.github_id = github_id
                 owner.github_login = login
+                owner.github_avatar_url = avatar_url
                 user = owner
             else:
                 user.github_login = login
+                user.github_avatar_url = avatar_url
             if owner is None or owner.id == user.id:
                 if canonical_email is not None:
                     user.email = canonical_email
@@ -186,6 +189,7 @@ async def find_or_create_github_user(
             if owner is not None and owner.github_id is None:
                 owner.github_id = github_id
                 owner.github_login = login
+                owner.github_avatar_url = avatar_url
                 user = owner
             else:
                 user = User(
@@ -197,6 +201,7 @@ async def find_or_create_github_user(
                     password_hash=hash_password(secrets.token_urlsafe(48)),
                     github_id=github_id,
                     github_login=login,
+                    github_avatar_url=avatar_url,
                 )
                 session.add(user)
 

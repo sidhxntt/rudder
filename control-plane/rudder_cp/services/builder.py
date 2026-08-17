@@ -15,7 +15,7 @@ import re
 import shutil
 import tarfile
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
@@ -53,6 +53,8 @@ class BuildRequest:
     # A short-lived GitHub App installation token. It is never logged and
     # overrides the legacy install-wide PAT when the import flow supplied it.
     git_token: str | None = None
+    # Public, frontend-only Docker build args. Runtime secrets never flow here.
+    build_env: object = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,7 @@ class BuildResult:
 
 
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_BUILD_ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 
 
 def validate_gke_image(image: str) -> str:
@@ -81,6 +84,30 @@ def validate_gke_image(image: str) -> str:
     return image
 
 
+def frontend_build_env(detection: object, raw: object) -> dict[str, str]:
+    """Validate static-site build variables before they reach a Docker build."""
+    frontend = getattr(detection, "frontend", None)
+    if frontend is None or raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise BuildFailed("Static frontend build_env must be an object of public string values.")
+    prefix = getattr(frontend, "public_env_prefix", "")
+    result: dict[str, str] = {}
+    for key, value in raw.items():
+        if (
+            not isinstance(key, str)
+            or not _BUILD_ENV_KEY.fullmatch(key)
+            or not key.startswith(prefix)
+        ):
+            raise BuildFailed(
+                f"Static frontend build_env keys must use the {prefix} public prefix."
+            )
+        if not isinstance(value, str):
+            raise BuildFailed(f"Static frontend build_env value for {key} must be a string.")
+        result[key] = value
+    return result
+
+
 async def build_image(
     request: BuildRequest,
     store: BuildLogStore,
@@ -94,6 +121,10 @@ async def build_image(
         await _clone_at_sha(request, sha, repo_dir, store, settings)
 
         detection = detect(repo_dir, request.dockerfile_path)
+        # `build_env` is a frontend-preset feature. Explicit Dockerfiles are
+        # user-owned and must not accidentally receive this separate channel.
+        build_env = frontend_build_env(detection, request.build_env)
+        request = replace(request, build_env=build_env)
         if detection.has_dockerfile and detection.dockerfile_path is not None:
             dockerfile_dir = repo_dir
             dockerfile_name = detection.dockerfile_path
@@ -114,6 +145,7 @@ async def build_image(
                 detection,
                 container_port=request.container_port,
                 start_command=request.start_command,
+                build_env_keys=tuple(sorted(build_env)),
             )
             await asyncio.to_thread(_write_dockerfile, dockerfile_dir, dockerfile_name, rendered)
             await _log(store, request, f"detected {detection.language}; generated Dockerfile")
@@ -302,6 +334,7 @@ async def _cloud_build(
             build_service_account=settings.gcp_build_service_account,
             dockerfile_name=dockerfile_name,
             image_tag=image_tag,
+            build_env=request.build_env if isinstance(request.build_env, dict) else {},
             token=token,
         )
         build_id = _cloud_build_id(build)
@@ -402,13 +435,22 @@ async def _start_cloud_build(
     dockerfile_name: str,
     image_tag: str,
     token: str,
+    build_env: dict[str, str] | None = None,
 ) -> dict[str, object]:
     body = {
         "source": {"storageSource": {"bucket": source_bucket, "object": source_object}},
         "steps": [
             {
                 "name": "gcr.io/cloud-builders/docker",
-                "args": ["build", "--tag", image_tag, "--file", dockerfile_name, "."],
+                "args": [
+                    "build", "--tag", image_tag, "--file", dockerfile_name,
+                    *[
+                        item
+                        for key, value in sorted((build_env or {}).items())
+                        for item in ("--build-arg", f"{key}={value}")
+                    ],
+                    ".",
+                ],
             }
         ],
         "images": [image_tag],
@@ -554,6 +596,10 @@ async def _buildctl(
         "--progress",
         "plain",
     ]
+    for key, value in sorted(
+        (request.build_env if isinstance(request.build_env, dict) else {}).items()
+    ):
+        command.extend(["--opt", f"build-arg:{key}={value}"])
     if metadata_file is not None:
         command.extend(["--metadata-file", str(metadata_file)])
     await _log(store, request, f"building {image_tag}")

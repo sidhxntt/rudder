@@ -55,4 +55,6 @@ class UserRead(BaseModel):
 
     id: UUID
     email: str
+    github_login: str | None
+    github_avatar_url: str | None
     created_at: datetime

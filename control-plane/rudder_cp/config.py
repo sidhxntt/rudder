@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     github_oauth_client_id: str = ""
     github_oauth_client_secret: str = ""
     github_oauth_redirect_uri: str = ""
+    # The OAuth callback is served by the API, but a successful browser login
+    # must return to the Next.js UI rather than the API's intentionally empty
+    # root route.
+    web_url: str = "http://localhost:3000"
     # Full PR environments are intentionally capped: each owns its own data
     # volumes and can consume real cluster capacity.
     github_pr_environment_limit: int = 10

@@ -50,7 +50,7 @@ from rudder_cp.runtime.targets import (
     load_kubernetes_client,
     runtime_settings_from,
 )
-from rudder_cp.services import scheduler, traefik, variables
+from rudder_cp.services import domains, scheduler, traefik, variables
 from rudder_cp.services.agent_client import AgentClient, AgentError
 from rudder_cp.services.builder import BuildFailed, BuildRequest, build_image, validate_gke_image
 from rudder_cp.services.github_app import GitHubAppClient, GitHubAppError
@@ -179,6 +179,7 @@ async def _deploy_locked(
         container_port=service.container_port,
         start_command=service.start_command,
         git_token=git_token,
+        build_env=service.build_config.get("build_env"),
     )
     if isinstance(rollback_image, str):
         # A rollback row is intentionally queued with its image already set.
@@ -339,6 +340,8 @@ async def _deploy_locked(
     session.add(instance)
     session.add(deployment)
     _supersede_previously_live(session, deployment)
+    session.commit()
+    await domains.create_deployment_domain(session, deployment=deployment)
     session.commit()
 
     # A successful release stays running as an immutable restore target. A
@@ -580,6 +583,8 @@ async def _deploy_imported_compose(
     _supersede_previously_live(session, deployment)
     # Keep each Compose candidate alive as an immutable rollback target.
     session.commit()
+    await domains.create_deployment_domain(session, deployment=deployment)
+    session.commit()
     await traefik.render_all(session, settings)
     return DeployOutcome(deployment.id, DeploymentStatus.LIVE)
 
@@ -787,6 +792,8 @@ async def _deploy_imported_kubernetes(
     deployment.became_live_at = datetime.now(UTC)
     session.add(deployment)
     _supersede_previously_live(session, deployment)
+    session.commit()
+    await domains.create_deployment_domain(session, deployment=deployment)
     session.commit()
     await _append_release_log(
         store,

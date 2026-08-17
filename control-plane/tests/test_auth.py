@@ -537,7 +537,13 @@ def test_me_never_exposes_the_password_hash(client: TestClient, seeded_user: Use
     token = issue_token(seeded_user.id).token
     response = client.get("/auth/me", headers=bearer(token))
 
-    assert set(response.json()) == {"id", "email", "created_at"}
+    assert set(response.json()) == {
+        "id",
+        "email",
+        "github_login",
+        "github_avatar_url",
+        "created_at",
+    }
     assert seeded_user.password_hash not in response.text
 
 

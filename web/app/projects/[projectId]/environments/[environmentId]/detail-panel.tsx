@@ -2,33 +2,79 @@
 
 import { useEffect, useState } from "react";
 
-import { useDeploy, useDeployments, useInstances, useRollbackDeployment } from "@/lib/queries";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useDeploy, useDeployments, useInstances, useRenameService, useRollbackDeployment } from "@/lib/queries";
 import { deriveServiceStatus, latestDeployment } from "@/lib/status";
-import type { Service } from "@/lib/types";
+import type { Domain, Service } from "@/lib/types";
 
 import { BuildLogs } from "./build-logs";
 import { DeployHistory } from "./deploy-history";
 import { StatusDot } from "./status-dot";
 import { Variables } from "./variables";
 import { Operations } from "./operations";
+import { Analytics } from "./analytics";
+import { ServiceSettings } from "./service-settings";
 
-type Tab = "logs" | "variables" | "deploys" | "operations";
+export type ServiceTab = "logs" | "variables" | "deploys" | "operations" | "analytics" | "service-settings";
 
-const TABS: readonly { id: Tab; label: string }[] = [
+const TABS: readonly { id: ServiceTab; label: string }[] = [
   { id: "logs", label: "Build logs" },
   { id: "variables", label: "Variables" },
   { id: "deploys", label: "Deploys" },
   { id: "operations", label: "Operations" },
+  { id: "analytics", label: "Analytics" },
+  { id: "service-settings", label: "Service settings" },
 ];
+
+/** Navigation stays separate from the selected panel so every service view
+ * presents the same compact, keyboard-reachable control surface. */
+export function ServiceTabs({
+  tab,
+  onTabChange,
+}: {
+  tab: ServiceTab;
+  onTabChange: (tab: ServiceTab) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Service views"
+      className="rd-scroll flex shrink-0 items-center gap-lg overflow-x-auto border-b border-hairline px-lg"
+    >
+      {TABS.map((entry) => (
+        <button
+          key={entry.id}
+          id={`${entry.id}-tab`}
+          type="button"
+          role="tab"
+          aria-selected={tab === entry.id}
+          aria-controls={`${entry.id}-panel`}
+          onClick={() => onTabChange(entry.id)}
+          className={[
+            "-mb-px shrink-0 border-b py-sm text-micro transition-colors outline-none focus-visible:border-accent focus-visible:text-ink",
+            tab === entry.id
+              ? "border-ink text-ink"
+              : "border-transparent text-ink-mute hover:text-ink-secondary",
+          ].join(" ")}
+        >
+          {entry.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function DetailPanel({
   service,
   url,
+  domains,
   managedByServiceId,
   onClose,
 }: {
   service: Service;
   url: string | null;
+  domains: readonly Domain[];
   managedByServiceId?: string;
   onClose: () => void;
 }) {
@@ -38,15 +84,33 @@ export function DetailPanel({
   const instances = useInstances(lifecycleServiceId);
   const deploy = useDeploy(service.id);
   const rollback = useRollbackDeployment(lifecycleServiceId);
+  const rename = useRenameService(service.environment_id);
 
-  const [tab, setTab] = useState<Tab>("logs");
+  const [tab, setTab] = useState<ServiceTab>("logs");
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [name, setName] = useState(service.name);
 
   // A different service means a different deploy history.
   useEffect(() => {
     setSelectedDeploymentId(null);
     setTab("logs");
+    setEditingName(false);
+    setName(service.name);
   }, [service.id]);
+
+  useEffect(() => {
+    if (!editingName) setName(service.name);
+  }, [editingName, service.name]);
+
+  async function saveServiceName() {
+    if (!name.trim() || name.trim() === service.name) {
+      setEditingName(false);
+      return;
+    }
+    await rename.mutateAsync({ serviceId: service.id, name: name.trim() });
+    setEditingName(false);
+  }
 
   const list = deployments.data ?? [];
   const selectedDeployment =
@@ -60,11 +124,35 @@ export function DetailPanel({
     status === "live" && latest?.status === "failed" ? latest : null;
 
   return (
-    <aside className="flex w-[26rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
+    <aside className="flex w-[30rem] shrink-0 flex-col border-l border-hairline bg-surface-soft">
       <div className="flex items-start justify-between gap-md border-b border-hairline px-lg py-md">
         <div className="min-w-0">
           <div className="flex items-center gap-sm">
-            <h2 className="truncate text-heading-md text-ink">{service.name}</h2>
+            {editingName ? (
+              <Input
+                autoFocus
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                onBlur={() => void saveServiceName()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void saveServiceName();
+                  if (event.key === "Escape") setEditingName(false);
+                }}
+                aria-label={`Rename ${service.name}`}
+                className="h-8 min-w-0 font-sans text-heading-md"
+              />
+            ) : (
+              <h2 className="min-w-0 truncate text-heading-md text-ink">
+                <button
+                  type="button"
+                  onDoubleClick={() => setEditingName(true)}
+                  title="Double-click to rename service"
+                  className="truncate text-left outline-none hover:text-accent focus-visible:text-accent"
+                >
+                  {service.name}
+                </button>
+              </h2>
+            )}
             <StatusDot status={status} />
           </div>
           <p className="truncate pt-xxs text-micro text-ink-mute">
@@ -129,14 +217,13 @@ export function DetailPanel({
         {isComposeManaged ? (
           <span className="text-micro text-ink-mute">Managed by Compose</span>
         ) : (
-          <button
-            type="button"
+          <Button
             onClick={() => deploy.mutate()}
             disabled={deploy.isPending || status === "building"}
-            className="rounded-sm bg-accent px-lg py-sm text-button font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-50"
+            variant="default"
           >
             {status === "building" || deploy.isPending ? "Deploying…" : "Deploy"}
-          </button>
+          </Button>
         )}
       </div>
 
@@ -159,39 +246,35 @@ export function DetailPanel({
         </section>
       ) : null}
 
-      <div className="flex shrink-0 items-center gap-lg border-b border-hairline px-lg">
-        {TABS.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            onClick={() => setTab(entry.id)}
-            className={[
-              "-mb-px border-b py-sm text-micro transition-colors",
-              tab === entry.id
-                ? "border-ink text-ink"
-                : "border-transparent text-ink-mute hover:text-ink-secondary",
-            ].join(" ")}
-          >
-            {entry.label}
-          </button>
-        ))}
-      </div>
+      <ServiceTabs tab={tab} onTabChange={setTab} />
 
-      {tab === "logs" ? <BuildLogs deployment={selectedDeployment} /> : null}
-      {tab === "variables" ? <Variables serviceId={service.id} /> : null}
-      {tab === "deploys" ? (
-        <DeployHistory
-          deployments={list}
-          selectedId={selectedDeployment?.id ?? null}
-          onSelect={(deploymentId) => {
-            setSelectedDeploymentId(deploymentId);
-            setTab("logs");
-          }}
-          onRollback={(deploymentId) => rollback.mutate(deploymentId)}
-          rollbackPending={rollback.isPending || status === "building"}
-        />
-      ) : null}
-      {tab === "operations" ? <Operations service={service} /> : null}
+      <section id={`${tab}-panel`} role="tabpanel" aria-labelledby={`${tab}-tab`} className="flex min-h-0 flex-1 flex-col">
+        {tab === "logs" ? <BuildLogs deployment={selectedDeployment} /> : null}
+        {tab === "variables" ? <Variables serviceId={service.id} /> : null}
+        {tab === "deploys" ? (
+          <DeployHistory
+            deployments={list}
+            deploymentUrls={Object.fromEntries(
+              domains
+                .filter((domain) => domain.target_type === "deployment" && domain.deployment_id)
+                .map((domain) => [
+                  domain.deployment_id as string,
+                  `${domain.tls_enabled ? "https" : "http"}://${domain.hostname}`,
+                ]),
+            )}
+            selectedId={selectedDeployment?.id ?? null}
+            onSelect={(deploymentId) => {
+              setSelectedDeploymentId(deploymentId);
+              setTab("logs");
+            }}
+            onRollback={(deploymentId) => rollback.mutate(deploymentId)}
+            rollbackPending={rollback.isPending || status === "building"}
+          />
+        ) : null}
+        {tab === "operations" ? <Operations service={service} /> : null}
+        {tab === "analytics" ? <Analytics serviceId={lifecycleServiceId} /> : null}
+        {tab === "service-settings" ? <ServiceSettings service={service} /> : null}
+      </section>
 
       {!isComposeManaged && deploy.isError ? (
         <p className="border-t border-hairline px-lg py-sm text-micro text-status-failed">

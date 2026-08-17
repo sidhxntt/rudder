@@ -28,9 +28,10 @@ from typing import Literal
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel
 
-Language = Literal["node", "python", "go"]
+Language = Literal["node", "python", "go", "static"]
 PackageManager = Literal["npm", "yarn", "pnpm"]
 PythonToolchain = Literal["pip", "poetry", "uv"]
+FrontendFramework = Literal["vite", "next-export", "astro", "cra"]
 
 # control-plane/rudder_cp/services/detect.py -> control-plane/dockerfile_templates
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "dockerfile_templates"
@@ -104,6 +105,16 @@ class GoFacts(BaseModel):
     binary_name: str
 
 
+class FrontendFacts(BaseModel):
+    """The deliberately small contract for a generated static-site image."""
+
+    framework: FrontendFramework
+    output_dir: str
+    spa_fallback: bool
+    public_env_prefix: str
+    node: NodeFacts
+
+
 class DetectionResult(BaseModel):
     """How to build one cloned repo. The build pipeline's only input contract.
 
@@ -118,6 +129,7 @@ class DetectionResult(BaseModel):
     node: NodeFacts | None = None
     python: PythonFacts | None = None
     go: GoFacts | None = None
+    frontend: FrontendFacts | None = None
 
     @property
     def is_unknown(self) -> bool:
@@ -148,11 +160,21 @@ def detect(repo_path: Path, dockerfile_path: str | None = None) -> DetectionResu
         )
 
     if (repo / "package.json").is_file():
+        node = _read_node_facts(repo)
+        frontend = _detect_static_frontend(repo, node)
+        if frontend is not None:
+            return DetectionResult(
+                language="static",
+                has_dockerfile=False,
+                reason=f"detected {frontend.framework} static frontend.",
+                node=node,
+                frontend=frontend,
+            )
         return DetectionResult(
             language="node",
             has_dockerfile=False,
             reason="package.json at the repo root.",
-            node=_read_node_facts(repo),
+            node=node,
         )
 
     has_requirements = (repo / "requirements.txt").is_file()
@@ -190,6 +212,7 @@ def render_dockerfile(
     *,
     container_port: int,
     start_command: str | None = None,
+    build_env_keys: tuple[str, ...] = (),
 ) -> str:
     """Render the template for a detected language and return the Dockerfile text.
 
@@ -208,7 +231,7 @@ def render_dockerfile(
         "start_command": start_command,
     }
 
-    if result.language == "node":
+    if result.language in {"node", "static"}:
         if result.node is None:
             raise ValueError("node detection result is missing node facts")
         context |= {
@@ -235,6 +258,14 @@ def render_dockerfile(
             "binary_name": result.go.binary_name,
         }
 
+    if result.language == "static":
+        if result.frontend is None:
+            raise ValueError("static detection result is missing frontend facts")
+        context |= {
+            "output_dir": result.frontend.output_dir,
+            "spa_fallback": result.frontend.spa_fallback,
+            "build_env_keys": build_env_keys,
+        }
     template = _env().get_template(f"{result.language}.Dockerfile.j2")
     return template.render(**context)
 
@@ -344,6 +375,68 @@ def _read_node_facts(repo: Path) -> NodeFacts:
         engines_node=engines_node,
         node_version=_node_major(engines_node),
     )
+
+
+def _detect_static_frontend(repo: Path, node: NodeFacts) -> FrontendFacts | None:
+    """Recognise static frontend conventions without running project code.
+
+    A Node app is not presumed static just because it has a build script.  The
+    markers below are intentionally explicit, so an API keeps the Phase 1 Node
+    runtime unless the checked-in project metadata proves otherwise.
+    """
+    package_json = _read_json(repo / "package.json")
+    deps = _node_dependencies(package_json)
+    if _has_config(repo, "vite.config") or "vite" in deps:
+        return FrontendFacts(
+            framework="vite", output_dir="dist", spa_fallback=True,
+            public_env_prefix="VITE_", node=node,
+        )
+    if "react-scripts" in deps:
+        return FrontendFacts(
+            framework="cra", output_dir="build", spa_fallback=True,
+            public_env_prefix="REACT_APP_", node=node,
+        )
+    if _has_config(repo, "astro.config") or "astro" in deps:
+        # Server adapters are deliberately not inferred. Their project should
+        # provide a Dockerfile, which keeps its runtime choice explicit.
+        return FrontendFacts(
+            framework="astro", output_dir="dist", spa_fallback=False,
+            public_env_prefix="PUBLIC_", node=node,
+        )
+    if _has_config(repo, "next.config") or "next" in deps:
+        config = _first_config_text(repo, "next.config")
+        if config is not None and re.search(r"output\s*:\s*['\"]export['\"]", config):
+            return FrontendFacts(
+                framework="next-export", output_dir="out", spa_fallback=False,
+                public_env_prefix="NEXT_PUBLIC_", node=node,
+            )
+    return None
+
+
+def _node_dependencies(package_json: dict[str, object]) -> set[str]:
+    names: set[str] = set()
+    for key in ("dependencies", "devDependencies"):
+        group = package_json.get(key)
+        if isinstance(group, dict):
+            names.update(
+                name
+                for name, value in group.items()
+                if isinstance(name, str) and isinstance(value, str)
+            )
+    return names
+
+
+def _has_config(repo: Path, stem: str) -> bool:
+    suffixes = (".js", ".mjs", ".cjs", ".ts", ".mts")
+    return any((repo / f"{stem}{suffix}").is_file() for suffix in suffixes)
+
+
+def _first_config_text(repo: Path, stem: str) -> str | None:
+    for suffix in (".js", ".mjs", ".cjs", ".ts", ".mts"):
+        text = _read_text(repo / f"{stem}{suffix}")
+        if text is not None:
+            return text
+    return None
 
 
 def _node_major(engines_node: str | None) -> str:

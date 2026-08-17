@@ -28,4 +28,11 @@ class User(SQLModel, table=True):
         default=None,
         sa_column=sa.Column(sa.String(255), nullable=True),
     )
+    # GitHub's immutable profile image URL is display-only account metadata.
+    # It never grants access and is only returned to the authenticated user
+    # through /auth/me.
+    github_avatar_url: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(2048), nullable=True),
+    )
     created_at: datetime = created_at_column()

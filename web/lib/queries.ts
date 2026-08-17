@@ -109,6 +109,22 @@ export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: api.listProjects });
 }
 
+export function useUpdateProject() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { projectId: string; name: string }) => api.updateProject(args.projectId, { name: args.name }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
+export function useDeleteProject() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.deleteProject(projectId),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
 export function useEnvironments(projectId: string | undefined) {
   return useQuery({
     queryKey: keys.environments(projectId ?? ""),
@@ -333,6 +349,18 @@ export function useUpdateServicePosition(environmentId: string | undefined) {
       if (environmentId) {
         void client.invalidateQueries({ queryKey: keys.services(environmentId) });
       }
+    },
+  });
+}
+
+/** Rename is service metadata only: it does not enqueue a deployment. */
+export function useRenameService(environmentId: string | undefined) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { serviceId: string; name: string }) =>
+      api.updateService(args.serviceId, { name: args.name }),
+    onSuccess: () => {
+      if (environmentId) void client.invalidateQueries({ queryKey: keys.services(environmentId) });
     },
   });
 }

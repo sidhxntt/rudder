@@ -25,6 +25,7 @@ from rudder_cp.models import (
     Instance,
     InstanceStatus,
     Project,
+    RuntimeMetric,
     Service,
     ServiceManagedCapabilities,
     ServiceOperation,
@@ -213,6 +214,19 @@ async def purge_service(session: Session, service: Service) -> None:
         instances = session.exec(
             select(Instance).where(Instance.deployment_id.in_(deployment_ids))  # type: ignore[attr-defined]
         ).all()
+        for instance in instances:
+            # RuntimeMetric intentionally retains no service FK because it is
+            # keyed to the concrete container. Remove it before that instance
+            # so PostgreSQL does not reject cleanup of a service with Phase 6
+            # metrics.
+            for metric in session.exec(
+                select(RuntimeMetric).where(RuntimeMetric.instance_id == instance.id)
+            ).all():
+                session.delete(metric)
+        # `RuntimeMetric` has no ORM relationship to tell SQLAlchemy which
+        # DELETE must be issued first. Flush this dependent tier explicitly;
+        # PostgreSQL otherwise may batch the instance delete ahead of it.
+        session.flush()
         for instance in instances:
             session.delete(instance)
 

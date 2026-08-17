@@ -119,5 +119,5 @@ def test_control_plane_image_installs_the_locked_runtime_dependency_graph() -> N
 
     assert 'uv sync --locked --no-dev --no-install-project' in dockerfile
     assert "RUN uv sync --locked --no-dev" in dockerfile
-    assert 'ENV PATH="/app/.venv/bin:${PATH}"' in dockerfile
+    assert 'ENV PATH="/opt/rudder-venv/bin:${PATH}"' in dockerfile
     assert 'pip install --no-cache-dir -e ".[dev]"' not in dockerfile

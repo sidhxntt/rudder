@@ -64,7 +64,7 @@ If any step requires the UI, the API is incomplete. See "Interfaces".
 
 **Scope: backends are primary, frontends are supported.** The moat is container
 orchestration — multi-host scheduling, a private service network, stateful services,
-environment cloning. Frontends ride the same pipeline (see "Phase 5.5") because a
+environment cloning. Frontends ride the same pipeline (see "Phase 7") because a
 static build is just an artifact wrapped in nginx and run as a container, and an
 SSR app is already just a long-running container. That costs one new
 `Service.kind`, not a second execution model. Deploy your API, your worker, your
@@ -275,7 +275,7 @@ Environment
 Service
   id, environment_id → Environment, name, kind
   kind ∈ {app, database, static}
-  -- static: build output wrapped in nginx. Still a container. See Phase 5.5.
+  -- static: build output wrapped in nginx. Still a container. See Phase 7.
   source_repo, source_branch, dockerfile_path, build_config (JSON)
   start_command, health_check_path, health_check_port
   cpu_limit, memory_limit_mb, replica_count
@@ -343,7 +343,7 @@ Domain
   - `target_type=deployment` — Vercel semantics. Pinned to one immutable build
     forever. Rollback is an UPDATE on a Domain row, not a rebuild.
 
-  See D15. This is in Phase 1 even though most of what it enables is Phase 5.5.
+  See D15. This is in Phase 1 even though most of what it enables is Phase 7.
 
 ---
 
@@ -523,9 +523,9 @@ identical — but the routing code reads the right table from the start.
 
 **Cost:** ~1 day. **Buys immediately:** instant rollback in Phase 5 becomes an
 UPDATE instead of a rebuild-and-restart, which is strictly better on its own
-terms. **Buys later:** all of Phase 5.5, with no routing rewrite.
+terms. **Buys later:** all of Phase 7, with no routing rewrite.
 
-Take this even if Phase 5.5 is never built.
+Take this even if Phase 7 is never built.
 
 ### Resolved by default unless objected to
 
@@ -623,7 +623,7 @@ FastAPI lifespan polls the queue. No Celery.
 ### Schema deltas from the Data Model section
 
 - `Service.container_port: int = 8080` — D1
-- `Service.kind` gains `static` — Phase 5.5, no rows use it in Phase 1
+- `Service.kind` gains `static` — Phase 7, no rows use it in Phase 1
 - `Deployment.error_message: str | None` — failures need a readable reason
 - `Instance.stopped_at: datetime | None` — drain audit trail
 - **`Domain` table** — D15. New table, wired into `traefik.py` from Phase 1.

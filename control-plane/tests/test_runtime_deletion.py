@@ -1,6 +1,7 @@
 """Runtime cleanup when a service or environment is deleted."""
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from rudder_cp.models import (
     InstanceStatus,
     Node,
     Project,
+    RuntimeMetric,
     Service,
     ServiceManagedCapabilities,
     ServiceOperation,
@@ -133,6 +135,37 @@ async def test_deleting_a_live_service_removes_only_its_container_and_route(engi
         assert session.get(Service, other.id) is not None
         assert session.exec(select(Instance)).one().container_id == "container-other"
         assert len(await asyncio.to_thread(_route_files, settings)) == 1
+
+
+async def test_deleting_a_service_removes_its_runtime_metrics_first(engine, settings):
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        node = Node(hostname="localhost", ip_address="127.0.0.1")
+        session.add_all([user, project, environment, node])
+        session.commit()
+        api = _live_service(session, environment, node, "api")
+        deployment = session.exec(
+            select(Deployment).where(Deployment.service_id == api.id)
+        ).one()
+        instance = session.exec(
+            select(Instance).where(Instance.deployment_id == deployment.id)
+        ).one()
+        assert instance is not None
+        metric = RuntimeMetric(
+            instance_id=instance.id,
+            captured_at=datetime.now(UTC),
+            resolution_seconds=10,
+            cpu_percent=1.0,
+            memory_bytes=1024,
+        )
+        session.add(metric)
+        session.commit()
+
+        await services.delete_service(session, api.id, agent=RecordingAgent(), settings=settings)
+
+        assert session.get(RuntimeMetric, metric.id) is None
 
 
 async def test_deleting_a_service_removes_its_volume_before_the_service(engine, settings):

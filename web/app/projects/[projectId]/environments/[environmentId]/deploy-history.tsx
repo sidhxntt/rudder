@@ -2,6 +2,7 @@
 
 import { shortAgo } from "@/lib/status";
 import type { Deployment, DeploymentStatus } from "@/lib/types";
+import { Button } from "@/components/ui/button";
 
 const STATUS_COLOR: Record<DeploymentStatus, string> = {
   queued: "text-status-building",
@@ -14,12 +15,14 @@ const STATUS_COLOR: Record<DeploymentStatus, string> = {
 
 export function DeployHistory({
   deployments,
+  deploymentUrls = {},
   selectedId,
   onSelect,
   onRollback,
   rollbackPending = false,
 }: {
   deployments: readonly Deployment[];
+  deploymentUrls?: Readonly<Record<string, string>>;
   selectedId: string | null;
   onSelect: (deploymentId: string) => void;
   onRollback?: (deploymentId: string) => void;
@@ -37,6 +40,7 @@ export function DeployHistory({
             const canRollback =
               Boolean(deployment.image_tag) &&
               deployment.status === "superseded";
+            const permanentUrl = deploymentUrls[deployment.id];
             return (
             <tr
               key={deployment.id}
@@ -66,18 +70,29 @@ export function DeployHistory({
                   <span className="text-micro text-ink-faint">
                     {deployment.became_live_at ? `live ${shortAgo(deployment.became_live_at)}` : "—"}
                   </span>
+                  {permanentUrl ? (
+                    <a
+                      href={permanentUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                      className="max-w-28 truncate font-mono text-micro text-ink-secondary underline decoration-hairline-strong underline-offset-2 hover:text-ink"
+                    >
+                      {permanentUrl.replace(/^https?:\/\//, "")}
+                    </a>
+                  ) : null}
                   {canRollback && onRollback ? (
-                    <button
-                      type="button"
+                    <Button
                       onClick={(event) => {
                         event.stopPropagation();
                         onRollback(deployment.id);
                       }}
                       disabled={rollbackPending}
-                      className="rounded-xs border border-hairline-strong px-sm py-xxs text-micro text-ink-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      variant="outline"
+                      size="sm"
                     >
                       Restore
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
               </td>

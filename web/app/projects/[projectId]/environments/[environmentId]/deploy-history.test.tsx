@@ -35,10 +35,14 @@ it("offers restore only for an earlier successful immutable release", async () =
           became_live_at: "2026-07-26T00:01:00Z",
         },
       ]}
+      deploymentUrls={{ previous: "https://d-previous.rudder.test" }}
     />,
   );
 
   expect(screen.getAllByRole("button", { name: "Restore" })).toHaveLength(1);
+  expect(screen.getByRole("link", { name: "d-previous.rudder.test" }).getAttribute("href")).toBe(
+    "https://d-previous.rudder.test",
+  );
   await user.click(screen.getByRole("button", { name: "Restore" }));
   expect(onRollback).toHaveBeenCalledWith("previous");
 });

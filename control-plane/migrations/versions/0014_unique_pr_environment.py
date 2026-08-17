@@ -16,12 +16,15 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.create_unique_constraint(
-        "uq_environment_project_github_pr",
-        "environment",
-        ["project_id", "github_pr_number"],
-    )
+    # SQLite cannot ALTER TABLE to add a constraint.  Alembic's batch mode
+    # recreates the table there while emitting a normal ALTER on PostgreSQL.
+    with op.batch_alter_table("environment") as batch_op:
+        batch_op.create_unique_constraint(
+            "uq_environment_project_github_pr",
+            ["project_id", "github_pr_number"],
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_environment_project_github_pr", "environment", type_="unique")
+    with op.batch_alter_table("environment") as batch_op:
+        batch_op.drop_constraint("uq_environment_project_github_pr", type_="unique")
