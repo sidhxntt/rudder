@@ -29,9 +29,7 @@ class Settings(BaseSettings):
         """
 
         if self.database_url.startswith("postgresql://"):
-            return "postgresql+psycopg://" + self.database_url.removeprefix(
-                "postgresql://"
-            )
+            return "postgresql+psycopg://" + self.database_url.removeprefix("postgresql://")
         if self.database_url.startswith("postgres://"):
             return "postgresql+psycopg://" + self.database_url.removeprefix("postgres://")
         return self.database_url
@@ -65,6 +63,9 @@ class Settings(BaseSettings):
 
     # Phase 8: absence disables only non-deterministic failure diagnosis.
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    # Optional read-only operator assistant. Its absence leaves the endpoint
+    # available but explicitly model-disabled.
+    assistant_model: str = "gpt-4.1-mini"
     advisor_repository_root: str = ""
 
     @property
@@ -83,9 +84,7 @@ class Settings(BaseSettings):
     def github_app_configured(self) -> bool:
         try:
             return bool(
-                self.github_app_id
-                and self.github_app_slug
-                and self.resolved_github_app_private_key
+                self.github_app_id and self.github_app_slug and self.resolved_github_app_private_key
             )
         except OSError:
             # A missing local PEM must make the integration unavailable, not
@@ -189,8 +188,7 @@ class Settings(BaseSettings):
     @property
     def kubernetes_gcs_backup_configured(self) -> bool:
         return bool(
-            self.kubernetes_backup_gcs_bucket
-            and self.kubernetes_backup_gcp_service_account
+            self.kubernetes_backup_gcs_bucket and self.kubernetes_backup_gcp_service_account
         )
 
     @property
@@ -211,8 +209,7 @@ class Settings(BaseSettings):
                 or self.kubernetes_backup_gcs_identity_ready
             ):
                 raise ValueError(
-                    "Native GCS Workload Identity backups require "
-                    "RUDDER_KUBERNETES_TARGET=gke."
+                    "Native GCS Workload Identity backups require RUDDER_KUBERNETES_TARGET=gke."
                 )
             return self
         if self.runtime != "kubernetes":
@@ -222,9 +219,11 @@ class Settings(BaseSettings):
                 "The current 12-vCPU GKE topology requires "
                 "RUDDER_KUBERNETES_WORKLOAD_POOL=platform."
             )
-        if not self.kubernetes_public_domain or self.kubernetes_public_domain.endswith(
-            ".localhost"
-        ) or self.kubernetes_public_domain == "localhost":
+        if (
+            not self.kubernetes_public_domain
+            or self.kubernetes_public_domain.endswith(".localhost")
+            or self.kubernetes_public_domain == "localhost"
+        ):
             raise ValueError(
                 "RUDDER_KUBERNETES_TARGET=gke requires a non-localhost "
                 "RUDDER_KUBERNETES_PUBLIC_DOMAIN."
@@ -236,8 +235,7 @@ class Settings(BaseSettings):
             )
         if not self.kubernetes_certificate_issuer:
             raise ValueError(
-                "RUDDER_KUBERNETES_TARGET=gke requires "
-                "RUDDER_KUBERNETES_CERTIFICATE_ISSUER."
+                "RUDDER_KUBERNETES_TARGET=gke requires RUDDER_KUBERNETES_CERTIFICATE_ISSUER."
             )
         if self.registry.startswith("localhost:") or self.registry.startswith("kind-registry:"):
             raise ValueError(
@@ -259,13 +257,8 @@ class Settings(BaseSettings):
         if bool(self.kubernetes_backup_gcs_bucket) != bool(
             self.kubernetes_backup_gcp_service_account
         ):
-            raise ValueError(
-                "GKE GCS backups require both a GCS bucket and service account."
-            )
-        if (
-            self.kubernetes_backup_gcs_identity_ready
-            and not self.kubernetes_gcs_backup_configured
-        ):
+            raise ValueError("GKE GCS backups require both a GCS bucket and service account.")
+        if self.kubernetes_backup_gcs_identity_ready and not self.kubernetes_gcs_backup_configured:
             raise ValueError(
                 "GKE GCS backups require a bucket and service account before the "
                 "identity-ready flag can be enabled."

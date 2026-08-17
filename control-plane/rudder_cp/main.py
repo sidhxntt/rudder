@@ -18,6 +18,7 @@ from rudder_cp.logs.runtime import get_runtime_log_store
 from rudder_cp.logs.store import get_build_log_store
 from rudder_cp.routers import (
     advisor,
+    assistant,
     deployments,
     domains,
     environments,
@@ -130,6 +131,7 @@ def create_app() -> FastAPI:
         imports,
         operations,
         advisor,
+        assistant,
     )
     for module in protected:
         app.include_router(module.router, dependencies=[Depends(auth_router.get_current_user)])
