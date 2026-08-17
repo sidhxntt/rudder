@@ -59,7 +59,9 @@ def scan_repository(repository: Path) -> dict[str, Any]:
 
 
 def _recognised_files(repository: Path) -> list[Path]:
-    allowed = {".py", ".js", ".ts", ".tsx", ".json", ".txt", ".toml", ".lock", ".go"}
+    # Do not scan arbitrary prose (README, prompts, issue exports): only source
+    # and named dependency manifests can influence a proposal.
+    allowed = {".py", ".js", ".ts", ".tsx", ".json", ".toml", ".lock", ".go"}
     names = {
         "requirements.txt", "pyproject.toml", "package.json", "package-lock.json",
         "poetry.lock", "go.mod", "procfile",
