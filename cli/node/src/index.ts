@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
 import { advisorRequest } from "./advisor.js";
 import { authenticationGate } from "./auth-guard.js";
@@ -73,6 +74,14 @@ export function discardSession(session: { api: ApiClient; credentials: { url?: s
   session.credentials.token = undefined;
   session.api = new ApiClient(session.api.baseUrl);
 }
+export function isDirectExecution(entry: string | undefined, moduleFile: string): boolean {
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === realpathSync(moduleFile);
+  } catch {
+    return false;
+  }
+}
 async function requireAuthentication(state: State): Promise<void> {
   const gate = authenticationGate({
     hasToken: Boolean(state.credentials.token || process.env.RUDDER_TOKEN),
@@ -133,4 +142,4 @@ export async function main(): Promise<void> { const parsed = parse(process.argv.
     return;
   }
   if (![undefined, "help", "--help", "login", "logout"].includes(noun)) await requireAuthentication(state); await command(state, parsed.args); }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error: unknown) => { fail(error instanceof ApiError || error instanceof Error ? error.message : String(error)); process.exitCode = error instanceof ApiError && error.status === 401 ? 1 : 1; });
+if (isDirectExecution(process.argv[1], fileURLToPath(import.meta.url))) main().catch((error: unknown) => { fail(error instanceof ApiError || error instanceof Error ? error.message : String(error)); process.exitCode = error instanceof ApiError && error.status === 401 ? 1 : 1; });

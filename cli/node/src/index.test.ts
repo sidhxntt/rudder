@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const launcher = vi.hoisted(() => ({ runLauncher: vi.fn() }));
 const context = vi.hoisted(() => ({
@@ -9,7 +12,7 @@ const context = vi.hoisted(() => ({
 vi.mock("./launcher.js", async importOriginal => ({ ...await importOriginal<typeof import("./launcher.js")>(), runLauncher: launcher.runLauncher }));
 vi.mock("./context.js", async importOriginal => ({ ...await importOriginal<typeof import("./context.js")>(), ...context }));
 
-import { discardSession, main } from "./index.js";
+import { discardSession, isDirectExecution, main } from "./index.js";
 import { ApiClient } from "./client.js";
 
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
@@ -24,7 +27,24 @@ afterEach(() => {
 });
 
 describe("main", () => {
+  it("recognizes a symlinked bin as the direct executable", () => {
+    const directory = mkdtempSync(join(tmpdir(), "rudder-cli-"));
+    const moduleFile = join(directory, "package", "dist", "index.js");
+    const bin = join(directory, "bin", "rudder");
+    mkdirSync(join(directory, "package", "dist"), { recursive: true });
+    mkdirSync(join(directory, "bin"), { recursive: true });
+    writeFileSync(moduleFile, "");
+    symlinkSync(moduleFile, bin);
+    try {
+      expect(isDirectExecution(bin, moduleFile)).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("prints usage instead of launching when stdout is redirected", async () => {
+    context.loadConfig.mockResolvedValue({ context: {}, credentials: {} });
+    context.mergeContext.mockReturnValue({});
     process.argv = ["node", "rudder"];
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: false });
