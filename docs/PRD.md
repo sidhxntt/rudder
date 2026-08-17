@@ -237,8 +237,7 @@ make the UI consume it. If the CLI cannot do something the UI can, that is a bug
 | Layer | Phase | Notes |
 |---|---|---|
 | REST API | 1 | The substrate. Everything else is a client. |
-| Python SDK | 1 (tail) | Generated from OpenAPI. ~2 days. |
-| CLI | 1 (tail) | Thin wrapper over the SDK. ~2 days. |
+| Node CLI | 9 | TypeScript control-plane client. |
 | TS SDK | with `web/` | Free — `web/` needs a typed client regardless. |
 | Canvas UI | 1 | Consumes the TS SDK. |
 
@@ -597,8 +596,7 @@ rudder/
 │   │   └── logs/                 # build log file store + SSE
 │   └── tests/
 ├── agent/                        # scaffold only unless D3 = (b)
-├── sdk-python/                   # generated from OpenAPI
-├── cli/                          # thin wrapper over sdk-python
+├── cli/node/                     # TypeScript `rudder` control-plane client
 └── web/
     ├── app/                      # Next 15 App Router
     ├── components/
@@ -665,7 +663,8 @@ from a git SHA to a serving URL. Failed builds, concurrent deploys, rolling
 drain, and `docker kill` reconciliation all behave as specified — see the table
 in `README.md` → Status.
 
-Remaining in Phase 1: step 9 (Python SDK + CLI, not started) and step 10 (canvas
+Historical note: Phase 1's Python SDK + CLI were retired in Phase 9 in favour
+of the Node CLI; the canvas
 UI — written, but never compiled, because `npm` is blocked in this environment).
 
 One addition to the phase as written: `services/monitor.py`. Phase 1's own

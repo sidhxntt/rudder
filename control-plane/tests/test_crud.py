@@ -980,7 +980,7 @@ def test_deleting_something_twice_is_404(client: TestClient, env_id: str) -> Non
 
 
 # --------------------------------------------------------------------------
-# OpenAPI. The Python SDK and the TS client are generated from this schema.
+# OpenAPI. The Node CLI and web client consume this schema.
 # --------------------------------------------------------------------------
 
 

@@ -2,7 +2,7 @@
 
 A self-hosted, Railway-style PaaS with a canvas UI. Point it at a git repo —
 FastAPI, Express, Go, anything — and it builds, runs, and serves that app on a
-public URL, on your own hardware. Operate it from the canvas, a CLI, or an SDK.
+public URL, on your own hardware. Operate it from the canvas or the CLI.
 
 Single-tenant by design. This is a learning build, not a multi-tenant product.
 
@@ -20,8 +20,7 @@ docker-compose.dev.yml     postgres, registry, buildkitd, traefik, control plane
 infra/traefik/             static config + the dynamic dir the control plane writes into
 control-plane/             FastAPI + SQLModel. Owns desired state.
 agent/                     aiohttp + docker SDK. Owns actual state on one host.
-sdk-python/                generated from OpenAPI (Phase 1 step 9)
-cli/                       `rudder` — thin wrapper over the SDK
+cli/node/                  `rudder` Node/TypeScript control-plane client
 web/                       Next.js 15 + React Flow canvas
 docs/                      PRD, phase plans, ADRs, design tokens
 ```
@@ -60,10 +59,10 @@ open http://localhost:8080      # Traefik dashboard (dev only)
 
 **Phase 1's deploy pipeline works end to end on real infrastructure.** An
 actual GitHub push passed through a signed webhook into live Postgres, BuildKit,
-the local registry, Docker, and Traefik on 2026-07-24. The Step 9 SDK and CLI
-build successfully; a browser-free CLI create → deploy with followed logs →
-routed HTTP 200 cycle was verified on the same day. The Step 10 canvas passes a
-production Next.js build. See
+the local registry, Docker, and Traefik on 2026-07-24. The legacy Python SDK
+and CLI were retired in Phase 9; the Node/TypeScript CLI is now supported. A
+browser-free CLI create → deploy with followed logs → routed HTTP 200 cycle was
+verified on the same day. The canvas passes a production Next.js build. See
 [`docs/phases/PHASE-1-single-host.md`](docs/phases/PHASE-1-single-host.md).
 
 Verified on the live stack, not with fakes:

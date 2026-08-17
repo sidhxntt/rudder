@@ -3,8 +3,8 @@
 Phase 1 step 3 asks for a decision on where the token lives. **Both, with the
 ``Authorization: Bearer`` header authoritative.**
 
-- The header is the contract. It is the only thing the CLI, the Python SDK, and
-  the TS SDK send, and Phase 1's acceptance test is the full create-deploy-logs
+- The header is the contract. It is the only thing the Node CLI and other API
+  clients send, and Phase 1's acceptance test is the full create-deploy-logs
   cycle with no browser open. Anything the header cannot do is a bug.
 - The cookie is an additive convenience for ``web/``. ``POST /auth/token``
   *also* sets an httpOnly ``rudder_token`` cookie so the Next.js app never has

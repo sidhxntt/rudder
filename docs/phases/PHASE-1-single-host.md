@@ -141,9 +141,10 @@ Whole-directory rewrite, idempotent.
 
 TLS per D8: `RUDDER_TLS_MODE=off` in dev, hostnames `{service}.{env}.localhost`.
 
-### 9. Python SDK + CLI
+### 9. Legacy Python SDK + CLI (retired)
 
-Generate the SDK from the OpenAPI schema. CLI is a thin wrapper over it.
+The original generated SDK and Python CLI were retired in Phase 9. The Node
+CLI now calls the same control-plane REST API directly.
 
 The acceptance test is in `../PRD.md` → "Goal": the full create-deploy-logs cycle
 with no browser open. If any step needs the UI, step 4 is incomplete — fix the

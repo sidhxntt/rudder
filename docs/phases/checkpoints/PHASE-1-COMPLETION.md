@@ -10,7 +10,7 @@ scheduling and durable runtime-log storage are later-phase work.
 ## Delivered
 
 - Authenticated project, environment, service, domain, variable, deployment,
-  and instance APIs with OpenAPI documentation and a generated Python SDK.
+  and instance APIs with OpenAPI documentation.
 - Git-based builds with language detection, generated Dockerfiles, BuildKit,
   private image registry storage, health checks, and immutable deployment
   records.
@@ -21,7 +21,7 @@ scheduling and durable runtime-log storage are later-phase work.
 - Browser UI with login/session handling, a live project canvas, deployment
   history, build logs, variables, and clear failed-deployment/previous-live
   state.
-- `rudder` CLI, generated Python SDK, signed GitHub push-webhook deployment,
+- Legacy `rudder` CLI, signed GitHub push-webhook deployment,
   and deployment supersession/concurrency protection.
 - Runtime-safe service, environment, and project deletion: owned containers
   are removed and Traefik is rendered before database records are deleted.
@@ -65,9 +65,8 @@ uv run --extra dev ruff check .
 uv run --extra dev pytest -q
 uv run --extra dev ruff check .
 
-# SDK and CLI
-cd ../sdk-python && uv build
-cd ../cli && uv build && uv run rudder --help
+# Supported Node CLI
+cd ../cli/node && npm test && npm run build && npm run --silent rudder --help
 
 # web
 cd ../web && npm run typecheck && npm run build
@@ -81,8 +80,8 @@ Final results on 2026-07-24:
 | Control plane lint | passed |
 | Agent tests | 50 passed |
 | Agent lint | passed |
-| Python SDK build | source distribution and wheel built |
-| CLI build and smoke test | source distribution and wheel built; `rudder --help` passed |
+| Legacy Python SDK/CLI | retired in Phase 9 |
+| Node CLI build and smoke test | `npm run build`; `rudder --help` passed |
 | Web type check | passed |
 | Web production build | passed (run in an isolated temporary copy to avoid modifying a running dev server) |
 
