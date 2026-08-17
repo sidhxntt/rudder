@@ -48,6 +48,14 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
+class AuthorizationStartResponse(BaseModel):
+    """A browser authorization URL paired with its opaque one-time handoff."""
+
+    id: str
+    authorization_url: str
+    state: str
+
+
 class UserRead(BaseModel):
     """The single user, as the API sees them. Never carries ``password_hash``."""
 

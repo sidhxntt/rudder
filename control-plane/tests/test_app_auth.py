@@ -26,6 +26,8 @@ from rudder_cp.services.github_oauth import GitHubIdentity, GitHubOAuthClient
 PUBLIC = {
     ("POST", "/auth/token"),  # issues the token; cannot require one
     ("DELETE", "/auth/token"),  # logout must work with an expired token
+    ("POST", "/auth/authorizations"),  # begins browser-based authorization
+    ("POST", "/auth/authorizations/{authorization_id}/consume"),  # polls its result
     ("POST", "/webhooks/github"),  # authenticated by HMAC over the body
     ("POST", "/nodes/register"),  # authenticated by shared secret
     ("POST", "/nodes/heartbeat"),  # authenticated by shared secret
@@ -205,8 +207,76 @@ async def _identity(_self: GitHubOAuthClient, _code: str, _state: str) -> GitHub
 def test_github_oauth_callback_opens_the_dashboard_import_flow(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings.github_oauth_client_id = "client-id"
+    settings.github_oauth_client_secret = "client-secret"
+    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
+    state = parse_qs(urlparse(GitHubOAuthClient(settings).authorization_url()).query)["state"][0]
     monkeypatch.setattr(GitHubOAuthClient, "exchange", _identity)
-    response = client.get("/auth/github/callback?code=valid&state=valid", follow_redirects=False)
+    response = client.get(f"/auth/github/callback?code=valid&state={state}", follow_redirects=False)
     assert response.status_code == 307
     assert response.headers["location"] == "http://localhost:3000/dashboard?import=github"
     assert "rudder_token=" in response.headers["set-cookie"]
+
+
+def test_authorization_handoff_consumes_once_after_github_callback(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings.github_oauth_client_id = "client-id"
+    settings.github_oauth_client_secret = "client-secret"
+    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
+
+    started = client.post("/auth/authorizations")
+
+    assert started.status_code == 201
+    assert started.json()["authorization_url"].startswith(
+        "https://github.com/login/oauth/authorize?"
+    )
+    monkeypatch.setattr(GitHubOAuthClient, "exchange", _identity)
+    callback = client.get(
+        f"/auth/github/callback?code=valid&state={started.json()['state']}",
+        follow_redirects=False,
+    )
+
+    assert callback.status_code == 200
+    assert callback.headers["content-type"].startswith("text/html")
+    assert "access_token" not in callback.text
+    consumed = client.post(f"/auth/authorizations/{started.json()['id']}/consume")
+    assert consumed.status_code == 200
+    assert consumed.json()["access_token"]
+    assert client.post(f"/auth/authorizations/{started.json()['id']}/consume").status_code == 401
+
+
+def test_authorization_handoff_is_pending_until_the_browser_callback(client: TestClient) -> None:
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings.github_oauth_client_id = "client-id"
+    settings.github_oauth_client_secret = "client-secret"
+    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
+
+    started = client.post("/auth/authorizations")
+
+    assert started.status_code == 201
+    assert client.post(f"/auth/authorizations/{started.json()['id']}/consume").status_code == 202
+
+
+def test_github_callback_rejects_an_invalid_state_before_exchange(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings.github_oauth_client_id = "client-id"
+    settings.github_oauth_client_secret = "client-secret"
+    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
+    monkeypatch.setattr(GitHubOAuthClient, "exchange", _identity)
+
+    response = client.get("/auth/github/callback?code=valid&state=invalid", follow_redirects=False)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "github_oauth_failed"
+
+
+def test_authorization_start_reports_unconfigured_github_oauth(client: TestClient) -> None:
+    response = client.post("/auth/authorizations")
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "github_oauth_unavailable"

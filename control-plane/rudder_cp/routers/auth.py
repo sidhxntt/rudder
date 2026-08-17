@@ -32,16 +32,30 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session
 
 from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import User
-from rudder_cp.schemas.auth import ErrorBody, LoginRequest, TokenResponse, UserRead
+from rudder_cp.schemas.auth import (
+    AuthorizationStartResponse,
+    ErrorBody,
+    LoginRequest,
+    TokenResponse,
+    UserRead,
+)
 from rudder_cp.services import auth as auth_service
-from rudder_cp.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
+from rudder_cp.services.authorization_handoff import (
+    AuthorizationHandoffError,
+    AuthorizationHandoffs,
+)
+from rudder_cp.services.github_oauth import (
+    GitHubOAuthClient,
+    GitHubOAuthConfigurationError,
+    GitHubOAuthError,
+)
 
 SESSION_COOKIE = "rudder_token"
 
@@ -184,6 +198,55 @@ async def create_token(
     return TokenResponse(access_token=issued.token, expires_in=expires_in)
 
 
+@router.post(
+    "/authorizations",
+    response_model=AuthorizationStartResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={503: {"model": ErrorBody, "description": "GitHub OAuth unavailable"}},
+)
+async def create_authorization(
+    session: SessionDep, settings: SettingsDep
+) -> AuthorizationStartResponse:
+    """Create a short-lived browser authorization handoff."""
+    oauth = GitHubOAuthClient(settings)
+    try:
+        oauth.ensure_configured()
+    except GitHubOAuthConfigurationError as exc:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "github_oauth_unavailable", str(exc)
+        ) from exc
+    authorization_id = AuthorizationHandoffs(session).create()
+    authorization = oauth.authorization(authorization_id=authorization_id)
+    return AuthorizationStartResponse(
+        id=authorization_id,
+        authorization_url=authorization.authorization_url,
+        state=authorization.state,
+    )
+
+
+@router.post(
+    "/authorizations/{authorization_id}/consume",
+    response_model=TokenResponse,
+    responses={
+        202: {"description": "Authorization is pending"},
+        401: {"model": ErrorBody, "description": "Authorization is invalid or consumed"},
+    },
+)
+async def consume_authorization(
+    authorization_id: str, session: SessionDep, settings: SettingsDep
+) -> TokenResponse | Response:
+    """Consume an authorized handoff exactly once, or report that it is pending."""
+    try:
+        token = AuthorizationHandoffs(session).consume(authorization_id)
+    except AuthorizationHandoffError as exc:
+        raise _not_authenticated(
+            "Authorization request is invalid, expired, or already consumed."
+        ) from exc
+    if token is None:
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+    return TokenResponse(access_token=token, expires_in=settings.jwt_ttl_seconds)
+
+
 @router.get("/github/start", include_in_schema=False)
 async def github_start(request: Request) -> RedirectResponse:
     try:
@@ -197,9 +260,15 @@ async def github_start(request: Request) -> RedirectResponse:
 @router.get("/github/callback", include_in_schema=False)
 async def github_callback(
     request: Request, code: str, state: str, session: SessionDep
-) -> RedirectResponse:
+) -> Response:
+    oauth = GitHubOAuthClient(request.app.state.settings)
     try:
-        identity = await GitHubOAuthClient(request.app.state.settings).exchange(code, state)
+        authorization_id = oauth.authorization_id_for_state(state)
+        identity = await oauth.exchange(code, state)
+    except GitHubOAuthConfigurationError as exc:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "github_oauth_unavailable", str(exc)
+        ) from exc
     except GitHubOAuthError as exc:
         raise ApiError(status.HTTP_401_UNAUTHORIZED, "github_oauth_failed", str(exc)) from exc
     user = await auth_service.find_or_create_github_user(
@@ -210,6 +279,17 @@ async def github_callback(
         avatar_url=identity.avatar_url,
     )
     issued = auth_service.issue_token(user.id)
+    if authorization_id is not None:
+        try:
+            AuthorizationHandoffs(session).complete(authorization_id, issued.token)
+        except AuthorizationHandoffError as exc:
+            raise _not_authenticated(
+                "Authorization request is invalid, expired, or already consumed."
+            ) from exc
+        return HTMLResponse(
+            "<!doctype html><title>Authorization complete</title>"
+            "<p>Authorization complete. You can return to the application.</p>"
+        )
     response = RedirectResponse(
         f"{request.app.state.settings.web_url.rstrip('/')}/dashboard?import=github",
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,

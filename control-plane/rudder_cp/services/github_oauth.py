@@ -25,12 +25,24 @@ class GitHubOAuthError(Exception):
     pass
 
 
+class GitHubOAuthConfigurationError(GitHubOAuthError):
+    """The server cannot start or validate GitHub OAuth without its settings."""
+
+
 @dataclass(frozen=True, slots=True)
 class GitHubIdentity:
     id: int
     login: str
     email: str | None
     avatar_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubAuthorization:
+    """A signed OAuth state and the GitHub URL which carries it."""
+
+    authorization_url: str
+    state: str
 
 
 def _verified_primary_email(payload: object) -> str | None:
@@ -81,13 +93,24 @@ class GitHubOAuthClient:
             self.settings.jwt_secret,
         )
         if not all(configured):
-            raise GitHubOAuthError("GitHub OAuth is not configured.")
+            raise GitHubOAuthConfigurationError("GitHub OAuth is not configured.")
 
-    def authorization_url(self) -> str:
+    def ensure_configured(self) -> None:
+        """Raise the configuration-specific error before starting OAuth work."""
+        self._require_config()
+
+    def authorization(self, *, authorization_id: str | None = None) -> GitHubAuthorization:
         self._require_config()
         now = datetime.now(UTC)
+        claims: dict[str, object] = {
+            "aud": _STATE_AUDIENCE,
+            "iat": now,
+            "exp": now + timedelta(minutes=10),
+        }
+        if authorization_id is not None:
+            claims["authorization_id"] = authorization_id
         state = jwt.encode(
-            {"aud": _STATE_AUDIENCE, "iat": now, "exp": now + timedelta(minutes=10)},
+            claims,
             self.settings.jwt_secret,
             algorithm=JWT_ALGORITHM,
         )
@@ -99,12 +122,24 @@ class GitHubOAuthClient:
                 "state": state,
             }
         )
-        return f"{_AUTHORIZE_URL}?{query}"
+        return GitHubAuthorization(
+            authorization_url=f"{_AUTHORIZE_URL}?{query}",
+            state=state,
+        )
 
-    async def exchange(self, code: str, state: str) -> GitHubIdentity:
+    def authorization_url(self) -> str:
+        """Return the existing browser-login URL without a handoff claim."""
+        return self.authorization().authorization_url
+
+    def authorization_id_for_state(self, state: str) -> str | None:
+        """Validate state and return its optional opaque handoff ID.
+
+        The callback reads this before exchanging the GitHub code, so an
+        attacker cannot attach a completed login to an arbitrary handoff.
+        """
         self._require_config()
         try:
-            jwt.decode(
+            claims = jwt.decode(
                 state,
                 self.settings.jwt_secret,
                 algorithms=[JWT_ALGORITHM],
@@ -113,6 +148,15 @@ class GitHubOAuthClient:
             )
         except jwt.PyJWTError as exc:
             raise GitHubOAuthError("GitHub OAuth state is invalid or expired.") from exc
+        authorization_id = claims.get("authorization_id")
+        if authorization_id is None:
+            return None
+        if not isinstance(authorization_id, str) or not authorization_id:
+            raise GitHubOAuthError("GitHub OAuth state is invalid or expired.")
+        return authorization_id
+
+    async def exchange(self, code: str, state: str) -> GitHubIdentity:
+        self.authorization_id_for_state(state)
         async with httpx.AsyncClient(timeout=10.0) as client:
             token = await client.post(
                 _TOKEN_URL,
