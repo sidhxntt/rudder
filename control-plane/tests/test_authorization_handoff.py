@@ -1,8 +1,9 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.sql.dml import Delete
 from sqlmodel import Session, SQLModel, create_engine
 
 import rudder_cp.models  # noqa: F401 - register tables before metadata creation
@@ -14,10 +15,8 @@ from rudder_cp.services.authorization_handoff import (
 
 
 @pytest.fixture(name="sessions")
-def sessions_fixture() -> Iterator[tuple[Session, Session]]:
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
+def sessions_fixture(tmp_path: Path) -> Iterator[tuple[Session, Session]]:
+    engine = create_engine(f"sqlite:///{tmp_path / 'handoffs.db'}")
     SQLModel.metadata.create_all(engine)
     with Session(engine) as first, Session(engine) as second:
         yield first, second
@@ -80,3 +79,34 @@ def test_duplicate_completion_is_rejected(
 
     with pytest.raises(AuthorizationHandoffError, match="invalid, expired, or already consumed"):
         AuthorizationHandoffs(creator).complete(authorization_id, "replacement-token")
+
+
+def test_consume_retries_when_completion_happens_after_its_initial_delete(
+    sessions: tuple[Session, Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    creator, consumer = sessions
+    authorization_id = AuthorizationHandoffs(creator).create()
+    handoffs = AuthorizationHandoffs(consumer)
+    original_exec = consumer.exec
+    completed = False
+
+    def exec_with_racing_completion(statement: object, *args: object, **kwargs: object) -> object:
+        nonlocal completed
+        result = original_exec(statement, *args, **kwargs)
+        if isinstance(statement, Delete) and statement._returning and not completed:
+            completed = True
+            AuthorizationHandoffs(consumer).complete(authorization_id, "issued-token")
+        return result
+
+    monkeypatch.setattr(consumer, "exec", exec_with_racing_completion)
+
+    assert handoffs.consume(authorization_id) == "issued-token"
+
+
+def test_nonexistent_authorization_is_rejected(
+    sessions: tuple[Session, Session],
+) -> None:
+    _creator, consumer = sessions
+
+    with pytest.raises(AuthorizationHandoffError, match="invalid, expired, or already consumed"):
+        AuthorizationHandoffs(consumer).consume("not-an-authorization")

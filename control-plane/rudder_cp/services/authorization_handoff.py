@@ -37,6 +37,7 @@ class AuthorizationHandoffs:
         self._prune()
         statement = (
             sa.update(AuthorizationHandoff)
+            .execution_options(synchronize_session=False)
             .where(
                 AuthorizationHandoff.id == authorization_id,
                 AuthorizationHandoff.token.is_(None),
@@ -53,36 +54,45 @@ class AuthorizationHandoffs:
 
     def consume(self, authorization_id: str) -> str | None:
         self._prune()
-        statement = (
-            sa.delete(AuthorizationHandoff)
-            .where(
-                AuthorizationHandoff.id == authorization_id,
-                AuthorizationHandoff.token.is_not(None),
-                AuthorizationHandoff.expires_at > datetime.now(UTC),
+        while True:
+            statement = (
+                sa.delete(AuthorizationHandoff)
+                .execution_options(synchronize_session=False)
+                .where(
+                    AuthorizationHandoff.id == authorization_id,
+                    AuthorizationHandoff.token.is_not(None),
+                    AuthorizationHandoff.expires_at > datetime.now(UTC),
+                )
+                .returning(AuthorizationHandoff.token)
             )
-            .returning(AuthorizationHandoff.token)
-        )
-        row = self._session.exec(statement).first()
-        self._session.commit()
-        token = row[0] if row is not None else None
-        if token is not None:
-            return token
-        pending = self._session.exec(
-            select(AuthorizationHandoff.id).where(
-                AuthorizationHandoff.id == authorization_id,
-                AuthorizationHandoff.token.is_(None),
-                AuthorizationHandoff.expires_at > datetime.now(UTC),
-            )
-        ).first()
-        if pending is not None:
-            return None
-        raise AuthorizationHandoffError(
-            "Authorization request is invalid, expired, or already consumed."
-        )
+            row = self._session.exec(statement).first()
+            self._session.commit()
+            token = row[0] if row is not None else None
+            if token is not None:
+                return token
+            handoff = self._session.exec(
+                select(AuthorizationHandoff).where(
+                    AuthorizationHandoff.id == authorization_id,
+                    AuthorizationHandoff.expires_at > datetime.now(UTC),
+                )
+            ).first()
+            if handoff is None:
+                raise AuthorizationHandoffError(
+                    "Authorization request is invalid, expired, or already consumed."
+                )
+            if handoff.token is None:
+                return None
+            # Completion committed after the conditional DELETE. Retry so this
+            # poll consumes the token instead of misreporting a valid handoff
+            # as invalid. A concurrent consumer can only make the next pass
+            # observe no row, which is correctly a one-time-use failure.
+            continue
 
     def _prune(self) -> None:
         self._session.exec(
-            sa.delete(AuthorizationHandoff).where(
+            sa.delete(AuthorizationHandoff)
+            .execution_options(synchronize_session=False)
+            .where(
                 AuthorizationHandoff.expires_at <= datetime.now(UTC)
             )
         )
