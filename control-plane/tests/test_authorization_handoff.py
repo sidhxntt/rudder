@@ -103,6 +103,36 @@ def test_consume_retries_when_completion_happens_after_its_initial_delete(
     assert handoffs.consume(authorization_id) == "issued-token"
 
 
+def test_consume_stops_after_bounded_race_retries(
+    sessions: tuple[Session, Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    creator, consumer = sessions
+    authorization_id = AuthorizationHandoffs(creator).create()
+    AuthorizationHandoffs(creator).complete(authorization_id, "issued-token")
+    original_exec = consumer.exec
+
+    class EmptyResult:
+        def first(self) -> None:
+            return None
+
+    delete_attempts = 0
+
+    def exec_with_perpetual_delete_race(
+        statement: object, *args: object, **kwargs: object
+    ) -> object:
+        nonlocal delete_attempts
+        if isinstance(statement, Delete) and statement._returning:
+            delete_attempts += 1
+            return EmptyResult()
+        return original_exec(statement, *args, **kwargs)
+
+    monkeypatch.setattr(consumer, "exec", exec_with_perpetual_delete_race)
+
+    with pytest.raises(AuthorizationHandoffError, match="could not be consumed"):
+        AuthorizationHandoffs(consumer).consume(authorization_id)
+    assert delete_attempts == 3
+
+
 def test_nonexistent_authorization_is_rejected(
     sessions: tuple[Session, Session],
 ) -> None:

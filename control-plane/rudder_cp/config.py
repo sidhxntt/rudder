@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     registry: str = "localhost:5000"
     buildkit_addr: str = "tcp://registry:1234"
     docker_network: str = "rudder"
+    # Phase 2: fast enough to meet the 60-second replacement target while
+    # leaving time for heartbeat confirmation and idempotent cleanup.
+    reconciler_interval_seconds: float = Field(default=10, gt=0, allow_inf_nan=False)
 
     # GKE never reaches the local Compose BuildKit service.  Its control plane
     # uploads a checked-out source archive to this private bucket and starts a
@@ -146,6 +149,15 @@ class Settings(BaseSettings):
     kubernetes_local_domain: str = "localhost"
     kubernetes_public_domain: str = ""
     kubernetes_readiness_timeout_seconds: int = 180
+    # Environment deletion is complete only after Kubernetes confirms the
+    # namespace is gone. Keep the confirmation bounded so failed finalizers
+    # leave catalog state available for an explicit retry.
+    kubernetes_namespace_deletion_timeout_seconds: float = Field(
+        default=60, gt=0, allow_inf_nan=False
+    )
+    kubernetes_namespace_deletion_poll_seconds: float = Field(
+        default=1, gt=0, allow_inf_nan=False
+    )
     # The UI must not imply that a stateful data operation works until the
     # execution cluster has the corresponding operator installed.
     kubernetes_postgres_operator: Literal["off", "cloudnativepg"] = "off"

@@ -10,6 +10,7 @@ const context = vi.hoisted(() => ({
   saveConfig: vi.fn(),
 }));
 const prompts = vi.hoisted(() => ({
+  cancel: vi.fn(),
   isCancel: vi.fn(() => false),
   select: vi.fn(),
 }));
@@ -20,7 +21,7 @@ vi.mock("./context.js", async importOriginal => ({ ...await importOriginal<typeo
 vi.mock("@clack/prompts", () => prompts);
 vi.mock("./github-import-wizard.js", () => importWizard);
 
-import { chooseInitialProject, chooseProjectEnvironment, chooseServiceForLogs, discardSession, isDirectExecution, main } from "./index.js";
+import { CliCancellationError, CliUsageError, chooseInitialProject, chooseProjectEnvironment, chooseServiceForLogs, discardSession, exitCodeForError, isDirectExecution, main, parseArgs, renderCliError, toErrorEnvelope } from "./index.js";
 import { ApiClient } from "./client.js";
 
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
@@ -32,7 +33,9 @@ afterEach(() => {
   if (stdinTTY) Object.defineProperty(process.stdin, "isTTY", stdinTTY); else delete (process.stdin as { isTTY?: boolean }).isTTY;
   if (stdoutTTY) Object.defineProperty(process.stdout, "isTTY", stdoutTTY); else delete (process.stdout as { isTTY?: boolean }).isTTY;
   vi.restoreAllMocks();
+  vi.useRealTimers();
   prompts.select.mockReset();
+  prompts.cancel.mockReset();
   prompts.isCancel.mockReset().mockReturnValue(false);
   launcher.runLauncher.mockReset();
   context.saveConfig.mockReset();
@@ -40,6 +43,40 @@ afterEach(() => {
 });
 
 describe("main", () => {
+  it("keeps known boolean flags from consuming a command token in any position", () => {
+    expect(parseArgs(["--json", "status", "--follow", "--build", "--no-interactive"])).toEqual({
+      args: ["status"],
+      flags: { json: true, follow: true, build: true, "no-interactive": true },
+    });
+    expect(parseArgs(["status", "--json", "--runtime", "--yes"])).toEqual({
+      args: ["status"],
+      flags: { json: true, runtime: true, yes: true },
+    });
+  });
+
+  it("maps usage and cancellation to the documented process statuses", () => {
+    expect(exitCodeForError(new CliUsageError("Missing service."))).toBe(2);
+    expect(exitCodeForError(new CliCancellationError())).toBe(130);
+    expect(exitCodeForError(new Error("network failed"))).toBe(1);
+  });
+
+  it("serializes every JSON-mode error as one parseable envelope", () => {
+    expect(toErrorEnvelope(new CliUsageError("Missing service."))).toEqual({
+      code: "usage",
+      message: "Missing service.",
+      details: {},
+    });
+  });
+
+  it("writes exactly one JSON error envelope in JSON mode", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    renderCliError(new CliUsageError("Missing command."), true);
+
+    expect(error).toHaveBeenCalledOnce();
+    expect(JSON.parse(error.mock.calls[0]![0] as string)).toEqual({ code: "usage", message: "Missing command.", details: {} });
+  });
+
   it("recognizes a symlinked bin as the direct executable", () => {
     const directory = mkdtempSync(join(tmpdir(), "rudder-cli-"));
     const moduleFile = join(directory, "package", "dist", "index.js");
@@ -94,6 +131,22 @@ describe("main", () => {
     expect(api.request).toHaveBeenNthCalledWith(2, "GET", "/projects/project-id/environments");
   });
 
+  it.each(["project picker", "environment picker"])("treats cancelling the %s as a CLI cancellation", async (picker) => {
+    const cancelled = Symbol.for("cancel");
+    prompts.isCancel.mockImplementation(((value: unknown) => value === cancelled) as never);
+    prompts.select.mockResolvedValueOnce(picker === "project picker" ? cancelled : "project-id").mockResolvedValueOnce(cancelled);
+    const api = {
+      baseUrl: "http://localhost:8000",
+      request: vi.fn()
+        .mockResolvedValueOnce([{ id: "project-id", name: "API" }])
+        .mockResolvedValueOnce([{ id: "environment-id", name: "production" }]),
+    };
+    const state = { api, context: {}, credentials: {}, flags: {}, out: { json: false } };
+
+    await expect(chooseProjectEnvironment(state as never)).rejects.toBeInstanceOf(CliCancellationError);
+    expect(exitCodeForError(new CliCancellationError())).toBe(130);
+  });
+
   it("sets the initial context from an existing project before the launcher can open", async () => {
     prompts.select.mockResolvedValueOnce("project-id");
     const api = {
@@ -122,7 +175,7 @@ describe("main", () => {
     };
     const state = { api, context: {}, credentials: {}, flags: {}, out: { json: false } };
 
-    await expect(chooseInitialProject(state as never)).resolves.toBeUndefined();
+    await expect(chooseInitialProject(state as never)).rejects.toBeInstanceOf(CliCancellationError);
 
     expect(prompts.select).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.arrayContaining([
@@ -186,6 +239,133 @@ describe("main", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("1/1 release containers healthy"));
   });
 
+  it("treats JSON mode as non-interactive before authentication", async () => {
+    context.loadConfig.mockResolvedValue({ context: {}, credentials: {} });
+    context.mergeContext.mockReturnValue({});
+    process.argv = ["node", "rudder", "--json", "status"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+
+    await expect(main()).rejects.toMatchObject({ message: expect.stringContaining("RUDDER_TOKEN") });
+  });
+
+  it("routes build logs to the selected deployment even when following", async () => {
+    context.loadConfig.mockResolvedValue({
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({ project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" });
+    process.argv = ["node", "rudder", "logs", "--build", "--follow", "--no-interactive"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "deployment-id" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response("data: build line\n\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+
+    await main();
+
+    expect(fetcher).toHaveBeenLastCalledWith("http://localhost:8000/deployments/deployment-id/build-log?follow=true", expect.anything());
+  });
+
+  it("routes runtime logs to the service when explicitly requested with follow", async () => {
+    context.loadConfig.mockResolvedValue({
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({ project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" });
+    process.argv = ["node", "rudder", "logs", "--runtime", "--follow", "--no-interactive"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response("data: runtime line\n\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+
+    await main();
+
+    expect(fetcher).toHaveBeenLastCalledWith("http://localhost:8000/services/00000000-0000-4000-8000-000000000003/runtime-log?follow=true", expect.anything());
+  });
+
+  it("uses the follow contract and emits structured JSON Lines for runtime logs", async () => {
+    context.loadConfig.mockResolvedValue({
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({ project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" });
+    process.argv = ["node", "rudder", "logs", "--runtime", "--follow", "--json"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    vi.setSystemTime(new Date("2026-08-18T09:00:00.000Z"));
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response("data: [ERROR] database unavailable\n\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main();
+
+    expect(fetcher).toHaveBeenLastCalledWith("http://localhost:8000/services/00000000-0000-4000-8000-000000000003/runtime-log?follow=true", expect.anything());
+    expect(log.mock.calls.map(([line]) => JSON.parse(line as string))).toEqual([{
+      timestamp: "2026-08-18T09:00:00.000Z", source: "runtime", level: "error", message: "[ERROR] database unavailable",
+    }]);
+  });
+
+  it("rejects an ambiguous service name with the matching identifiers", async () => {
+    context.loadConfig.mockResolvedValue({
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002" },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({ project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002" });
+    process.argv = ["node", "rudder", "logs", "app", "--runtime", "--no-interactive"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify([
+      { id: "service-a", name: "app" }, { id: "service-b", name: "app" },
+    ]), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+
+    await expect(main()).rejects.toThrow("Service name app is ambiguous; use one of: service-a, service-b.");
+  });
+
+  it("rejects selecting both log sources as usage", async () => {
+    context.loadConfig.mockResolvedValue({
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({ project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" });
+    process.argv = ["node", "rudder", "logs", "--build", "--runtime", "--no-interactive"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+
+    await expect(main()).rejects.toBeInstanceOf(CliUsageError);
+  });
+
+  it("classifies an unknown command as usage", async () => {
+    context.loadConfig.mockResolvedValue({ context: {}, credentials: { token: "token" } });
+    context.mergeContext.mockReturnValue({});
+    process.argv = ["node", "rudder", "wat", "--no-interactive"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+
+    await expect(main()).rejects.toBeInstanceOf(CliUsageError);
+  });
+
+  it.each([
+    ["rollback", "missing rollback id"],
+    ["project unsupported", "invalid resource subcommand"],
+    ["var set FEATURE_FLAG", "missing variable value"],
+    ["advisor accept", "invalid advisor arguments"],
+  ])("classifies %s as usage (%s)", async (commandLine) => {
+    context.loadConfig.mockResolvedValue({
+      context: {
+        project: "00000000-0000-4000-8000-000000000001",
+        environment: "00000000-0000-4000-8000-000000000002",
+        service: "00000000-0000-4000-8000-000000000003",
+      },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({
+      project: "00000000-0000-4000-8000-000000000001",
+      environment: "00000000-0000-4000-8000-000000000002",
+      service: "00000000-0000-4000-8000-000000000003",
+    });
+    process.argv = ["node", "rudder", ...commandLine.split(" "), "--no-interactive"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+
+    await expect(main()).rejects.toBeInstanceOf(CliUsageError);
+  });
+
   it("asks for a service before opening logs when none is selected", async () => {
     prompts.select.mockResolvedValueOnce("service-id");
     const api = {
@@ -208,5 +388,106 @@ describe("main", () => {
     expect(prompts.select).toHaveBeenCalledWith(expect.objectContaining({ message: "Choose a service for logs" }));
     expect((state.context as { service?: string }).service).toBe("service-id");
     expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);
+  });
+
+  it("treats cancelling the service picker as a CLI cancellation", async () => {
+    const cancelled = Symbol.for("cancel");
+    prompts.select.mockResolvedValueOnce(cancelled);
+    prompts.isCancel.mockReturnValue(true);
+    const api = {
+      baseUrl: "http://localhost:8000",
+      request: vi.fn().mockResolvedValueOnce([{ id: "service-id", name: "app" }]),
+    };
+    const state = {
+      api,
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002" },
+      credentials: {}, flags: {}, out: { json: false },
+    };
+
+    await expect(chooseServiceForLogs(state as never)).rejects.toBeInstanceOf(CliCancellationError);
+    expect(exitCodeForError(new CliCancellationError())).toBe(130);
+  });
+
+  it("keeps explicit project-picker exit as a successful return", async () => {
+    prompts.select.mockResolvedValueOnce("exit");
+    const api = { baseUrl: "http://localhost:8000", request: vi.fn().mockResolvedValueOnce([]) };
+    const state = { api, context: {}, credentials: {}, flags: {}, out: { json: false } };
+
+    await expect(chooseInitialProject(state as never)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    [["--wat"], "unknown flag"],
+    [["--json=garbage", "status"], "invalid boolean"],
+    [["status", "extra"], "status trailing positional"],
+    [["context", "unsupported"], "unsupported context action"],
+    [["logout", "extra"], "logout trailing positional"],
+  ])("rejects %s as usage (%s)", async (argvParts) => {
+    context.loadConfig.mockResolvedValue({ context: {}, credentials: { token: "token" } });
+    context.mergeContext.mockReturnValue({});
+    process.argv = ["node", "rudder", ...argvParts];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+
+    await expect(main()).rejects.toBeInstanceOf(CliUsageError);
+  });
+
+  it.each([
+    [["project", "create", "name", "extra"]], [["project", "get", "project-id", "extra"]],
+    [["env", "create", "name", "extra"]], [["env", "clone", "environment-id", "name", "extra"]],
+    [["service", "create", "name", "extra"]], [["service", "template", "postgres", "extra"]],
+    [["var", "list", "extra"]], [["var", "set", "KEY", "VALUE", "extra"]], [["var", "unset", "KEY", "extra"]],
+    [["deploy", "service-id", "extra"]], [["history", "service-id", "extra"]], [["logs", "service-id", "extra"]],
+    [["metrics", "service-id", "extra"]], [["rollback", "deployment-id", "extra"]],
+    [["operation", "list", "service-id", "extra"]], [["operation", "update", "service-id", "extra"]],
+    [["import", "repositories", "installation-id", "extra"]], [["import", "branches", "installation-id", "repository", "extra"]],
+    [["import", "get", "import-id", "extra"]], [["domain", "delete", "domain-id", "extra"]],
+    [["advisor", "scan", "extra"]], [["advisor", "accept", "extra"]],
+  ])("rejects extra positionals for documented command %j", async (argvParts: string[]) => {
+    context.loadConfig.mockResolvedValue({
+      context: {
+        project: "00000000-0000-4000-8000-000000000001",
+        environment: "00000000-0000-4000-8000-000000000002",
+        service: "00000000-0000-4000-8000-000000000003",
+      },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({
+      project: "00000000-0000-4000-8000-000000000001",
+      environment: "00000000-0000-4000-8000-000000000002",
+      service: "00000000-0000-4000-8000-000000000003",
+    });
+    process.argv = ["node", "rudder", ...argvParts, "--no-interactive"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+
+    await expect(main()).rejects.toBeInstanceOf(CliUsageError);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("emits one stream-compatible JSON error record when logs fail after output begins", async () => {
+    context.loadConfig.mockResolvedValue({
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({ project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002", service: "00000000-0000-4000-8000-000000000003" });
+    process.argv = ["node", "rudder", "logs", "--json", "--runtime"];
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) controller.enqueue(new TextEncoder().encode("data: first line\n\n"));
+        else controller.error(new Error("stream disconnected"));
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(stream, { status: 200 })));
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(main()).rejects.toThrow("stream disconnected");
+
+    expect(log.mock.calls.map(([line]) => JSON.parse(line as string))).toEqual([
+      expect.objectContaining({ source: "runtime", level: "info", message: "first line" }),
+      { error: { code: "runtime_error", message: "stream disconnected", details: {} } },
+    ]);
   });
 });

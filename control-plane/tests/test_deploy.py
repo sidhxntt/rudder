@@ -36,6 +36,7 @@ from rudder_cp.models import (
     User,
     Volume,
 )
+from rudder_cp.schemas.common import ConflictError
 from rudder_cp.services import deploy as deploy_service
 from rudder_cp.services import locks
 from rudder_cp.services.agent_client import (
@@ -235,8 +236,14 @@ async def _run(engine, deployment_id, agent, settings, builder, store=None):
 class FakeKubernetesApi:
     """Records the real imported-deploy dispatch without requiring a cluster."""
 
-    def __init__(self, *, fail_service: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_service: str | None = None,
+        fail_public_route_name: str | None = None,
+    ) -> None:
         self.fail_service = fail_service
+        self.fail_public_route_name = fail_public_route_name
         self.calls: list[tuple[str, str]] = []
         self.public_routes: dict[str, str] = {}
         self.workloads: dict[str, object] = {}
@@ -247,6 +254,11 @@ class FakeKubernetesApi:
 
     async def ensure_guardrails(self, namespace: str, _labels: dict[str, str]) -> None:
         self.calls.append(("guardrails", namespace))
+
+    async def ensure_workload_service_account(
+        self, namespace: str, *, name: str, labels: dict[str, str]
+    ) -> None:
+        self.calls.append(("workload-service-account", name))
 
     async def apply_service(self, namespace: str, spec) -> None:
         self.calls.append(("service", spec.name))
@@ -294,6 +306,8 @@ class FakeKubernetesApi:
 
     async def promote_public_service(self, namespace: str, spec) -> None:
         self.calls.append(("ingress", spec.name))
+        if spec.name == self.fail_public_route_name:
+            raise RuntimeError(f"ingress update failed for {spec.name}")
         self.public_routes[spec.name] = spec
 
     async def delete_release(self, namespace: str, release_id: str) -> None:
@@ -424,7 +438,13 @@ def _use_kubernetes_api(monkeypatch, *apis: FakeKubernetesApi) -> None:
 # ------------------------------------------------------------------ happy path
 
 
-async def test_successful_deploy_goes_live(engine, service, settings):
+async def test_successful_deploy_goes_live(engine, service, settings, monkeypatch):
+    notified: list[uuid.UUID] = []
+
+    def record_pr_notification(*_args, **kwargs):
+        notified.append(kwargs["deployment"].id)
+
+    monkeypatch.setattr(deploy_service, "enqueue_ready_notification", record_pr_notification)
     agent = FakeAgent()
     outcome = await _run(engine, _queue(engine, service.id), agent, settings, _ok_builder)
 
@@ -440,6 +460,114 @@ async def test_successful_deploy_goes_live(engine, service, settings):
         assert release_domain.target_type.value == "deployment"
         instances = session.exec(select(Instance)).all()
         assert [i.status for i in instances] == [InstanceStatus.HEALTHY]
+    assert notified == [outcome.deployment_id]
+
+
+async def test_standard_docker_deploy_starts_every_requested_replica(engine, service, settings):
+    """replica_count is desired state, not merely UI metadata."""
+    with Session(engine) as session:
+        persisted = session.get(Service, service.id)
+        assert persisted is not None
+        persisted.replica_count = 2
+        session.add(persisted)
+        session.commit()
+
+    agent = FakeAgent()
+    outcome = await _run(engine, _queue(engine, service.id), agent, settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    assert len(agent.created) == 2
+    assert len(set(agent.created)) == 2
+    with Session(engine) as session:
+        instances = session.exec(
+            select(Instance).where(Instance.deployment_id == outcome.deployment_id)
+        ).all()
+        assert len(instances) == 2
+        assert {instance.status for instance in instances} == {InstanceStatus.HEALTHY}
+        node = session.exec(select(Node).where(Node.hostname == "test-node")).one()
+        assert node.cpu_allocated == 2.0
+        assert node.memory_allocated_mb == 1024
+
+
+async def test_standard_docker_replica_start_failure_releases_every_reservation(
+    engine, service, settings
+):
+    with Session(engine) as session:
+        persisted = session.get(Service, service.id)
+        assert persisted is not None
+        persisted.replica_count = 2
+        session.add(persisted)
+        session.commit()
+
+    agent = FakeAgent()
+    original_create = agent.create_container
+    starts = 0
+
+    async def fail_second_replica(**kwargs) -> ContainerState:
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            raise AgentError("second replica failed")
+        return await original_create(**kwargs)
+
+    agent.create_container = fail_second_replica  # type: ignore[method-assign]
+    outcome = await _run(engine, _queue(engine, service.id), agent, settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.FAILED
+    assert len(agent.created) == 1
+    assert agent.removed == ["container-" + agent.created[0]]
+    with Session(engine) as session:
+        instances = session.exec(
+            select(Instance).where(Instance.deployment_id == outcome.deployment_id)
+        ).all()
+        assert len(instances) == 2
+        assert {instance.status for instance in instances} == {InstanceStatus.STOPPED}
+        node = session.exec(select(Node).where(Node.hostname == "test-node")).one()
+        assert node.cpu_allocated == 0
+        assert node.memory_allocated_mb == 0
+
+
+async def test_standard_docker_replica_capacity_shortfall_leaks_no_reservations(
+    engine, service, settings
+):
+    with Session(engine) as session:
+        persisted = session.get(Service, service.id)
+        assert persisted is not None
+        persisted.replica_count = 5
+        session.add(persisted)
+        session.commit()
+
+    outcome = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.FAILED
+    with Session(engine) as session:
+        assert session.exec(
+            select(Instance).where(Instance.deployment_id == outcome.deployment_id)
+        ).all() == []
+        node = session.exec(select(Node).where(Node.hostname == "test-node")).one()
+        assert node.cpu_allocated == 0
+        assert node.memory_allocated_mb == 0
+
+
+async def test_permanent_url_failure_does_not_promote_a_deployment(
+    engine, service, settings, monkeypatch
+):
+    async def fail_permanent_domain(*_args, **_kwargs):
+        raise ConflictError("permanent URL creation failed")
+
+    monkeypatch.setattr(deploy_service.domains, "create_deployment_domain", fail_permanent_domain)
+
+    outcome = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.FAILED
+    with Session(engine) as session:
+        deployment = session.get(Deployment, outcome.deployment_id)
+        assert deployment is not None
+        assert deployment.status is DeploymentStatus.FAILED
+        deployment_domain = session.exec(
+            select(Domain).where(Domain.deployment_id == deployment.id)
+        ).first()
+        assert deployment_domain is None
 
 
 async def test_rollback_reuses_the_immutable_image_without_rebuilding(engine, service, settings):
@@ -556,6 +684,51 @@ async def test_imported_compose_failure_keeps_the_previous_release_live(
         assert healthy.status is InstanceStatus.HEALTHY
 
 
+async def test_imported_compose_permanent_url_failure_does_not_promote_candidate(
+    engine, service, settings, monkeypatch
+):
+    """A permanent URL is part of promotion, not a best-effort follow-up."""
+    with Session(engine) as session:
+        app = session.get(Service, service.id)
+        assert app is not None
+        environment = session.get(Environment, app.environment_id)
+        assert environment is not None
+        app.build_config = {"compose_service": "app", "managed_image": "nginx:alpine"}
+        session.add(app)
+        session.add(
+            GitHubImport(
+                installation_id=7,
+                repository="acme/permanent-url-compose",
+                branch="main",
+                compose_source="generated",
+                compose_manifest="services:\n  app:\n    build: .\n    expose: ['8080']\n",
+                compose_project_name="rudder-permanent-url-compose",
+                project_id=environment.project_id,
+                app_service_id=app.id,
+            )
+        )
+        session.commit()
+
+    async def fail_permanent_domain(*_args, **_kwargs):
+        raise ConflictError("permanent URL creation failed")
+
+    monkeypatch.setattr(deploy_service.domains, "create_deployment_domain", fail_permanent_domain)
+    agent = FakeAgent()
+    outcome = await _run(engine, _queue(engine, service.id), agent, settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.FAILED
+    assert len(agent.removed) == 1
+    assert agent.removed[0].endswith("-app")
+    with Session(engine) as session:
+        deployment = session.get(Deployment, outcome.deployment_id)
+        assert deployment is not None
+        assert deployment.status is DeploymentStatus.FAILED
+        deployment_domain = session.exec(
+            select(Domain).where(Domain.deployment_id == deployment.id)
+        ).first()
+        assert deployment_domain is None
+
+
 async def test_imported_kubernetes_release_waits_for_every_member_before_public_promotion(
     engine, service, settings, monkeypatch
 ):
@@ -593,6 +766,134 @@ async def test_imported_kubernetes_release_waits_for_every_member_before_public_
     assert "kubernetes: applying StatefulSet for postgres" in contents
     assert "kubernetes: postgres is ready" in contents
     assert "kubernetes: promoted public route for app" in contents
+
+
+async def test_imported_kubernetes_permanent_url_failure_does_not_promote_candidate(
+    engine, service, settings, monkeypatch
+):
+    _configure_kubernetes_import(engine, service)
+    settings.runtime = "kubernetes"
+    api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, api, api)
+
+    async def fail_permanent_domain(*_args, **_kwargs):
+        raise ConflictError("permanent URL creation failed")
+
+    monkeypatch.setattr(deploy_service.domains, "create_deployment_domain", fail_permanent_domain)
+    outcome = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.FAILED
+    assert not any(name == "workload" for name, _ in api.calls)
+    with Session(engine) as session:
+        deployment = session.get(Deployment, outcome.deployment_id)
+        assert deployment is not None
+        assert deployment.status is DeploymentStatus.FAILED
+        deployment_domain = session.exec(
+            select(Domain).where(Domain.deployment_id == deployment.id)
+        ).first()
+        assert deployment_domain is None
+
+
+async def test_imported_kubernetes_permanent_url_routes_to_its_immutable_release(
+    engine, service, settings, monkeypatch
+):
+    """A deployment URL must retain a concrete route to its own revision."""
+    _configure_kubernetes_import(engine, service)
+    settings.runtime = "kubernetes"
+    api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, api)
+
+    outcome = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.LIVE
+    app_workload = next(
+        value for name, value in api.calls if name == "workload" and value.startswith("app-")
+    )
+    with Session(engine) as session:
+        deployment = session.get(Deployment, outcome.deployment_id)
+        assert deployment is not None
+        domain = session.exec(select(Domain).where(Domain.deployment_id == deployment.id)).one()
+    permanent_route = next(
+        route for route in api.public_routes.values() if route.host == domain.hostname
+    )
+    assert permanent_route.backend_service_name == app_workload
+    assert permanent_route.name != "route-app"
+
+
+async def test_imported_kubernetes_persistence_failure_never_promotes_candidate_route(
+    engine, service, settings, monkeypatch
+):
+    """A rejected LIVE commit must leave Kubernetes ingress on the old release."""
+    _configure_kubernetes_import(engine, service)
+    settings.runtime = "kubernetes"
+    api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, api)
+
+    original_commit = Session.commit
+    failed_live_commit = False
+
+    def reject_candidate_live_commit(self):
+        nonlocal failed_live_commit
+        pending_live = any(
+            isinstance(entity, Deployment) and entity.status is DeploymentStatus.LIVE
+            for entity in self.identity_map.values()
+        )
+        if pending_live and not failed_live_commit:
+            failed_live_commit = True
+            raise RuntimeError("database unavailable during LIVE transition")
+        return original_commit(self)
+
+    monkeypatch.setattr(Session, "commit", reject_candidate_live_commit)
+    outcome = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert outcome.status is DeploymentStatus.FAILED
+    assert failed_live_commit is True
+    assert not api.public_routes
+    assert ("cleanup", str(outcome.deployment_id)) in api.calls
+    with Session(engine) as session:
+        deployment = session.get(Deployment, outcome.deployment_id)
+        assert deployment is not None
+        assert deployment.status is DeploymentStatus.FAILED
+
+
+async def test_imported_kubernetes_route_failure_restores_the_previous_live_release(
+    engine, service, settings, monkeypatch
+):
+    """A partial Ingress handoff must compensate both Kubernetes and the live pointer."""
+    _configure_kubernetes_import(engine, service)
+    settings.runtime = "kubernetes"
+    api = FakeKubernetesApi()
+    _use_kubernetes_api(monkeypatch, api, api)
+
+    first = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+    prior_stable_route = api.public_routes["route-app"]
+
+    # The stable route is applied first, then the immutable deployment route.
+    # Fail the latter so the test exercises a genuinely partial promotion.
+    # The exact release id is generated by queueing, so make the fake reject
+    # the next immutable route rather than the existing stable ingress.
+    original_promote = api.promote_public_service
+
+    async def fail_candidate_permanent_route(namespace, spec):
+        if spec.name != "route-app":
+            raise RuntimeError(f"ingress update failed for {spec.name}")
+        await original_promote(namespace, spec)
+
+    api.promote_public_service = fail_candidate_permanent_route  # type: ignore[method-assign]
+    failed = await _run(engine, _queue(engine, service.id), FakeAgent(), settings, _ok_builder)
+
+    assert first.status is DeploymentStatus.LIVE
+    assert failed.status is DeploymentStatus.FAILED
+    assert (
+        api.public_routes["route-app"].backend_service_name
+        == prior_stable_route.backend_service_name
+    )
+    assert ("cleanup", str(failed.deployment_id)) in api.calls
+    with Session(engine) as session:
+        previous = session.get(Deployment, first.deployment_id)
+        candidate = session.get(Deployment, failed.deployment_id)
+        assert previous is not None and previous.status is DeploymentStatus.LIVE
+        assert candidate is not None and candidate.status is DeploymentStatus.FAILED
 
 
 async def test_gke_import_creates_an_accounting_projection_without_an_agent_node(
@@ -700,7 +1001,7 @@ async def test_imported_kubernetes_failure_keeps_previous_live_route_unchanged(
         assert prior.status is DeploymentStatus.LIVE
 
 
-async def test_imported_kubernetes_release_prunes_superseded_stateless_candidate(
+async def test_imported_kubernetes_release_retains_superseded_stateless_candidate(
     engine, service, settings, monkeypatch
 ):
     _configure_kubernetes_import(engine, service)
@@ -714,7 +1015,10 @@ async def test_imported_kubernetes_release_prunes_superseded_stateless_candidate
 
     assert first.status is DeploymentStatus.LIVE
     assert second.status is DeploymentStatus.LIVE
-    assert ("cleanup", str(first.deployment_id)) in second_api.calls
+    # Every immutable deployment owns a d- host whose Ingress points at this
+    # release. Deleting the old candidate would turn that still-displayed URL
+    # into a dead route.
+    assert ("cleanup", str(first.deployment_id)) not in second_api.calls
     with Session(engine) as session:
         assert session.get(Deployment, first.deployment_id).status is DeploymentStatus.SUPERSEDED
 
@@ -927,6 +1231,13 @@ async def test_agent_failure_is_a_readable_error_not_a_traceback(engine, service
 
     assert outcome.status is DeploymentStatus.FAILED
     assert "image_pull_failed" in (outcome.detail or "")
+    with Session(engine) as session:
+        instance = session.exec(select(Instance)).one()
+        node = session.exec(select(Node)).one()
+        assert instance.status is InstanceStatus.STOPPED
+        assert instance.container_id is None
+        assert node.cpu_allocated == 0
+        assert node.memory_allocated_mb == 0
 
 
 # ------------------------------------------------------------------ rolling deploy

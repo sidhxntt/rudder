@@ -54,11 +54,19 @@ async function openInBrowser(url: string): Promise<void> {
   const args = platform() === "win32" ? ["/c", "start", "", url] : [url];
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { detached: true, stdio: "ignore" });
-    child.once("error", error => { child.unref(); reject(error); });
-    child.once("exit", code => {
+    const timeout = setTimeout(() => settle(resolve), 1_000);
+    let settled = false;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       child.unref();
-      if (code === 0) resolve();
-      else reject(new Error(`Browser opener exited with status ${code ?? "unknown"}.`));
+      callback();
+    };
+    child.once("error", error => settle(() => reject(error)));
+    child.once("exit", code => {
+      if (code === 0) settle(resolve);
+      else settle(() => reject(new Error(`Browser opener exited with status ${code ?? "unknown"}.`)));
     });
   });
 }

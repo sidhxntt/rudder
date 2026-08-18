@@ -29,6 +29,7 @@ from rudder_cp.runtime.models import dns_label
 from rudder_cp.runtime.targets import load_kubernetes_client
 from rudder_cp.services import traefik
 from rudder_cp.services.builder import validate_gke_image
+from rudder_cp.services.kubernetes_namespace import environment_namespace
 
 
 async def restore_immutable_deployment(
@@ -113,9 +114,7 @@ async def _restore_kubernetes_public_route(
     if environment is None:
         raise HTTPException(status_code=404, detail="Rollback environment no longer exists")
 
-    namespace = dns_label(
-        f"{settings.kubernetes_namespace_prefix}-{environment.id.hex[:12]}"
-    )
+    namespace = dns_label(environment_namespace(settings, environment.id))
     workload_name = dns_label(f"{mapping.compose_service}-{str(source.id)[:8]}")
     route = PublicRouteSpec(
         name=dns_label(f"route-{mapping.compose_service}"),

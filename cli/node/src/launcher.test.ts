@@ -13,6 +13,7 @@ const prompts = vi.hoisted(() => ({
 vi.mock("@clack/prompts", () => prompts);
 
 import { canLaunchLauncher, renderSplash, runLauncher, runStatusMenu } from "./launcher.js";
+import { CliCancellationError } from "./errors.js";
 import { discardSession } from "./index.js";
 import { ApiClient } from "./client.js";
 
@@ -48,6 +49,14 @@ describe("runLauncher", () => {
     expect(actions.compact).toHaveBeenCalledOnce();
     expect(actions.detailed).not.toHaveBeenCalled();
     expect(actions.summary).not.toHaveBeenCalled();
+  });
+
+  it("treats cancelling the Status submenu as terminal cancellation", async () => {
+    prompts.select.mockResolvedValue(Symbol.for("cancel"));
+    const actions = { compact: vi.fn(), detailed: vi.fn(), summary: vi.fn() };
+
+    await expect(runStatusMenu(actions)).rejects.toBeInstanceOf(CliCancellationError);
+    expect(prompts.cancel).toHaveBeenCalledWith("Status selection cancelled.");
   });
 
   it("renders a distinct Rudder control-plane splash before prompting", () => {
@@ -110,6 +119,13 @@ describe("runLauncher", () => {
     expect(prompts.select).toHaveBeenNthCalledWith(1, expect.objectContaining({ message: "What would you like to do?" }));
   });
 
+  it("treats an explicit project-selection Exit as a normal launcher exit", async () => {
+    const actions = { signIn: vi.fn(), chooseProject: vi.fn().mockResolvedValue(undefined), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+
+    await expect(runLauncher({ actions, authenticated: true, projectSelected: false, clear: vi.fn() })).resolves.toBeUndefined();
+    expect(prompts.cancel).not.toHaveBeenCalled();
+  });
+
   it("offers Back to project selection instead of a project/environment action", async () => {
     prompts.select.mockResolvedValueOnce("back").mockResolvedValueOnce("exit");
     const actions = { signIn: vi.fn(), chooseProject: vi.fn().mockResolvedValue("Using current / development"), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
@@ -127,10 +143,20 @@ describe("runLauncher", () => {
     prompts.select.mockResolvedValue(Symbol.for("cancel"));
     const actions = { signIn: vi.fn(), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
 
-    await runLauncher({ actions, clear: vi.fn() });
+    await expect(runLauncher({ actions, clear: vi.fn() })).rejects.toBeInstanceOf(CliCancellationError);
 
     expect(prompts.cancel).toHaveBeenCalledWith("Launcher cancelled.");
     expect(Object.values(actions).every(action => action.mock.calls.length === 0)).toBe(true);
+  });
+
+  it("treats cancelling the sign-in prompt as cancellation, while Exit remains normal", async () => {
+    prompts.select.mockResolvedValue(Symbol.for("cancel"));
+    const actions = { signIn: vi.fn(), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+
+    await expect(runLauncher({ actions, authenticated: false, clear: vi.fn() })).rejects.toBeInstanceOf(CliCancellationError);
+
+    prompts.select.mockResolvedValueOnce("exit");
+    await expect(runLauncher({ actions, authenticated: false, clear: vi.fn() })).resolves.toBeUndefined();
   });
 
   it("exits after signing out so a protected action cannot reuse the prior session", async () => {

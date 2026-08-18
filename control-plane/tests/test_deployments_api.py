@@ -37,6 +37,7 @@ from rudder_cp.models import (
 )
 from rudder_cp.routers import deployments as deployments_router
 from rudder_cp.routers import webhooks as webhooks_router
+from rudder_cp.routers.auth import get_current_user
 from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.services import rollbacks
 from rudder_cp.services.imports import AddonProposal, provision_import
@@ -79,6 +80,7 @@ def seed_fixture(engine: Engine) -> dict[str, str]:
         session.add(without_repo)
         session.commit()
         return {
+            "owner": str(user.id),
             "service": str(with_repo.id),
             "no_repo": str(without_repo.id),
             "node": str(node.id),
@@ -86,7 +88,9 @@ def seed_fixture(engine: Engine) -> dict[str, str]:
 
 
 @pytest.fixture(name="client")
-def client_fixture(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def client_fixture(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch, seed: dict[str, str]
+) -> Iterator[TestClient]:
     from rudder_cp import config
     from rudder_cp.routers import webhooks
 
@@ -105,6 +109,9 @@ def client_fixture(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Iterator[
             yield session
 
     app.dependency_overrides[get_session] = session_override
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=UUID(seed["owner"]), email="a@b.c", password_hash="x"
+    )
     with TestClient(app) as client:
         yield client
 
@@ -124,7 +131,7 @@ def _sign(body: bytes, secret: str = SECRET) -> str:
 
 def test_deploy_queues_and_returns_202(client: TestClient, seed: dict[str, str]) -> None:
     response = client.post(f"/services/{seed['service']}/deploy", json={})
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json()["status"] == "queued"
 
 
@@ -171,6 +178,34 @@ def test_deploying_an_unknown_service_is_404(client: TestClient) -> None:
     response = client.post(f"/services/{uuid4()}/deploy", json={})
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
+
+
+def test_deploy_hides_a_service_owned_by_another_user(
+    client: TestClient, engine: Engine
+) -> None:
+    """A caller cannot queue a release against another user's service ID."""
+    with Session(engine) as session:
+        other = User(email="other@example.test", password_hash="x")
+        session.add(other)
+        session.commit()
+        project = Project(name="other-project", owner_id=other.id)
+        session.add(project)
+        session.commit()
+        environment = Environment(project_id=project.id, name="production")
+        session.add(environment)
+        session.commit()
+        private_service = Service(
+            environment_id=environment.id,
+            name="private-api",
+            source_repo="other/private-api",
+        )
+        session.add(private_service)
+        session.commit()
+        private_service_id = private_service.id
+
+    response = client.post(f"/services/{private_service_id}/deploy", json={})
+
+    assert response.status_code == 404
 
 
 def test_fetching_an_unknown_deployment_is_404(client: TestClient) -> None:

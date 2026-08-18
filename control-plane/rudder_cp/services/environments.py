@@ -6,6 +6,7 @@ boundary.  The previous WireGuard CIDR allocator was removed in Phase 4.
 Takes ``Session`` as an argument. Never imports FastAPI.
 """
 
+import asyncio
 import copy
 import uuid
 
@@ -40,8 +41,22 @@ from rudder_cp.schemas.environment import (
 from rudder_cp.services import domains, services, traefik
 from rudder_cp.services.agent_client import AgentClient
 from rudder_cp.services.github_app import GitHubAppClient
+from rudder_cp.services.kubernetes_namespace import environment_namespace
 
 ENVIRONMENT_NAME_TAKEN = "environment_name_taken"
+
+
+class KubernetesNamespaceTeardownError(RudderError):
+    """Kubernetes teardown did not complete, so catalog state is retryable."""
+
+    status_code = 503
+
+    def __init__(self, *, namespace: str, reason: str) -> None:
+        super().__init__(
+            "Kubernetes namespace teardown did not complete. Retry the delete request.",
+            code="kubernetes_namespace_teardown_failed",
+            details={"namespace": namespace, "reason": reason, "retryable": True},
+        )
 
 
 async def list_environments(session: Session, project_id: uuid.UUID) -> list[Environment]:
@@ -268,22 +283,37 @@ async def delete_environment(
         await services.remove_runtime_containers(
             session, service_ids=service_ids, agent=agent, settings=settings
         )
-    await _remove_environment_namespace(environment, settings)
+    await remove_environment_namespace(environment, settings)
     await purge_environment(session, environment)
     session.commit()
     await traefik.render_all(session, settings)
 
 
-async def _remove_environment_namespace(environment: Environment, settings: Settings) -> None:
+async def remove_environment_namespace(environment: Environment, settings: Settings) -> None:
     """Delete the Kubernetes isolation boundary before forgetting its DB row."""
     if settings.runtime != "kubernetes":
         return
-    namespace = f"{settings.kubernetes_namespace_prefix}-{environment.id.hex[:12]}"
-    api = await load_kubernetes_client(settings)
+    namespace = environment_namespace(settings, environment.id)
+    api = None
+    failure: Exception | None = None
     try:
-        await api.delete_namespace(namespace)
-    finally:
-        await api.close()
+        # One monotonic deadline bounds client setup, delete, every poll, and
+        # client close. A stuck API call cannot delay DB cleanup indefinitely.
+        async with asyncio.timeout(settings.kubernetes_namespace_deletion_timeout_seconds):
+            try:
+                api = await load_kubernetes_client(settings)
+                await api.delete_namespace(namespace)
+                while await api.namespace_exists(namespace):  # noqa: ASYNC110 - intentional polling.
+                    await asyncio.sleep(settings.kubernetes_namespace_deletion_poll_seconds)
+            finally:
+                if api is not None:
+                    await api.close()
+    except Exception as exc:
+        failure = exc
+    if failure is not None:
+        raise KubernetesNamespaceTeardownError(
+            namespace=namespace, reason=str(failure)
+        ) from failure
 
 
 async def purge_environment(session: Session, environment: Environment) -> None:
@@ -454,15 +484,15 @@ async def handle_pull_request(
         ).first()
         if hostname and imported is not None:
             scheme = "https" if settings.tls_mode == "acme" else "http"
-            # Let a delivery retry if GitHub could not accept the notification.
-            # The environment/deployment rows are already idempotent by the
-            # project/PR constraint and commit SHA, so a retry is safe and is
-            # the only way to meet the PR URL notification contract.
+            # Deployment runs asynchronously.  Do not present the URL as
+            # ready before its health-gated release has actually gone live.
+            # The environment/deployment rows are idempotent by project/PR
+            # and commit SHA, so retrying the queued notification is safe.
             await github.comment_on_pull_request(
                 imported.installation_id,
                 repo,
                 number,
-                f"Rudder PR environment: {scheme}://{hostname}",
+                f"Rudder PR environment deployment queued: {scheme}://{hostname}",
             )
     return {"environments": created, "detail": "created" if created else "updated"}
 

@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 from rudder_cp.db import get_session
 from rudder_cp.logs.runtime import RuntimeLogNotFound, RuntimeLogStore, get_runtime_log_store
 from rudder_cp.logs.sse import SSE_HEADERS, SSE_MEDIA_TYPE, frame
+from rudder_cp.logs.store import LogEvent
 from rudder_cp.models import Deployment, Instance, RuntimeMetric
 from rudder_cp.routers.auth import CurrentUser
 from rudder_cp.schemas.common import error_responses, translate_errors
@@ -119,7 +120,8 @@ async def get_service(service_id: UUID, session: SessionDep, user: CurrentUser) 
     summary="Tail a service's collected runtime log over SSE",
 )
 async def stream_runtime_log(
-    service_id: UUID, session: SessionDep, user: CurrentUser, store: RuntimeLogStoreDep
+    service_id: UUID, session: SessionDep, user: CurrentUser, store: RuntimeLogStoreDep,
+    follow: bool = True,
 ) -> StreamingResponse:
     with translate_errors():
         await service_ops.get_service(session, service_id, owner_id=user.id)
@@ -130,6 +132,12 @@ async def stream_runtime_log(
 
     async def events():
         try:
+            if not follow:
+                text = await store.snapshot(service_id)
+                if text:
+                    yield frame(LogEvent("chunk", text))
+                yield frame(LogEvent("end", "snapshot"))
+                return
             async for event in store.tail(service_id):
                 yield frame(event)
         except RuntimeLogNotFound:

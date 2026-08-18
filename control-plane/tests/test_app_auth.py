@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from rudder_cp.config import get_settings
+from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.main import create_app
 from rudder_cp.services.github_oauth import GitHubIdentity, GitHubOAuthClient
@@ -65,6 +65,31 @@ def client_fixture(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         yield TestClient(app)
     finally:
         get_settings.cache_clear()
+
+
+@pytest.fixture
+def configured_github_oauth(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> Settings:
+    """Configure OAuth for a single test without leaking app settings."""
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    monkeypatch.setattr(settings, "github_oauth_client_id", "client-id")
+    monkeypatch.setattr(settings, "github_oauth_client_secret", "client-secret")
+    monkeypatch.setattr(
+        settings, "github_oauth_redirect_uri", "http://localhost:8000/auth/github/callback"
+    )
+    return settings
+
+
+@pytest.fixture
+def unconfigured_github_oauth(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clear OAuth configuration for one test and restore it afterwards."""
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    monkeypatch.setattr(settings, "github_oauth_client_id", "")
+    monkeypatch.setattr(settings, "github_oauth_client_secret", "")
+    monkeypatch.setattr(settings, "github_oauth_redirect_uri", "")
 
 
 def _routes(client: TestClient) -> list[tuple[str, str]]:
@@ -131,12 +156,8 @@ def test_healthz_reports_the_selected_runtime(client: TestClient) -> None:
 
 
 def test_github_oauth_start_redirects_to_github(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, configured_github_oauth: Settings
 ) -> None:
-    settings = client.app.state.settings  # type: ignore[attr-defined]
-    settings.github_oauth_client_id = "client-id"
-    settings.github_oauth_client_secret = "client-secret"
-    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
     response = client.get("/auth/github/start", follow_redirects=False)
     assert response.status_code == 307
     assert response.headers["location"].startswith("https://github.com/login/oauth/authorize?")
@@ -146,12 +167,9 @@ def test_github_oauth_start_redirects_to_github(
 
 @pytest.mark.asyncio
 async def test_github_oauth_exchange_uses_the_verified_primary_email(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_github_oauth: Settings
 ) -> None:
-    settings = client.app.state.settings  # type: ignore[attr-defined]
-    settings.github_oauth_client_id = "client-id"
-    settings.github_oauth_client_secret = "client-secret"
-    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
+    settings = configured_github_oauth
     oauth = GitHubOAuthClient(settings)
     state = parse_qs(urlparse(oauth.authorization_url()).query)["state"][0]
 
@@ -205,12 +223,9 @@ async def _identity(_self: GitHubOAuthClient, _code: str, _state: str) -> GitHub
 
 
 def test_github_oauth_callback_opens_the_dashboard_import_flow(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_github_oauth: Settings
 ) -> None:
-    settings = client.app.state.settings  # type: ignore[attr-defined]
-    settings.github_oauth_client_id = "client-id"
-    settings.github_oauth_client_secret = "client-secret"
-    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
+    settings = configured_github_oauth
     state = parse_qs(urlparse(GitHubOAuthClient(settings).authorization_url()).query)["state"][0]
     monkeypatch.setattr(GitHubOAuthClient, "exchange", _identity)
     response = client.get(f"/auth/github/callback?code=valid&state={state}", follow_redirects=False)
@@ -220,13 +235,8 @@ def test_github_oauth_callback_opens_the_dashboard_import_flow(
 
 
 def test_authorization_handoff_consumes_once_after_github_callback(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_github_oauth: Settings
 ) -> None:
-    settings = client.app.state.settings  # type: ignore[attr-defined]
-    settings.github_oauth_client_id = "client-id"
-    settings.github_oauth_client_secret = "client-secret"
-    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
-
     started = client.post("/auth/authorizations")
 
     assert started.status_code == 201
@@ -253,12 +263,9 @@ def test_authorization_handoff_consumes_once_after_github_callback(
     assert client.post(f"/auth/authorizations/{started.json()['id']}/consume").status_code == 401
 
 
-def test_authorization_handoff_is_pending_until_the_browser_callback(client: TestClient) -> None:
-    settings = client.app.state.settings  # type: ignore[attr-defined]
-    settings.github_oauth_client_id = "client-id"
-    settings.github_oauth_client_secret = "client-secret"
-    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
-
+def test_authorization_handoff_is_pending_until_the_browser_callback(
+    client: TestClient, configured_github_oauth: Settings
+) -> None:
     started = client.post("/auth/authorizations")
 
     assert started.status_code == 201
@@ -266,12 +273,8 @@ def test_authorization_handoff_is_pending_until_the_browser_callback(client: Tes
 
 
 def test_github_callback_rejects_an_invalid_state_before_exchange(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_github_oauth: Settings
 ) -> None:
-    settings = client.app.state.settings  # type: ignore[attr-defined]
-    settings.github_oauth_client_id = "client-id"
-    settings.github_oauth_client_secret = "client-secret"
-    settings.github_oauth_redirect_uri = "http://localhost:8000/auth/github/callback"
     monkeypatch.setattr(GitHubOAuthClient, "exchange", _identity)
 
     response = client.get("/auth/github/callback?code=valid&state=invalid", follow_redirects=False)
@@ -280,12 +283,9 @@ def test_github_callback_rejects_an_invalid_state_before_exchange(
     assert response.json()["code"] == "github_oauth_failed"
 
 
-def test_authorization_start_reports_unconfigured_github_oauth(client: TestClient) -> None:
-    settings = client.app.state.settings  # type: ignore[attr-defined]
-    settings.github_oauth_client_id = ""
-    settings.github_oauth_client_secret = ""
-    settings.github_oauth_redirect_uri = ""
-
+def test_authorization_start_reports_unconfigured_github_oauth(
+    client: TestClient, unconfigured_github_oauth: None
+) -> None:
     response = client.post("/auth/authorizations")
 
     assert response.status_code == 503

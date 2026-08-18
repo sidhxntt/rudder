@@ -16,7 +16,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -42,7 +42,7 @@ from rudder_cp.models import (
     ServiceOperationsState,
     Volume,
 )
-from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, KubernetesRuntime
+from rudder_cp.runtime.kubernetes import AsyncKubernetesApi, KubernetesRuntime, PublicRouteSpec
 from rudder_cp.runtime.models import ComposeService as KubernetesComposeService
 from rudder_cp.runtime.models import KubernetesRelease, dns_label
 from rudder_cp.runtime.targets import (
@@ -50,17 +50,20 @@ from rudder_cp.runtime.targets import (
     load_kubernetes_client,
     runtime_settings_from,
 )
+from rudder_cp.schemas.common import RudderError
 from rudder_cp.services import domains, scheduler, traefik, variables
 from rudder_cp.services.agent_client import AgentClient, AgentError
 from rudder_cp.services.builder import BuildFailed, BuildRequest, build_image, validate_gke_image
 from rudder_cp.services.github_app import GitHubAppClient, GitHubAppError
 from rudder_cp.services.health import is_still_alive, wait_until_healthy
+from rudder_cp.services.kubernetes_namespace import environment_namespace
 from rudder_cp.services.locks import service_deploy_lock
 from rudder_cp.services.operation_reconciler import (
     mark_runtime_operations_failed,
     mark_runtime_operations_progressing,
     reconcile_runtime_operations,
 )
+from rudder_cp.services.pr_notifications import enqueue_ready_notification
 
 log = logging.getLogger("rudder_cp.deploy")
 
@@ -246,102 +249,164 @@ async def _deploy_locked(
     session.add(deployment)
     _supersede_older(session, deployment)
     session.commit()
+    placement_intents: list[Instance] = []
     try:
         env = await variables.resolve_service_env(session, service.id)
-        node = scheduler.select_node_for_service(session, service)
-        # A named Docker volume is host-local. Pin every unassigned declaration
-        # before the remote create call so every later deployment is forced back
-        # to this node; losing the node is safer than silently starting empty.
-        for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all():
-            if volume.node_id is None:
-                volume.node_id = node.id
-                session.add(volume)
+        # Persist capacity and Instance intents in one transaction before
+        # remote Docker I/O.  replica_count is desired state: every requested
+        # replica receives a reservation and durable intent, rather than one
+        # container being started regardless of the Service setting.
+        placement_intents = list(
+            session.exec(
+                select(Instance).where(
+                    Instance.deployment_id == deployment.id,
+                    Instance.status == InstanceStatus.STARTING,
+                )
+            ).all()
+        )
+        if len(placement_intents) > service.replica_count:
+            raise ValueError("Deployment has more pending replicas than the service desires.")
+        for placement_intent in placement_intents:
+            if session.get(Node, placement_intent.node_id) is None:
+                raise ValueError("The reserved deployment node no longer exists.")
+
         # Reserve capacity while the scheduler's row locks are held, then
-        # commit before making a remote agent call.  Holding a database
+        # commit before making remote agent calls. Holding a database
         # transaction open across Docker/image-pull I/O blocks the selected
         # node's heartbeat and can make a healthy node look unavailable.
-        node.cpu_allocated += service.cpu_limit
-        node.memory_allocated_mb += service.memory_limit_mb
-        session.add(node)
+        while len(placement_intents) < service.replica_count:
+            node = scheduler.select_node_for_service(session, service)
+            # A named Docker volume is host-local. Pin every unassigned
+            # declaration before the remote create call so every later replica
+            # and deployment is forced back to this node; losing the node is
+            # safer than silently starting empty storage elsewhere.
+            for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all():
+                if volume.node_id is None:
+                    volume.node_id = node.id
+                    session.add(volume)
+            node.cpu_allocated += service.cpu_limit
+            node.memory_allocated_mb += service.memory_limit_mb
+            placement_intent = Instance(
+                deployment_id=deployment.id,
+                node_id=node.id,
+                status=InstanceStatus.STARTING,
+                started_at=datetime.now(UTC),
+            )
+            session.add(node)
+            session.add(placement_intent)
+            placement_intents.append(placement_intent)
         session.commit()
     except Exception as exc:
+        # The reservations above are deliberately committed together. If
+        # scheduling a later replica fails, rollback the whole transaction so
+        # the failed candidate cannot leak capacity for earlier replicas.
+        session.rollback()
+        deployment = session.get(Deployment, deployment.id) or deployment
         # Reference resolution errors are written for the user to read.
         return _fail(session, deployment, str(exc))
 
-    node_agent = agent.for_node(node.ip_address)
-    container_name = f"rudder-{service.name}-{str(deployment.id)[:8]}"
-
-    try:
-        volumes = {
-            f"rudder-volume-{volume.id}": {"bind": volume.mount_path, "mode": "rw"}
-            for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all()
-        }
-        state = await node_agent.create_container(
-            image=deployment.image_tag or "",
-            name=container_name,
-            env=env,
-            container_port=service.container_port,
-            cpu_limit=service.cpu_limit,
-            memory_limit_mb=service.memory_limit_mb,
-            network=settings.docker_network,
-            labels={
-                "rudder.service": str(service.id),
-                "rudder.deployment": str(deployment.id),
-            },
-            network_aliases=[service.name] if isinstance(managed_image, str) else [],
-            volumes=volumes,
-            command=service.build_config.get("command") if isinstance(managed_image, str) else None,
-        )
-    except AgentError as exc:
-        _release_node_capacity(session, node.id, service)
-        return _fail(session, deployment, f"Could not start the container. {exc}")
-
-    instance = Instance(
-        deployment_id=deployment.id,
-        node_id=node.id,
-        container_id=state.id,
-        status=InstanceStatus.STARTING,
-        started_at=datetime.now(UTC),
-    )
-    session.add(instance)
-    session.commit()
+    volumes = {
+        f"rudder-volume-{volume.id}": {"bind": volume.mount_path, "mode": "rw"}
+        for volume in session.exec(select(Volume).where(Volume.service_id == service.id)).all()
+    }
+    for replica_index, instance in enumerate(placement_intents, start=1):
+        node = session.get(Node, instance.node_id)
+        if node is None:
+            await _discard_replicas(agent, session, placement_intents, service)
+            return _fail(session, deployment, "The reserved deployment node no longer exists.")
+        node_agent = agent.for_node(node.ip_address)
+        if instance.container_id is None:
+            suffix = "" if service.replica_count == 1 else f"-r{replica_index}"
+            container_name = f"rudder-{service.name}-{str(deployment.id)[:8]}{suffix}"
+            try:
+                state = await node_agent.create_container(
+                    image=deployment.image_tag or "",
+                    name=container_name,
+                    env=env,
+                    container_port=service.container_port,
+                    cpu_limit=service.cpu_limit,
+                    memory_limit_mb=service.memory_limit_mb,
+                    network=settings.docker_network,
+                    labels={
+                        "rudder.service": str(service.id),
+                        "rudder.deployment": str(deployment.id),
+                    },
+                    network_aliases=[service.name] if isinstance(managed_image, str) else [],
+                    volumes=volumes,
+                    command=(
+                        service.build_config.get("command")
+                        if isinstance(managed_image, str)
+                        else None
+                    ),
+                )
+            except AgentError as exc:
+                await _discard_replicas(agent, session, placement_intents, service)
+                return _fail(session, deployment, f"Could not start the container. {exc}")
+            instance.container_id = state.id
+            session.add(instance)
+            session.commit()
 
     # ------------------------------------------------------------- health
-    outcome = await wait_until_healthy(
-        node_agent,
-        state.id,
-        path=service.health_check_path,
-        port=service.health_check_port or service.container_port,
-        settings=settings,
-        protocol="tcp" if isinstance(managed_image, str) else "http",
-    )
-    if not outcome.healthy:
-        await _discard(agent, session, instance, drain_seconds=0)
-        _release_node_capacity(session, node.id, service)
-        return _fail(session, deployment, outcome.reason or "Health check failed.")
-
-    # The container answered 200 at some point in the last few seconds. That is
-    # not the same as it being alive right now, and the traffic shift is about
-    # to happen. Check again at the moment of the shift.
-    if not await is_still_alive(node_agent, state.id):
-        await _discard(agent, session, instance, drain_seconds=0)
-        _release_node_capacity(session, node.id, service)
-        return _fail(
-            session,
-            deployment,
-            "The container passed its health check and then stopped before "
-            "traffic could be shifted to it.",
+    for instance in placement_intents:
+        node = session.get(Node, instance.node_id)
+        if node is None:
+            await _discard_replicas(agent, session, placement_intents, service)
+            return _fail(
+                session,
+                deployment,
+                "The selected Rudder node is no longer available for health checks.",
+            )
+        node_agent = agent.for_node(node.ip_address)
+        if instance.container_id is None:
+            await _discard_replicas(agent, session, placement_intents, service)
+            return _fail(
+                session,
+                deployment,
+                "A replica was created without a container identifier.",
+            )
+        outcome = await wait_until_healthy(
+            node_agent,
+            instance.container_id,
+            path=service.health_check_path,
+            port=service.health_check_port or service.container_port,
+            settings=settings,
+            protocol="tcp" if isinstance(managed_image, str) else "http",
         )
+        if not outcome.healthy:
+            await _discard_replicas(agent, session, placement_intents, service)
+            return _fail(session, deployment, outcome.reason or "Health check failed.")
+
+        # The container answered 200 at some point in the last few seconds.
+        # Check every replica again at the moment traffic is shifted.
+        if not await is_still_alive(node_agent, instance.container_id):
+            await _discard_replicas(agent, session, placement_intents, service)
+            return _fail(
+                session,
+                deployment,
+                "A replica passed its health check and then stopped before "
+                "traffic could be shifted to it.",
+            )
+
+    # A permanent deployment URL is part of a successful release contract.
+    # Create it before the one promotion commit so a routing artifact failure
+    # cannot leave a live deployment without its immutable URL.
+    try:
+        await domains.create_deployment_domain(session, deployment=deployment)
+    except RudderError as exc:
+        await _discard_replicas(agent, session, placement_intents, service)
+        return _fail(session, deployment, f"Could not create permanent deployment URL. {exc}")
 
     # ------------------------------------------------------------- shift
-    instance.status = InstanceStatus.HEALTHY
+    for instance in placement_intents:
+        instance.status = InstanceStatus.HEALTHY
+        node = session.get(Node, instance.node_id)
+        if node is not None:
+            instance.missing_after_heartbeat_generation = node.heartbeat_generation + 1
+        session.add(instance)
     deployment.status = DeploymentStatus.LIVE
     deployment.became_live_at = datetime.now(UTC)
-    session.add(instance)
     session.add(deployment)
     _supersede_previously_live(session, deployment)
-    session.commit()
-    await domains.create_deployment_domain(session, deployment=deployment)
     session.commit()
 
     # A successful release stays running as an immutable restore target. A
@@ -350,6 +415,7 @@ async def _deploy_locked(
     # Domains resolve through the live Deployment, so routing is regenerated
     # after the status flip, never before it.
     await traefik.render_all(session, settings)
+    enqueue_ready_notification(session, deployment=deployment, service=service, settings=settings)
 
     return DeployOutcome(deployment.id, DeploymentStatus.LIVE)
 
@@ -368,6 +434,20 @@ def _release_node_capacity(session: Session, node_id: UUID, service: Service) ->
     node.memory_allocated_mb = max(0, node.memory_allocated_mb - service.memory_limit_mb)
     session.add(node)
     session.commit()
+
+
+async def _discard_replicas(
+    agent: AgentClient,
+    session: Session,
+    instances: list[Instance],
+    service: Service,
+) -> None:
+    """Stop a failed candidate and return each replica's reservation exactly once."""
+    for instance in instances:
+        if instance.status is InstanceStatus.STOPPED:
+            continue
+        await _discard(agent, session, instance, drain_seconds=0)
+        _release_node_capacity(session, instance.node_id, service)
 
 
 async def _deploy_imported_compose(
@@ -571,11 +651,24 @@ async def _deploy_imported_compose(
             "Compose services stopped before traffic could be shifted: " + ", ".join(stopped) + ".",
         )
 
+    # A deployment URL is an immutable part of a successful promotion.  Add
+    # it to the same transaction as the LIVE transition so a failed hostname
+    # reservation never leaves a candidate serving without its rollback URL.
+    try:
+        await domains.create_deployment_domain(session, deployment=deployment)
+    except RudderError as exc:
+        for instance in instances_by_service.values():
+            await _discard(agent, session, instance, drain_seconds=0)
+        await _compose_down_safely(node_agent, project_name)
+        _release_node_capacity(session, node.id, service)
+        return _fail(session, deployment, f"Could not create the permanent deployment URL. {exc}")
+
     for mapping in mappings:
         mapping.container_id = state_by_service[mapping.compose_service].container_id
         session.add(mapping)
     for instance in instances_by_service.values():
         instance.status = InstanceStatus.HEALTHY
+        instance.missing_after_heartbeat_generation = node.heartbeat_generation + 1
         session.add(instance)
     deployment.status = DeploymentStatus.LIVE
     deployment.became_live_at = datetime.now(UTC)
@@ -583,9 +676,8 @@ async def _deploy_imported_compose(
     _supersede_previously_live(session, deployment)
     # Keep each Compose candidate alive as an immutable rollback target.
     session.commit()
-    await domains.create_deployment_domain(session, deployment=deployment)
-    session.commit()
     await traefik.render_all(session, settings)
+    enqueue_ready_notification(session, deployment=deployment, service=service, settings=settings)
     return DeployOutcome(deployment.id, DeploymentStatus.LIVE)
 
 
@@ -608,20 +700,17 @@ async def _deploy_imported_kubernetes(
     session.add(deployment)
     _supersede_older(session, deployment)
     session.commit()
-    # Deployment records retain immutable rollback artifacts, but old
-    # candidate-labelled Kubernetes workloads must not keep reserving CPU once
-    # a new candidate has safely promoted its route.
-    retired_release_ids = [
-        str(previous.id)
-        for previous in session.exec(
-            select(Deployment).where(
-                Deployment.service_id == deployment.service_id,
-                Deployment.id != deployment.id,
-                Deployment.status == DeploymentStatus.LIVE,
-            )
-        ).all()
-    ]
-
+    # Keep the prior live pointer before the candidate is committed.  Route
+    # promotion is an external side effect and can fail after that commit; in
+    # that case this is the exact immutable release the stable Ingress must
+    # be put back on.
+    previous_live = session.exec(
+        select(Deployment).where(
+            Deployment.service_id == service.id,
+            Deployment.id != deployment.id,
+            Deployment.status == DeploymentStatus.LIVE,
+        )
+    ).first()
     anchor_node = _kubernetes_accounting_anchor(session, settings)
     if anchor_node is None:
         return _fail(
@@ -630,8 +719,17 @@ async def _deploy_imported_kubernetes(
             "No healthy Rudder node is available to account for this Kubernetes release.",
         )
     api: AsyncKubernetesApi | None = None
+    runtime: KubernetesRuntime | None = None
     mappings: list[GitHubImportService] = []
+    namespace = ""
+    permanent_domain: Domain | None = None
     try:
+        # Reserve the immutable hostname before Kubernetes can update the
+        # stable route.  The host is then rendered as its own release-scoped
+        # Ingress below, rather than merely being a database artifact.
+        permanent_domain = await domains.create_deployment_domain(
+            session, deployment=deployment
+        )
         app_env = await variables.resolve_service_env(session, service.id)
         manifest = await _compose_runtime_manifest(
             session,
@@ -702,6 +800,11 @@ async def _deploy_imported_kubernetes(
                     environment=member_environment,
                     public=mapping.is_public,
                     public_host=public_domain.hostname if public_domain is not None else None,
+                    permanent_public_host=(
+                        permanent_domain.hostname
+                        if mapping.service_id == service.id and mapping.is_public
+                        else None
+                    ),
                     stateful=mapping.role
                     in {"database", "cache", "broker", "search", "storage"},
                     volume_mount_path=volume.mount_path if volume is not None else None,
@@ -709,9 +812,7 @@ async def _deploy_imported_kubernetes(
                     operations=operations_state.desired if operations_state is not None else {},
                 )
             )
-        namespace = dns_label(
-            f"{settings.kubernetes_namespace_prefix}-{service.environment_id.hex[:12]}"
-        )
+        namespace = dns_label(environment_namespace(settings, service.environment_id))
         runtime_settings = runtime_settings_from(settings)
         api = await load_kubernetes_client(settings)
         runtime = KubernetesRuntime(
@@ -736,38 +837,39 @@ async def _deploy_imported_kubernetes(
             project_id=str(imported.project_id),
             environment_id=str(service.environment_id),
             on_progress=lambda text: _append_release_log(store, deployment.id, text),
+            # A Kubernetes Ingress is the user-visible commit.  Do not shift
+            # it while the database can still reject the LIVE transition.
+            promote_public_routes=False,
         )
-        for retired_release_id in retired_release_ids:
+    except (ApiException, OSError, ValueError, yaml.YAMLError, RuntimeError, RudderError) as exc:
+        if api is not None and namespace:
             try:
-                await api.delete_release(namespace, retired_release_id)
+                await api.delete_release(namespace, str(deployment.id))
                 await _append_release_log(
                     store,
                     deployment.id,
-                    f"kubernetes: removed superseded release {retired_release_id[:8]}\n",
+                    "kubernetes: removed candidate after promotion failed\n",
                 )
-            except (ApiException, OSError) as exc:
-                # The new release is already healthy and promoted. Retaining a
-                # stale stateless candidate is recoverable; rolling back the
-                # newly promoted route over cleanup failure is not.
+            except (ApiException, OSError) as cleanup_exc:
                 log.warning(
-                    "could not remove superseded Kubernetes release %s: %s",
-                    retired_release_id,
-                    exc,
+                    "could not remove failed Kubernetes candidate %s: %s",
+                    deployment.id,
+                    cleanup_exc,
                 )
-    except (ApiException, OSError, ValueError, yaml.YAMLError, RuntimeError) as exc:
+        if permanent_domain is not None:
+            session.delete(permanent_domain)
         if mappings:
             mark_runtime_operations_failed(
                 session,
                 service_ids=[mapping.service_id for mapping in mappings],
                 reason=f"Kubernetes release failed before readiness: {exc}",
             )
-        return _fail(session, deployment, f"Could not apply Kubernetes release. {exc}")
-    finally:
         if api is not None:
             # The async Kubernetes client owns a network session. A deployment
             # failure must not leak it and eventually starve later releases.
             with suppress(Exception):
                 await api.close()
+        return _fail(session, deployment, f"Could not apply Kubernetes release. {exc}")
 
     for mapping in mappings:
         pod_id = result.pod_ids[mapping.compose_service]
@@ -792,14 +894,124 @@ async def _deploy_imported_kubernetes(
     deployment.became_live_at = datetime.now(UTC)
     session.add(deployment)
     _supersede_previously_live(session, deployment)
-    session.commit()
-    await domains.create_deployment_domain(session, deployment=deployment)
-    session.commit()
+    try:
+        session.commit()
+    except Exception as exc:
+        # The candidate is ready but no public Ingress has been touched yet.
+        # Roll back the database transaction and remove only this immutable
+        # release, leaving the previous live route and deployment intact.
+        session.rollback()
+        if api is not None and namespace:
+            with suppress(ApiException, OSError):
+                await api.delete_release(namespace, str(deployment.id))
+        if permanent_domain is not None:
+            persisted_domain = session.get(Domain, permanent_domain.id)
+            if persisted_domain is not None:
+                session.delete(persisted_domain)
+        if mappings:
+            mark_runtime_operations_failed(
+                session,
+                service_ids=[mapping.service_id for mapping in mappings],
+                reason=f"Kubernetes release state could not be persisted: {exc}",
+            )
+        if api is not None:
+            with suppress(Exception):
+                await api.close()
+        deployment = session.get(Deployment, deployment.id) or deployment
+        return _fail(
+            session,
+            deployment,
+            f"Could not persist Kubernetes release before routing traffic. {exc}",
+        )
+    try:
+        assert runtime is not None
+        await runtime.promote_public_routes(
+            namespace,
+            result.public_routes,
+            on_progress=lambda text: _append_release_log(store, deployment.id, text),
+        )
+    except Exception as exc:
+        # A route update can fail after one stable Ingress has already been
+        # replaced. Restore every previous stable route before deleting the
+        # candidate-labelled resources; otherwise an ingress failure would
+        # leave the database and traffic pointing at different releases.
+        restore_error: Exception | None = None
+        previous_routes = _previous_kubernetes_public_routes(
+            result.public_routes,
+            previous_live=previous_live,
+            namespace=namespace,
+            mappings=mappings,
+        )
+        if previous_routes:
+            try:
+                await runtime.promote_public_routes(
+                    namespace,
+                    previous_routes,
+                    on_progress=lambda text: _append_release_log(store, deployment.id, text),
+                )
+            except Exception as rollback_exc:
+                restore_error = rollback_exc
+        if restore_error is None:
+            try:
+                assert api is not None
+                await api.delete_release(namespace, str(deployment.id))
+            except Exception as cleanup_exc:
+                restore_error = cleanup_exc
+
+        if restore_error is None:
+            # Revert the durable pointer only after Kubernetes is back on the
+            # former release.  This is deliberately idempotent: a retry sees
+            # the old stable routes and a failed candidate with no resources.
+            candidate = session.get(Deployment, deployment.id) or deployment
+            if previous_live is not None:
+                previous = session.get(Deployment, previous_live.id)
+                if previous is not None:
+                    previous.status = DeploymentStatus.LIVE
+                    session.add(previous)
+            for instance in session.exec(
+                select(Instance).where(Instance.deployment_id == candidate.id)
+            ).all():
+                instance.status = InstanceStatus.STOPPED
+                instance.stopped_at = datetime.now(UTC)
+                session.add(instance)
+            candidate.status = DeploymentStatus.FAILED
+            candidate.error_message = f"Could not promote Kubernetes public routes. {exc}"
+            session.add(candidate)
+            if permanent_domain is not None:
+                persisted_domain = session.get(Domain, permanent_domain.id)
+                if persisted_domain is not None:
+                    session.delete(persisted_domain)
+            if mappings:
+                mark_runtime_operations_failed(
+                    session,
+                    service_ids=[mapping.service_id for mapping in mappings],
+                    reason=f"Kubernetes public-route promotion failed: {exc}",
+                )
+            session.commit()
+            await _append_release_log(
+                store,
+                deployment.id,
+                "kubernetes: restored prior public routes after promotion failure\n",
+            )
+            return DeployOutcome(candidate.id, DeploymentStatus.FAILED, candidate.error_message)
+
+        # We cannot safely claim either release is live while the restoration
+        # itself is uncertain. Keep the persisted candidate pointer intact so
+        # the reconciler can retry from the known externally-visible state.
+        raise RuntimeError(
+            f"Could not promote Kubernetes public routes: {exc}; "
+            f"rollback was not completed: {restore_error}"
+        ) from exc
+    finally:
+        if api is not None:
+            with suppress(Exception):
+                await api.close()
     await _append_release_log(
         store,
         deployment.id,
         "Kubernetes release is ready; public routes were promoted after readiness.\n",
     )
+    enqueue_ready_notification(session, deployment=deployment, service=service, settings=settings)
     return DeployOutcome(deployment.id, DeploymentStatus.LIVE)
 
 
@@ -874,6 +1086,46 @@ async def _append_release_log(store: BuildLogStore, deployment_id: UUID, text: s
         await asyncio.wait_for(store.append(deployment_id, text), timeout=2)
     except TimeoutError:
         log.warning("timed out appending Compose output for deployment %s", deployment_id)
+
+
+def _previous_kubernetes_public_routes(
+    candidate_routes: tuple[PublicRouteSpec, ...],
+    *,
+    previous_live: Deployment | None,
+    namespace: str,
+    mappings: list[GitHubImportService],
+) -> tuple[PublicRouteSpec, ...]:
+    """Rebuild stable route intents for the release that served before this one.
+
+    Immutable deployment URLs are not part of the stable handoff: they retain
+    their original release-qualified Ingress.  Only the shared ``route-*``
+    resources are restored after a partial promotion failure.
+    """
+    if previous_live is None:
+        return ()
+    by_compose_service = {mapping.compose_service: mapping for mapping in mappings}
+    previous_release = KubernetesRelease(
+        namespace=namespace,
+        release_id=str(previous_live.id),
+        services=(),
+    )
+    restored: list[PublicRouteSpec] = []
+    for route in candidate_routes:
+        labels = route.labels
+        route_kind = labels.get("rudder.route", "")
+        if route_kind.endswith("-deployment"):
+            continue
+        compose_service = labels.get("rudder.service")
+        mapping = by_compose_service.get(compose_service)
+        if mapping is None:
+            continue
+        backend = (
+            dns_label(mapping.compose_service)
+            if mapping.role in {"database", "cache", "broker", "search", "storage"}
+            else previous_release.resource_name(mapping.compose_service)
+        )
+        restored.append(replace(route, backend_service_name=backend))
+    return tuple(restored)
 
 
 def _supersede_older(session: Session, current: Deployment) -> None:

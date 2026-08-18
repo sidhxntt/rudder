@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from kubernetes_asyncio.client import ApiException
 from sqlmodel import Session, select
 
 from rudder_cp.config import Settings
-from rudder_cp.models import Deployment, Instance, InstanceStatus, Node, RuntimeMetric
+from rudder_cp.models import Deployment, Instance, InstanceStatus, Node, RuntimeMetric, Service
+from rudder_cp.runtime.targets import load_kubernetes_client
 from rudder_cp.services.agent_client import AgentClient, AgentError
+from rudder_cp.services.kubernetes_namespace import environment_namespace
 
 RAW_SECONDS = 10
 MINUTE_SECONDS = 60
@@ -16,6 +19,8 @@ FIVE_MINUTE_SECONDS = 300
 
 
 async def collect_runtime_metrics(session: Session, agent: AgentClient, settings: Settings) -> int:
+    if settings.runtime == "kubernetes":
+        return await _collect_kubernetes_runtime_metrics(session, settings)
     if settings.runtime != "docker":
         return 0
     rows = session.exec(
@@ -45,6 +50,52 @@ async def collect_runtime_metrics(session: Session, agent: AgentClient, settings
         added += 1
     if added:
         session.commit()
+    return added
+
+
+async def _collect_kubernetes_runtime_metrics(session: Session, settings: Settings) -> int:
+    """Persist metrics-server Pod usage without requiring access to GKE nodes."""
+    rows = session.exec(
+        select(Instance, Service)
+        .join(Deployment, Deployment.id == Instance.deployment_id)  # type: ignore[arg-type]
+        .join(Service, Service.id == Deployment.service_id)  # type: ignore[arg-type]
+        .where(Instance.status.in_((InstanceStatus.HEALTHY, InstanceStatus.UNHEALTHY)))  # type: ignore[attr-defined]
+    ).all()
+    now = datetime.now(UTC).replace(microsecond=0)
+    api = None
+    added = 0
+    try:
+        api = await load_kubernetes_client(settings)
+        for instance, service in rows:
+            if not instance.container_id:
+                continue
+            namespace = environment_namespace(settings, service.environment_id)
+            try:
+                observed = await api.runtime_metrics(namespace, instance.container_id)
+            except (ApiException, OSError, RuntimeError):
+                continue
+            session.add(
+                RuntimeMetric(
+                    instance_id=instance.id,
+                    captured_at=now,
+                    resolution_seconds=RAW_SECONDS,
+                    cpu_percent=observed.cpu_percent,
+                    memory_bytes=observed.memory_bytes,
+                )
+            )
+            added += 1
+        if added:
+            session.commit()
+    except (ApiException, OSError, RuntimeError):
+        # Metrics are best-effort: a short control-plane or metrics-server
+        # outage must not prevent deployments and reconciliation from running.
+        return 0
+    finally:
+        if api is not None:
+            try:
+                await api.close()
+            except (ApiException, OSError, RuntimeError):
+                pass
     return added
 
 

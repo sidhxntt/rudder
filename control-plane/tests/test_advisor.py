@@ -61,3 +61,16 @@ def test_response_parser_reads_structured_responses_api_output():
     }
 
     assert response_text(payload) == "All services are live."
+
+
+def test_response_parser_returns_empty_text_when_model_has_no_text():
+    assert response_text({"output": []}) == ""
+
+
+async def test_diagnosis_treats_blank_model_response_as_unavailable():
+    async def model(_: str) -> str:
+        return "   \n"
+
+    assert await diagnose_failure(
+        api_key="test-key", logs=["error"], service_config={}, complete=model
+    ) is None

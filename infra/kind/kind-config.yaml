@@ -1,5 +1,10 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+# Kind's built-in kindnetd deliberately does not enforce Kubernetes
+# NetworkPolicy. Rudder's acceptance verifier proves tenant isolation with
+# real traffic, so bootstrap installs Calico as the sole CNI instead.
+networking:
+  disableDefaultCNI: true
 containerdConfigPatches:
   - |-
     [plugins."io.containerd.grpc.v1.cri".registry.mirrors."kind-registry:5000"]

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from sqlmodel import Session
 
 from rudder_cp.db import get_session
+from rudder_cp.routers.auth import CurrentUser
 from rudder_cp.schemas.common import error_responses, translate_errors
 from rudder_cp.schemas.project import (
     ProjectCreate,
@@ -26,6 +27,7 @@ from rudder_cp.schemas.project import (
     ProjectUpdate,
 )
 from rudder_cp.services import projects as project_ops
+from rudder_cp.services.ownership import list_owned_projects, require_owned_project
 
 router = APIRouter(tags=["projects"])
 
@@ -44,22 +46,24 @@ SessionDep = Annotated[Session, Depends(get_session)]
         "full project resource."
     ),
 )
-async def create_project(payload: ProjectCreate, session: SessionDep) -> ProjectRead:
+async def create_project(
+    payload: ProjectCreate, session: SessionDep, user: CurrentUser
+) -> ProjectRead:
     with translate_errors():
-        # TODO(auth): pass owner_id=current_user.id instead of the seeded user.
-        project = await project_ops.create_project(session, payload)
+        project = await project_ops.create_project(session, payload, owner_id=user.id)
     return ProjectRead.model_validate(project)
 
 
 @router.get(
     "/projects",
     response_model=list[ProjectRead],
+    responses=error_responses(422),
     operation_id="list_projects",
     summary="List projects",
 )
-async def list_projects(session: SessionDep) -> list[ProjectRead]:
+async def list_projects(session: SessionDep, user: CurrentUser) -> list[ProjectRead]:
     with translate_errors():
-        projects = await project_ops.list_projects(session)
+        projects = list_owned_projects(session, user.id)
     return [ProjectRead.model_validate(project) for project in projects]
 
 
@@ -70,9 +74,9 @@ async def list_projects(session: SessionDep) -> list[ProjectRead]:
     operation_id="get_project",
     summary="Get a project",
 )
-async def get_project(project_id: UUID, session: SessionDep) -> ProjectRead:
+async def get_project(project_id: UUID, session: SessionDep, user: CurrentUser) -> ProjectRead:
     with translate_errors():
-        project = await project_ops.get_project(session, project_id)
+        project = require_owned_project(session, project_id, user.id)
     return ProjectRead.model_validate(project)
 
 
@@ -85,9 +89,10 @@ async def get_project(project_id: UUID, session: SessionDep) -> ProjectRead:
     description="Fields left out are untouched. Returns the full project resource.",
 )
 async def update_project(
-    project_id: UUID, payload: ProjectUpdate, session: SessionDep
+    project_id: UUID, payload: ProjectUpdate, session: SessionDep, user: CurrentUser
 ) -> ProjectRead:
     with translate_errors():
+        require_owned_project(session, project_id, user.id)
         project = await project_ops.update_project(session, project_id, payload)
     return ProjectRead.model_validate(project)
 
@@ -104,9 +109,10 @@ async def update_project(
     ),
 )
 async def replace_project(
-    project_id: UUID, payload: ProjectReplace, session: SessionDep
+    project_id: UUID, payload: ProjectReplace, session: SessionDep, user: CurrentUser
 ) -> ProjectRead:
     with translate_errors():
+        require_owned_project(session, project_id, user.id)
         project = await project_ops.replace_project(session, project_id, payload)
     return ProjectRead.model_validate(project)
 
@@ -124,8 +130,11 @@ async def replace_project(
         "nothing left to cache."
     ),
 )
-async def delete_project(project_id: UUID, request: Request, session: SessionDep) -> None:
+async def delete_project(
+    project_id: UUID, request: Request, session: SessionDep, user: CurrentUser
+) -> None:
     with translate_errors():
+        require_owned_project(session, project_id, user.id)
         await project_ops.delete_project(
             session,
             project_id,

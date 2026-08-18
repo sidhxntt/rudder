@@ -1,4 +1,5 @@
 import * as clack from "@clack/prompts";
+import { CliCancellationError } from "./errors.js";
 
 type Api = { baseUrl?: string; request(method: string, path: string, body?: unknown): Promise<unknown> };
 type PromptApi = Pick<typeof clack, "select" | "multiselect" | "confirm" | "isCancel" | "note" | "spinner">;
@@ -30,7 +31,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
       ...templates.map(template => ({ value: template.id, label: template.name, hint: template.description })),
     ],
   });
-  if (prompts.isCancel(source)) return;
+  if (prompts.isCancel(source)) throw new CliCancellationError();
   const templateId = source === "repository" ? null : source;
 
   const installations = asArray<Installation>(await loading(prompts, "Loading GitHub connections", "GitHub connections ready", () => api.request("GET", "/github/import/installations")));
@@ -43,7 +44,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
       hint: installation.repository_selection === "all" ? "all repositories" : "selected repositories",
     })),
   });
-  if (prompts.isCancel(installationId)) return;
+  if (prompts.isCancel(installationId)) throw new CliCancellationError();
 
   const repositories = asArray<Repository>(await loading(prompts, "Loading repositories", "Repositories ready", () => api.request("GET", `/github/import/repositories?installation_id=${installationId}`)));
   if (!repositories.length) throw new Error("This GitHub connection has no repositories available to Rudder.");
@@ -51,7 +52,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
     message: "Choose repository",
     options: repositories.map(item => ({ value: item.full_name, label: item.full_name, hint: item.private ? "private" : "public" })),
   });
-  if (prompts.isCancel(repository)) return;
+  if (prompts.isCancel(repository)) throw new CliCancellationError();
 
   const selectedRepository = repositories.find(item => item.full_name === repository);
   const branches = asArray<string>(await loading(prompts, "Loading branches", "Branches ready", () => api.request("GET", `/github/import/branches?installation_id=${installationId}&repository=${encodeURIComponent(repository)}`)));
@@ -61,7 +62,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
     options: branches.map(item => ({ value: item, label: item })),
     initialValue: selectedRepository?.default_branch && branches.includes(selectedRepository.default_branch) ? selectedRepository.default_branch : branches[0],
   });
-  if (prompts.isCancel(branch)) return;
+  if (prompts.isCancel(branch)) throw new CliCancellationError();
 
   const selection = { installation_id: installationId, repository, branch, template_id: templateId };
   const preview = asPreview(await loading(prompts, `Inspecting ${repository}@${branch}`, "Release inspected", () => api.request("POST", "/github/import/preview", selection)));
@@ -74,7 +75,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
       initialValues: preview.addons,
     })
     : [];
-  if (prompts.isCancel(addons)) return;
+  if (prompts.isCancel(addons)) throw new CliCancellationError();
 
   const publicServices = preview.services.filter(service => service.role === "web" && service.is_public).map(service => service.name);
   if (!publicServices.length) throw new Error("The reviewed release has no public web service to deploy.");
@@ -84,11 +85,12 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
     initialValues: publicServices,
     required: true,
   });
-  if (prompts.isCancel(selectedPublicServices)) return;
+  if (prompts.isCancel(selectedPublicServices)) throw new CliCancellationError();
   if (!selectedPublicServices.length) throw new Error("Select at least one public web service.");
 
   const confirmed = await prompts.confirm({ message: `Create and deploy ${repository}@${branch}?`, initialValue: false });
-  if (prompts.isCancel(confirmed) || !confirmed) return;
+  if (prompts.isCancel(confirmed)) throw new CliCancellationError();
+  if (!confirmed) return undefined;
 
   const created = asCreatedImport(await loading(prompts, "Creating release", "Release created", () => api.request("POST", "/github/imports", {
     ...selection,
@@ -96,7 +98,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
     public_services: selectedPublicServices,
   })));
   const progress = asProgress(await loading(prompts, "Reading deployment progress", "Deployment progress ready", () => api.request("GET", `/github/imports/${encodeURIComponent(created.import_id)}`)));
-  const progressText = progress.steps.map(step => `${step.service_name ?? "service"} · ${step.error_message ?? step.status}`).join("\n") || "Release queued";
+  const progressText = progress.steps.map(step => `${step.service_name ?? "service"} · ${step.status}${step.error_message ? ` · ${step.error_message}` : ""}`).join("\n") || "Release queued";
   prompts.note(`${progressText}\n\nOpen in web: ${workspaceUrl(api.baseUrl, created.project_id, created.environment_id)}`, "Import started");
   return { projectId: created.project_id, environmentId: created.environment_id };
 }
@@ -142,8 +144,13 @@ function previewSummary(preview: Preview): string {
   return [source, ...services].join("\n");
 }
 function workspaceUrl(apiBaseUrl: string | undefined, projectId: string, environmentId: string): string {
-  const origin = process.env.RUDDER_WEB_URL ?? apiBaseUrl ?? "http://localhost:3000";
-  const web = new URL(origin);
-  if (!process.env.RUDDER_WEB_URL && web.hostname === "localhost" && web.port === "8000") web.port = "3000";
+  const fallback = "http://localhost:3000";
+  let web: URL;
+  try {
+    web = new URL(process.env.RUDDER_WEB_URL ?? apiBaseUrl ?? fallback);
+  } catch {
+    web = new URL(fallback);
+  }
+  if ((web.hostname === "localhost" || web.hostname === "127.0.0.1") && web.port === "8000") web.port = "3000";
   return new URL(`/projects/${encodeURIComponent(projectId)}/environments/${encodeURIComponent(environmentId)}`, web).toString();
 }

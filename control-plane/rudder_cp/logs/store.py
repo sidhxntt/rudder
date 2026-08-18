@@ -118,6 +118,15 @@ class BuildLogStore:
         path = self.path_for(deployment_id)
         await asyncio.to_thread(self._append, path, terminal_marker(status))
 
+    async def snapshot(self, deployment_id: str | UUID) -> tuple[str, str | None]:
+        """Read the current visible output once, without subscribing to appends."""
+        path = self.path_for(deployment_id)
+        if not path.is_file():
+            raise BuildLogNotFound(f"no build log for deployment {deployment_id}")
+        data = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+        text, status, done = _consume(data)
+        return text, status if done else None
+
     @staticmethod
     def _create(path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

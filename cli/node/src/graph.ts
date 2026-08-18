@@ -20,14 +20,14 @@ export function serviceGraph(services: Service[]): ServiceGraph {
     ...(typeof service.build_config.compose_role === "string" ? { compose_role: service.build_config.compose_role } : {}),
     ...(typeof service.build_config.managed_by_service_id === "string" ? { managed_by_service_id: service.build_config.managed_by_service_id } : {}),
   }));
-  const relationships = releaseOwnerId ? services.flatMap(service => {
+  const relationships = services.flatMap(service => {
     const explicitOwner = service.build_config.managed_by_service_id;
     const ownerId = typeof explicitOwner === "string" ? explicitOwner
-      : service.id !== releaseOwnerId && typeof service.build_config.compose_service === "string" ? releaseOwnerId : undefined;
-    return ownerId === releaseOwnerId && service.id !== releaseOwnerId
-      ? [{ owner_id: releaseOwnerId, service_id: service.id, relationship: "included in release" as const }]
+      : releaseOwnerId && service.id !== releaseOwnerId && typeof service.build_config.compose_service === "string" ? releaseOwnerId : undefined;
+    return ownerId && service.id !== ownerId
+      ? [{ owner_id: ownerId, service_id: service.id, relationship: "included in release" as const }]
       : [];
-  }) : [];
+  });
   return { services: graphServices, relationships };
 }
 

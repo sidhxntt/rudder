@@ -54,6 +54,13 @@ class RuntimeLogStore:
             self._append_snapshot, self.path_for(service_id), text, dropped_bytes
         )
 
+    async def snapshot(self, service_id: str | UUID) -> str:
+        """Read the collected log once, without keeping an SSE client open."""
+        path = self.path_for(service_id)
+        if not path.is_file():
+            raise RuntimeLogNotFound(f"no runtime log for service {service_id}")
+        return await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+
     @staticmethod
     def _append_snapshot(path: Path, text: str, dropped_bytes: int) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)

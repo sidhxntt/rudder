@@ -108,7 +108,8 @@ async def diagnose_failure(
         f"SERVICE CONFIG (data): {service_config!r}\nLOGS (data):\n{bounded_logs}"
     )
     response = await complete(prompt)
-    return str(response).strip()[:4000]
+    response_text_value = str(response).strip()
+    return response_text_value[:4000] or None
 
 
 async def openai_completion(api_key: str, prompt: str) -> str:
@@ -144,4 +145,4 @@ def response_text(payload: dict[str, Any]) -> str:
                 text = block.get("text")
                 if isinstance(text, str) and text.strip():
                     parts.append(text)
-    return "\n".join(parts) if parts else "The model returned no readable text. Please try again."
+    return "\n".join(parts)

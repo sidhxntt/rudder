@@ -1,4 +1,5 @@
 import * as p from "@clack/prompts";
+import { CliCancellationError } from "./errors.js";
 
 export type LauncherActions = {
   signIn: () => Promise<void>;
@@ -61,7 +62,7 @@ export async function runLauncher({
     });
     if (p.isCancel(signIn)) {
       p.cancel("Sign-in cancelled.");
-      return;
+      throw new CliCancellationError();
     }
     if (signIn === "exit") {
       p.outro("Until next time.");
@@ -82,7 +83,7 @@ export async function runLauncher({
     if (!actions.chooseProject) throw new Error("Project onboarding is unavailable.");
     const context = await actions.chooseProject();
     if (!context) {
-      p.cancel("Project selection cancelled.");
+      p.outro("Until next time.");
       return;
     }
     p.note(context, "Project selected");
@@ -105,7 +106,7 @@ export async function runLauncher({
     });
     if (p.isCancel(selected)) {
       p.cancel("Launcher cancelled.");
-      return;
+      throw new CliCancellationError();
     }
     if (selected === "exit") {
       p.outro("Until next time.");
@@ -151,7 +152,11 @@ export async function runStatusMenu(actions: StatusActions): Promise<void> {
         { value: "back", label: "Back to main menu" },
       ],
     });
-    if (p.isCancel(selected) || selected === "back") return;
+    if (p.isCancel(selected)) {
+      p.cancel("Status selection cancelled.");
+      throw new CliCancellationError();
+    }
+    if (selected === "back") return;
     const action = actions[selected];
     const labels = { compact: "Loading compact status", detailed: "Loading detailed status", summary: "Preparing AI summary" };
     const spinner = p.spinner();
@@ -177,11 +182,15 @@ export function renderSplash(): void {
   const ink = "\x1b[38;5;255m";
   const muted = "\x1b[38;5;245m";
   const reset = "\x1b[0m";
+  const interiorWidth = 42;
+  const title = "RUDDER".padStart(24).padEnd(interiorWidth);
+  const border = `┌${"─".repeat(interiorWidth)}┐`;
+  const divider = "─".repeat(interiorWidth + 2);
   console.log(`${emerald}
-  ┌──────────────────────────────────────────┐
-  │                   RUDDER                  │
-  └──────────────────────────────────────────┘${reset}
+  ${border}
+  │${title}│
+  └${"─".repeat(interiorWidth)}┘${reset}
   ${ink}DEPLOYMENT CONTROL PLANE${reset}
   ${muted}GitHub-authenticated workspace · visible releases · local control${reset}
-  ${emerald}────────────────────────────────────────────────${reset}`);
+  ${emerald}${divider}${reset}`);
 }

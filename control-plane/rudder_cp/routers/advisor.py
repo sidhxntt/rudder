@@ -82,7 +82,13 @@ async def accept(environment_id: UUID, body: AcceptRequest, session: SessionDep,
         return ServiceRead.model_validate(service)
     if body.service_id is None:
         raise HTTPException(422, "A variable proposal requires its accepted target service")
-    await service_ops.get_service(session, body.service_id, owner_id=user.id)
+    # The environment path is an authorization boundary too.  Checking only
+    # ownership would let a user apply a proposal opened for one environment
+    # to another environment they own by substituting the target service ID.
+    await service_ops.list_services(session, environment_id, owner_id=user.id)
+    target = await service_ops.get_service(session, body.service_id, owner_id=user.id)
+    if target.environment_id != environment_id:
+        raise HTTPException(404, "No such service in this environment")
     key, value = payload.get("key"), payload.get("value")
     if not isinstance(key, str) or not isinstance(value, str):
         raise HTTPException(422, "Invalid variable proposal")

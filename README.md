@@ -1,229 +1,123 @@
 # Rudder
 
-A self-hosted, Railway-style PaaS with a canvas UI. Point it at a git repo —
-FastAPI, Express, Go, anything — and it builds, runs, and serves that app on a
-public URL, on your own hardware. Operate it from the canvas or the CLI.
+Rudder is a self-hosted deployment control plane for turning a Git repository
+or Compose-style service graph into running services. It provides a visual,
+Railway-style canvas and a terminal CLI, while keeping deployment state,
+releases, logs, metrics, domains, and rollback decisions in one control plane.
 
-Single-tenant by design. This is a learning build, not a multi-tenant product.
+It is a learning build and controlled GKE beta, designed for a **single
+operator/tenant** today. It is not a hosted multi-tenant PaaS. GCP is the
+implemented cloud reference; AWS and Azure are documented future mappings.
 
-**Specification lives in [`docs/`](docs/).** [`docs/PRD.md`](docs/PRD.md) is the
-source of truth; [`docs/phases/`](docs/phases/) holds the build instructions.
-See [`docs/ENVIRONMENT-SETUP.md`](docs/ENVIRONMENT-SETUP.md) for the complete
-development, integration, and production environment-variable reference.
+## What it does
 
----
+- Import repositories and service graphs from GitHub.
+- Build immutable container releases and promote traffic only after health
+  checks succeed.
+- Run services locally with Docker or through Kubernetes-oriented runtime
+  adapters; GKE is the production-reference platform.
+- Keep private dependencies private, expose only explicitly public services,
+  and support stable service URLs plus deployment-pinned review URLs.
+- Create isolated environments and GitHub pull-request preview environments.
+- Operate deployments, logs, metrics, rollbacks, domains, variables, and
+  service topology from the web canvas or the `rudder` CLI.
+- Offer proposal-only AI assistance through Rudder Advisor, build diagnosis,
+  and the read-only Ask Rudder experience.
 
-## Layout
+## Architecture at a glance
 
+```text
+GitHub / CLI / Web canvas
+          |
+          v
+FastAPI control plane + PostgreSQL
+          |
+          +-- builds and immutable image registry
+          +-- Docker node-agent runtime (local / legacy multi-host)
+          `-- Kubernetes runtime (Kind contract / GKE reference)
+                   |
+                   v
+          isolated environment workloads, routes, logs, and metrics
 ```
-docker-compose.dev.yml     postgres, registry, buildkitd, traefik, control plane, agent
-infra/traefik/             static config + the dynamic dir the control plane writes into
-control-plane/             FastAPI + SQLModel. Owns desired state.
-agent/                     aiohttp + docker SDK. Owns actual state on one host.
-cli/node/                  `rudder` Node/TypeScript control-plane client
-web/                       Next.js 15 + React Flow canvas
-docs/                      PRD, phase plans, ADRs, design tokens
+
+The control plane owns desired state. Runtime adapters create the actual
+workloads, and reconciliation compares the two. A failed candidate release
+does not replace a healthy live release; rollback repoints the stable route to
+a healthy immutable release instead of rebuilding it.
+
+## Repository layout
+
+```text
+control-plane/  FastAPI, PostgreSQL models, deployments, runtime adapters
+agent/          Docker node agent for local and multi-host runtimes
+web/            Next.js / React Flow operator canvas
+cli/node/       Node.js / TypeScript `rudder` CLI
+infra/          Local, Kubernetes, and GCP Terraform/platform assets
+docs/           Beginner-friendly architecture, phase, cloud, and stack guides
 ```
 
-## Setup
+## Local development
+
+Prerequisites: Docker Compose, Python, Node.js, and a local `.env` based on
+`.env.example`.
 
 ```bash
 cp .env.example .env
-# fill in RUDDER_SECRET_KEYS, RUDDER_JWT_SECRET, RUDDER_ADMIN_*
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-openssl rand -hex 32
+# Set RUDDER_SECRET_KEYS, RUDDER_JWT_SECRET, and RUDDER_ADMIN_* values.
 
 docker compose -f docker-compose.dev.yml up -d
-# Migrate with `run`, not `exec`: the control plane cannot start against an
-# empty database, so on a cold start there is no container to exec into.
 docker compose -f docker-compose.dev.yml run --rm control-plane alembic upgrade head
 docker compose -f docker-compose.dev.yml restart control-plane
 ```
 
-On Docker 29 the local registry needs no daemon change — `127.0.0.0/8` is
-already trusted as insecure by default. On older daemons, add
-`{"insecure-registries": ["localhost:5000"]}` under Docker Desktop → Settings →
-Docker Engine, or every pull fails with `server gave HTTP response to HTTPS
-client`, which looks unrelated to the real cause.
-
-Check it:
+Useful local endpoints:
 
 ```bash
-curl localhost:8000/healthz     # control plane
-curl localhost:9000/healthz     # node agent
-open http://localhost:8000/docs # OpenAPI
-open http://localhost:8080      # Traefik dashboard (dev only)
+curl http://localhost:8000/healthz  # control plane
+curl http://localhost:9000/healthz  # Docker node agent
 ```
 
-## Status
+## Documentation
 
-**Phase 1's deploy pipeline works end to end on real infrastructure.** An
-actual GitHub push passed through a signed webhook into live Postgres, BuildKit,
-the local registry, Docker, and Traefik on 2026-07-24. The legacy Python SDK
-and CLI were retired in Phase 9; the Node/TypeScript CLI is now supported. A
-browser-free CLI create → deploy with followed logs → routed HTTP 200 cycle was
-verified on the same day. The canvas passes a production Next.js build. See
-[`docs/phases/PHASE-1-single-host.md`](docs/phases/PHASE-1-single-host.md).
+Read the complete guide in the live [Rudder GitHub Wiki](https://github.com/sidhxntt/rudder/wiki).
+The repository [documentation index](docs/index.md) is the source of truth
+from which that Wiki is generated. Together, they cover:
 
-Verified on the live stack, not with fakes:
+- [Overview](docs/overview.md) — problem, concepts, and phased strategy
+- [Architecture](docs/architecture.md) — deployment flow and boundaries
+- [Features](docs/features.md) — UI, CLI, GitHub, previews, releases, and AI
+- [Technology stack](docs/tech-stack.md) — components and rationale
+- [Configuration](docs/configuration.md) — local, GitHub, Kubernetes, GKE,
+  backup, CLI, and optional AI settings
+- [GKE operations](docs/gke-operations.md) — preflight, Terraform, bootstrap,
+  verification, capacity gates, and recovery boundaries
+- [Multi-cloud mapping](docs/multi-cloud.md) — GCP implementation and
+  future AWS/Azure architecture
+- [Phase 4 evidence](docs/evidence/phase-4-controlled-beta.md) — dated,
+  point-in-time controlled-beta verification and remaining gates
+- [Phase 0–9 retrospectives](docs/phases/) — design choices, challenges,
+  verification, operations, and cost considerations
 
-| Check | Result |
-|---|---|
-| Node repo deploys and serves | `api.production.localhost` → HTTP 200 |
-| Python repo deploys and serves | `pyapi.production.localhost` → HTTP 200 |
-| GitHub push deployment | GitHub delivery → signed webhook → `webhook-e2e` build → HTTP 200 |
-| Migration against real Postgres | applies; `alembic check` reports no drift |
-| Enum storage | `queued,building,deploying,live,failed,superseded` — values, not names |
-| Failed build | old container keeps serving, HTTP 200 throughout, readable `error_message` |
-| Concurrent deploys | two requests 4 ms apart → exactly one healthy instance; newest wins, older deployment superseded |
-| Rolling deploy | old container drained and removed after traffic shifted |
-| `docker kill` a container | reconciled to `stopped` within a tick; route drops to an empty backend → 503 |
-| Containers publish no host ports | `3000/tcp`, unmapped; Traefik reaches them over the shared network |
+To update the published Wiki after changing these documents, use the
+[Wiki publishing guide](docs/wiki-publishing.md).
 
-Test suites (SQLite + injected fakes):
+## Scope and status
 
-```bash
-cd control-plane && pytest -q
-cd agent && pytest -q
-```
+Rudder has progressed from a single-host Docker deployment path through
+multi-host and Kubernetes runtime work, a private GKE landing zone, isolated
+environments, operations, frontend releases, AI assistance, and CLI parity.
+The detailed documents distinguish what is implemented, what has verification
+evidence, and what remains future work. Read those status labels before using
+the project as a production platform.
 
-The `web/` tree has been type-checked and passes a production Next.js build.
+The GKE reference uses one shared regional cluster. A three-zone
+`e2-standard-2` node pool requires six vCPUs; the recorded project-wide
+`CPUS_ALL_REGIONS` quota was already 12 used of 12, so a dedicated workloads
+pool was deliberately not enabled. This is a capacity and cost boundary, not a
+claim that Rudder operated six clusters or that hardened multi-tenancy exists.
 
-## Phase 2 — private multi-host runtime
+## Contributing
 
-Phase 2 runs a control plane on one private GCP VM and node agents on worker
-VMs. Nodes heartbeat with capacity and observed containers; the scheduler
-chooses a healthy node with sufficient CPU/memory and the lowest allocated
-memory ratio. The workspace page shows registered nodes and their instances.
-
-The complete Git-source path has been verified on the lab: Git checkout →
-generated Dockerfile → BuildKit → private registry → remote worker pull →
-health check → `live` deployment. Stopping an agent marks its node unreachable
-and reschedules an eligible stateless service to the surviving node.
-
-This is deliberately a private lab runtime, not production ingress: services
-have no public cross-host URL yet. Persistent-volume services are not
-automatically duplicated after node loss; see
-[ADR 0003](docs/decisions/0003-phase-2-split-brain-policy.md). The production
-runtime path is [Phase 3 Kubernetes](docs/phases/PHASE-3-kubernetes-runtime.md).
-
-## Phase 3 — local Kubernetes runtime
-
-Phase 3 uses Kind locally before moving the same resource model to GKE. Rudder
-maps an imported Compose graph to a dedicated namespace: stateless apps and
-workers become Deployments, stateful dependencies become StatefulSets with
-PVCs, private members receive ClusterIP Services, and only an explicitly public
-app receives an Ingress route. A candidate route is promoted only after every
-member is ready; a failed candidate is removed without changing the existing
-public route.
-
-```bash
-make kind-up
-make kind-control-plane
-make verify-kind
-```
-
-During local UI development, the first confirmed GitHub import now performs
-those first two setup steps automatically: it creates or reuses `rudder-kind`,
-switches the local control plane to the Kubernetes runtime, and waits until
-`/healthz` reports `runtime: "kubernetes"` before creating the release. Later
-imports reuse the existing cluster and do not restart the control plane. Set
-`RUDDER_LOCAL_KUBERNETES_AUTO_BOOTSTRAP=false` to use the manual commands
-instead.
-
-`make verify-kind` creates a disposable `web + worker + PostgreSQL + Redis`
-release, proves ingress reaches only `web`, deliberately fails a new candidate
-without disrupting the live route, then removes its temporary namespace.
-
-## Phase 4 — GKE landing zone
-
-Phase 4 takes the Phase 3 resource contract unchanged onto a private regional GKE
-Standard cluster and adds what Kind cannot prove: Artifact Registry immutable
-digests, Workload Identity and least-privilege RBAC, one HTTPS edge, durable
-backed-up state, observability, and Terraform as the source of truth.
-
-**Kubernetes-only, including in production** — ingress-nginx, cert-manager, and
-Postgres under the CloudNativePG operator all run in the cluster. Managed GCP
-services are used only where nothing can run in-cluster by nature: the L4 load
-balancer, object storage, the registry, and workload identity. Terraform provisions
-the cluster once (**attach mode**); Rudder owns namespaces and workloads, never
-cluster lifecycle. Public hostnames sit under `rudder.invytt.com`. See
-[ADR 0005](docs/decisions/0005-phase-4-kubernetes-only-attach-mode.md).
-
-**WireGuard is cancelled.** The private service network is Kubernetes networking —
-Services, CoreDNS, namespaces, and default-deny NetworkPolicies. See
-[ADR 0004](docs/decisions/0004-kubernetes-networking-replaces-wireguard-mesh.md).
-
-GCP is the first provider adapter, not the product assumption. Phase 4 writes the
-provider contract and its conformance tests so EKS and AKS can follow without
-changing deployment records, UI semantics, or the service graph; it creates no AWS
-or Azure resources. Effort for those adapters is estimated in
-[PHASE-4-gke-production-runtime.md](docs/phases/PHASE-4-gke-production-runtime.md) → "Cost of adding AWS and Azure".
-
-Phase 4 is verified for controlled beta on the shared platform pool. The
-authoritative acceptance record is
-[the Phase 4 checkpoint](docs/phases/checkpoints/PHASE-4-COMPLETION.md). A
-dedicated workloads node pool remains a future capacity expansion, not a Phase
-4 exit gate.
-
-## Phase 5 — environments
-
-An environment is an isolated declarative copy of a project's service graph.
-Use the **clone** control in the environment header to copy services, encrypted
-variables, canvas positions, and empty volume declarations into a new
-environment. Deployments, instances, build logs, user domains, and volume data
-are never copied. Service references resolve only within their environment and
-are checked for cycles when saved.
-
-GitHub `pull_request` webhooks create a capped, full PR environment from the
-production graph, queue its branch deployment, and comment the environment URL
-when the GitHub App is configured. Closing or merging the PR removes it; replay
-of either delivery is safe. Configure `RUDDER_GITHUB_PR_ENVIRONMENT_LIMIT` to
-set the cap (default: 10).
-
-## Phase 6 — operations
-
-Rudder now treats persistent Docker storage as node-local data: volume-backed
-services are pinned to their first host, are never rescheduled onto an empty
-host, and cannot scale past one replica. Managed Postgres, Redis, and MySQL can
-be created from the reviewed catalog with generated encrypted credentials.
-
-Runtime logs are collected from node agents into bounded rotating local files;
-follow them with `rudder logs <service> -f` (`--build` keeps the historical
-deployment-build log command). The canvas shows retained CPU traces. Metrics
-remain local to the control plane and compact from 10-second samples to minute
-and five-minute tiers before expiry. Rollback promotes a healthy immutable
-deployment without rebuilding it.
-
-## Phase 7 — frontends
-
-Rudder recognises Vite, Create React App, Astro static, and Next static-export
-projects when no repository Dockerfile is supplied. It builds them into a
-minimal unprivileged nginx image, with correct SPA fallback and cache behaviour;
-Next SSR remains an ordinary application container. A successful release gets a
-permanent deployment-pinned URL alongside the normal service URL, and the
-canvas deploy history exposes that link for review. Restoring a previous release
-only changes the service alias — permanent release URLs and their immutable
-artifacts stay intact. See [Phase 7](docs/phases/PHASE-7-frontends.md).
-
-## Phase 9 — operator CLI parity
-
-Phase 9 turns `rudder` into the complete terminal peer of the web console. It
-uses TypeScript and Clack for guided TTY workflows while retaining explicit
-flags and clean `--json` output for CI. It will cover GitHub import, service
-topology, deployments and rollback, coloured logs, operations, analytics,
-settings, and the advisor through the same control-plane API — never through
-direct Docker or Kubernetes shortcuts. See
-[Phase 9](docs/phases/PHASE-9-cli.md).
-
-## Notes on the dev stack
-
-`buildkitd` runs with `network_mode: service:registry`. That is deliberate:
-BuildKit pushes the image and the host Docker daemon pulls it, and both must
-resolve the *same* tag string. Sharing the registry's network namespace makes
-`localhost:5000` mean the registry inside buildkitd too, so one tag works on
-both sides. The control plane therefore reaches buildkitd at `tcp://registry:1234`.
-
-Deployed containers publish no host ports. Traefik reaches them over the shared
-`rudder` Docker network — that is what lets two versions of a service run at the
-same time during a rolling deploy.
+Keep behavior changes and documentation together. Update the relevant phase
+guide and [documentation index](docs/index.md) when changing product behavior,
+and do not present planned multi-cloud or multi-tenant work as implemented.

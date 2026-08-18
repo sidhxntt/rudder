@@ -43,7 +43,7 @@ describe("completeGitHubLogin", () => {
     expect(writeError).toHaveBeenCalledWith(expect.stringContaining("https://github.com/login/oauth/authorize?state=signed"));
   });
 
-  it("prints a copyable URL when the browser process fails after the old success timeout", async () => {
+  it("continues polling when the browser opener neither exits nor errors promptly", async () => {
     vi.useFakeTimers();
     try {
       const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
@@ -60,7 +60,7 @@ describe("completeGitHubLogin", () => {
       await vi.advanceTimersByTimeAsync(1_001);
       await login;
 
-      expect(writeError).toHaveBeenCalledWith(expect.stringContaining("https://github.com/login/oauth/authorize?state=signed"));
+      expect(writeError).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

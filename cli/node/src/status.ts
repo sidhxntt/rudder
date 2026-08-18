@@ -15,10 +15,10 @@ export function formatCompactStatus(rows: StatusRow[]): string {
     const latest = deployments[0];
     const state = latest?.status ?? "not deployed";
     const management = managedBy(service, namesById);
-    const health = management ?? releaseHealth(latest?.id, instances);
+    const health = management ?? (latest ? releaseHealth(latest.id, instances) : undefined);
     const commit = latest?.commit_sha ? ` · ${latest.commit_sha.slice(0, 7)}` : "";
     const error = latest?.error_message ? `\n  ↳ ${shortError(latest.error_message)}` : "";
-    return `${service.name} · ${state} · ${health}${commit}${error}`;
+    return `${service.name} · ${state}${health ? ` · ${health}` : ""}${commit}${error}`;
   });
   return [`Rudder status · ${rows.length} service${rows.length === 1 ? "" : "s"}`, ...lines].join("\n");
 }

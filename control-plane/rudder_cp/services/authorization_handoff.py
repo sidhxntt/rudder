@@ -52,9 +52,11 @@ class AuthorizationHandoffs:
                 "Authorization request is invalid, expired, or already consumed."
             )
 
+    _CONSUME_RACE_RETRIES = 3
+
     def consume(self, authorization_id: str) -> str | None:
         self._prune()
-        while True:
+        for _ in range(self._CONSUME_RACE_RETRIES):
             statement = (
                 sa.delete(AuthorizationHandoff)
                 .execution_options(synchronize_session=False)
@@ -87,6 +89,9 @@ class AuthorizationHandoffs:
             # as invalid. A concurrent consumer can only make the next pass
             # observe no row, which is correctly a one-time-use failure.
             continue
+        raise AuthorizationHandoffError(
+            "Authorization request could not be consumed due to concurrent completion."
+        )
 
     def _prune(self) -> None:
         self._session.exec(

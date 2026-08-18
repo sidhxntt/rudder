@@ -24,6 +24,7 @@ from rudder_cp.models.operations import (
     ServiceOperation,
     ServiceOperationsState,
 )
+from rudder_cp.models.pr_notification import PullRequestNotification
 from rudder_cp.models.project import Environment, Project
 from rudder_cp.models.service import Service, Variable, Volume
 from rudder_cp.models.user import User
@@ -44,6 +45,7 @@ __all__ = [
     "OperationKind",
     "OperationStatus",
     "Project",
+    "PullRequestNotification",
     "RuntimeMetric",
     "Service",
     "ServiceManagedCapabilities",

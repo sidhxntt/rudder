@@ -7,11 +7,12 @@ from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from rudder_cp.config import Settings
-from rudder_cp.models import Deployment, Instance, Node, Volume
+from rudder_cp.models import Deployment, Instance, Node, Service, Volume
 from rudder_cp.models.base import DeploymentStatus, NodeStatus
 from rudder_cp.models.base import InstanceStatus as ModelInstanceStatus
 from rudder_cp.models.github_import import GitHubImport
 from rudder_cp.services.agent_client import AgentClient, AgentError
+from rudder_cp.services.pr_notifications import deliver_due_notifications
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +30,10 @@ async def run_reconciler(
             log.error(f"Error in reconciler loop: {e}", exc_info=True)
 
         try:
-            # Wait for 15 seconds or until stop event is set
-            await asyncio.wait_for(stop_event.wait(), timeout=15)
+            # Phase 2 convergence runs every ten seconds by default, or stops promptly.
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=settings.reconciler_interval_seconds
+            )
         except TimeoutError:
             pass
     log.info("reconciler stopped")
@@ -53,6 +56,8 @@ async def reconcile_state(
     _queue_replacements_for_lost_instances(db, kubernetes_release_owners)
 
     db.commit()
+    if settings is not None:
+        await deliver_due_notifications(db, settings=settings)
 
 
 async def _reconcile_unresponsive_nodes(
@@ -130,15 +135,20 @@ def _queue_replacements_for_lost_instances(
                 service_id,
             )
             continue
-        healthy_exists = db.exec(
-            select(Instance)
-            .join(Deployment, Deployment.id == Instance.deployment_id)  # type: ignore[arg-type]
-            .where(
-                Deployment.service_id == service_id,
-                Instance.status == ModelInstanceStatus.HEALTHY,
-            )
-        ).first()
-        if healthy_exists is not None:
+        service = db.get(Service, service_id)
+        # Older test/repair rows may not retain the Service parent; treat those
+        # as the historical one-replica contract. Real services converge until
+        # their currently-live deployment has every desired replica healthy.
+        desired_replicas = service.replica_count if service is not None else 1
+        healthy_replicas = len(
+            db.exec(
+                select(Instance).where(
+                    Instance.deployment_id == deployment.id,
+                    Instance.status == ModelInstanceStatus.HEALTHY,
+                )
+            ).all()
+        )
+        if healthy_replicas >= desired_replicas:
             continue
         in_flight = db.exec(
             select(Deployment).where(
@@ -223,6 +233,14 @@ async def _reconcile_running_instances(
         # An instance is in the DB but was not in the agent's last report
         for container_id, instance in desired_by_container_id.items():
             if any(_same_container_id(container_id, reported_id) for reported_id in reported_ids):
+                continue
+            # Ignore the observation immediately following promotion.  Its
+            # payload can have been captured before the just-created
+            # container existed, then delivered after the LIVE transaction.
+            if (
+                instance.missing_after_heartbeat_generation > 0
+                and node.heartbeat_generation <= instance.missing_after_heartbeat_generation
+            ):
                 continue
             instance.status = ModelInstanceStatus.UNREACHABLE
             db.add(instance)

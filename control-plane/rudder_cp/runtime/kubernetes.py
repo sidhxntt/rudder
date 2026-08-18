@@ -11,6 +11,7 @@ import asyncio
 import base64
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from kubernetes_asyncio import client, config
@@ -84,6 +85,10 @@ class WorkloadSpec:
     labels: Mapping[str, str]
     stateful: bool
     volume_mount_path: str | None
+    # A namespace-local identity with no RoleBinding. The token is disabled at
+    # both Pod and ServiceAccount level, so application code cannot call the
+    # Kubernetes API merely by running in a Rudder environment.
+    service_account_name: str | None = None
     replicas: int | None = 1
     resources: Mapping[str, Mapping[str, str]] | None = None
     node_selector: Mapping[str, str] | None = None
@@ -140,6 +145,7 @@ class CronJobSpec:
     timeout_seconds: int
     retries: int
     concurrency_policy: str
+    service_account_name: str | None = None
     node_selector: Mapping[str, str] = field(default_factory=dict)
     tolerations: tuple[Mapping[str, str], ...] = ()
 
@@ -153,6 +159,7 @@ class JobSpec:
     labels: Mapping[str, str]
     timeout_seconds: int
     retries: int
+    service_account_name: str | None = None
     node_selector: Mapping[str, str] = field(default_factory=dict)
     tolerations: tuple[Mapping[str, str], ...] = ()
 
@@ -221,6 +228,26 @@ class KubernetesReleaseResult:
     pod_ids: Mapping[str, str]
     public_hosts: Mapping[str, str]
     operation_observed: Mapping[str, Mapping[str, object]]
+    # Routes are rendered only after the control plane has durably recorded
+    # the candidate as live.  Keeping the intent in the result lets callers
+    # make that external handoff the last step of their persistence saga.
+    public_routes: tuple[PublicRouteSpec, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class KubernetesRuntimeLogSnapshot:
+    """A bounded Pod-log tail in the same shape used by Docker collectors."""
+
+    text: str
+    dropped_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class KubernetesContainerMetrics:
+    """Usage for one Pod, normalized to Rudder's runtime-metrics contract."""
+
+    cpu_percent: float
+    memory_bytes: int
 
 
 class KubernetesApi(Protocol):
@@ -228,7 +255,21 @@ class KubernetesApi(Protocol):
 
     async def delete_namespace(self, namespace: str) -> None: ...
 
+    async def namespace_exists(self, namespace: str) -> bool: ...
+
+    async def runtime_logs(
+        self, namespace: str, pod_uid: str, *, max_bytes: int = 65_536
+    ) -> KubernetesRuntimeLogSnapshot: ...
+
+    async def runtime_metrics(
+        self, namespace: str, pod_uid: str
+    ) -> KubernetesContainerMetrics: ...
+
     async def ensure_guardrails(self, namespace: str, labels: dict[str, str]) -> None: ...
+
+    async def ensure_workload_service_account(
+        self, namespace: str, *, name: str, labels: dict[str, str]
+    ) -> None: ...
 
     async def ensure_cnpg_backup_service_account(
         self, namespace: str, *, name: str, labels: dict[str, str]
@@ -333,6 +374,7 @@ class KubernetesRuntime:
         project_id: str,
         environment_id: str,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        promote_public_routes: bool = True,
     ) -> KubernetesReleaseResult:
         async def progress(message: str) -> None:
             if on_progress is not None:
@@ -348,6 +390,13 @@ class KubernetesRuntime:
         await self.api.ensure_namespace(release.namespace, labels)
         await progress("kubernetes: applying namespace guardrails\n")
         await self.api.ensure_guardrails(release.namespace, labels)
+        workload_service_account = "rudder-workload"
+        await progress("kubernetes: creating least-privilege workload identity\n")
+        await self.api.ensure_workload_service_account(
+            release.namespace,
+            name=workload_service_account,
+            labels=labels,
+        )
 
         try:
             workloads: list[tuple[ComposeService, WorkloadSpec | CloudNativePostgresSpec]] = []
@@ -535,6 +584,7 @@ class KubernetesRuntime:
                     labels=member_labels,
                     stateful=member.stateful,
                     volume_mount_path=member.volume_mount_path,
+                    service_account_name=workload_service_account,
                     replicas=operation_config["replicas"],
                     resources=operation_config["resources"],
                     node_selector=node_selector,
@@ -560,6 +610,7 @@ class KubernetesRuntime:
                     labels=member_labels,
                     stateful=workload.stateful,
                     volume_mount_path=workload.volume_mount_path,
+                    service_account_name=workload.service_account_name,
                     replicas=workload.replicas,
                     resources=workload.resources,
                     node_selector=workload.node_selector,
@@ -696,6 +747,7 @@ class KubernetesRuntime:
                         timeout_seconds=_int(spec.get("timeout_seconds"), 900),
                         retries=_int(spec.get("retries"), 0),
                         concurrency_policy=str(spec.get("concurrency_policy", "forbid")),
+                        service_account_name=workload_service_account,
                         node_selector=node_selector,
                         tolerations=tolerations,
                     )
@@ -718,6 +770,7 @@ class KubernetesRuntime:
                             labels=member_labels,
                             timeout_seconds=_int(job.get("timeout_seconds"), 900),
                             retries=_int(job.get("retries"), 0),
+                            service_account_name=workload_service_account,
                             node_selector=node_selector,
                             tolerations=tolerations,
                         )
@@ -758,6 +811,7 @@ class KubernetesRuntime:
                 await progress(f"kubernetes: {member.name} is ready\n")
 
             public_hosts: dict[str, str] = {}
+            public_routes: list[PublicRouteSpec] = []
             for member, workload in workloads:
                 if (
                     not member.public
@@ -781,15 +835,41 @@ class KubernetesRuntime:
                     ),
                     certificate_issuer=self.settings.certificate_issuer or None,
                 )
-                await self.api.promote_public_service(release.namespace, route)
-                await progress(
-                    f"kubernetes: promoted public route for {member.name} at {host}\n"
-                )
+                public_routes.append(route)
                 public_hosts[member.name] = host
+                if member.permanent_public_host:
+                    permanent_route = PublicRouteSpec(
+                        # Unlike the stable ``route-<service>`` resource,
+                        # this Ingress name is release-qualified.  It must
+                        # survive a later stable-route promotion so the
+                        # deployment URL remains an immutable artifact.
+                        name=dns_label(f"route-{workload.name}"),
+                        host=member.permanent_public_host,
+                        backend_service_name=workload.name,
+                        backend_port=member.port,
+                        labels={
+                            **workload.labels,
+                            "rudder.route": dns_label(f"{member.name}-deployment"),
+                        },
+                        tls_secret_name=(
+                            dns_label(f"route-{workload.name}-tls")
+                            if self.settings.certificate_issuer
+                            else None
+                        ),
+                        certificate_issuer=self.settings.certificate_issuer or None,
+                    )
+                    public_routes.append(permanent_route)
+            if promote_public_routes:
+                await self.promote_public_routes(
+                    release.namespace,
+                    tuple(public_routes),
+                    on_progress=on_progress,
+                )
             return KubernetesReleaseResult(
                 pod_ids=pod_ids,
                 public_hosts=public_hosts,
                 operation_observed=operation_observed,
+                public_routes=tuple(public_routes),
             )
         except Exception as original_error:
             # Candidate resources all carry a unique release label.  Removing
@@ -804,6 +884,28 @@ class KubernetesRuntime:
                     f"{cleanup_error}"
                 ) from original_error
             raise
+
+    async def promote_public_routes(
+        self,
+        namespace: str,
+        routes: tuple[PublicRouteSpec, ...],
+        *,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        """Promote already-readied routes as the final deployment side effect."""
+        for route in routes:
+            await self.api.promote_public_service(namespace, route)
+            if on_progress is None:
+                continue
+            route_kind = (
+                "immutable deployment route"
+                if route.labels.get("rudder.route", "").endswith("-deployment")
+                else "public route"
+            )
+            member = route.labels.get("rudder.route", route.name)
+            await on_progress(
+                f"kubernetes: promoted {route_kind} for {member} at {route.host}\n"
+            )
 
 
 def _int(value: object, default: int) -> int:
@@ -832,6 +934,57 @@ def _storage_mebibytes(value: object) -> int | None:
     if value.endswith("Gi") and value[:-2].isdigit():
         return int(value[:-2]) * 1024
     return None
+
+
+def _cpu_cores(value: object) -> Decimal:
+    """Parse the CPU quantity forms returned by metrics-server."""
+    if not isinstance(value, str) or not value:
+        return Decimal(0)
+    suffixes = {
+        "n": Decimal("0.000000001"),
+        "u": Decimal("0.000001"),
+        "m": Decimal("0.001"),
+        "": Decimal(1),
+    }
+    suffix = value[-1] if value[-1] in suffixes and value[-1] else ""
+    number = value[:-1] if suffix else value
+    try:
+        return Decimal(number) * suffixes[suffix]
+    except (InvalidOperation, ValueError):
+        return Decimal(0)
+
+
+def _memory_bytes(value: object) -> int:
+    """Parse Kubernetes binary/decimal memory quantities without guessing."""
+    if not isinstance(value, str) or not value:
+        return 0
+    suffixes = {
+        "Ki": Decimal(1024),
+        "Mi": Decimal(1024**2),
+        "Gi": Decimal(1024**3),
+        "Ti": Decimal(1024**4),
+        "K": Decimal(1000),
+        "M": Decimal(1000**2),
+        "G": Decimal(1000**3),
+        "": Decimal(1),
+    }
+    suffix = next((item for item in suffixes if item and value.endswith(item)), "")
+    number = value[: -len(suffix)] if suffix else value
+    try:
+        return int(Decimal(number) * suffixes[suffix])
+    except (InvalidOperation, ValueError):
+        return 0
+
+
+def _pod_cpu_limit_cores(pod: object) -> Decimal:
+    spec = getattr(pod, "spec", None)
+    total = Decimal(0)
+    for container in getattr(spec, "containers", None) or []:
+        resources = getattr(container, "resources", None)
+        limits = getattr(resources, "limits", None) or {}
+        if isinstance(limits, Mapping):
+            total += _cpu_cores(limits.get("cpu"))
+    return total
 
 
 def _operation_config(
@@ -987,6 +1140,9 @@ class AsyncKubernetesApi:
         self.apps = client.AppsV1Api(self.api_client)
         self.autoscaling = client.AutoscalingV2Api(self.api_client)
         self.policy = client.PolicyV1Api(self.api_client)
+        # Exposed for acceptance checks which prove customer workload
+        # identities have not been granted namespace or cluster privileges.
+        self.rbac = client.RbacAuthorizationV1Api(self.api_client)
         self.batch = client.BatchV1Api(self.api_client)
         self.networking = client.NetworkingV1Api(self.api_client)
         self.storage = client.StorageV1Api(self.api_client)
@@ -1033,6 +1189,103 @@ class AsyncKubernetesApi:
         except ApiException as exc:
             if exc.status != 404:
                 raise
+
+    async def namespace_exists(self, namespace: str) -> bool:
+        """Return false once Kubernetes has fully removed a namespace."""
+        try:
+            await self.core.read_namespace(namespace)
+        except ApiException as exc:
+            if exc.status == 404:
+                return False
+            raise
+        return True
+
+    async def runtime_logs(
+        self, namespace: str, pod_uid: str, *, max_bytes: int = 65_536
+    ) -> KubernetesRuntimeLogSnapshot:
+        """Read one bounded tail from the Pod recorded by a Rudder Instance.
+
+        Instances persist a Pod UID rather than a mutable Pod name. Resolve it
+        immediately before reading so a rolled replacement never accidentally
+        exposes another release's output. Kubernetes does not report how many
+        bytes it truncated for ``limit_bytes``; report zero rather than invent
+        a misleading drop count.
+        """
+        pod = await self._pod_for_uid(namespace, pod_uid)
+        metadata = getattr(pod, "metadata", None)
+        spec = getattr(pod, "spec", None)
+        containers = getattr(spec, "containers", None) or []
+        pod_name = getattr(metadata, "name", None)
+        container_name = getattr(containers[0], "name", None) if containers else None
+        if not isinstance(pod_name, str) or not pod_name or not isinstance(container_name, str):
+            raise RuntimeError(f"Kubernetes pod {pod_uid} has no readable application container.")
+        text = await self.core.read_namespaced_pod_log(
+            pod_name,
+            namespace,
+            container=container_name,
+            tail_lines=1_000,
+            limit_bytes=max_bytes,
+            timestamps=True,
+        )
+        return KubernetesRuntimeLogSnapshot(text=str(text or ""), dropped_bytes=0)
+
+    async def runtime_metrics(
+        self, namespace: str, pod_uid: str
+    ) -> KubernetesContainerMetrics:
+        """Read metrics-server Pod usage and normalize CPU against Pod limits.
+
+        metrics.k8s.io reports CPU as cores, while Rudder's durable metric
+        schema stores a percentage. Every managed Pod receives a CPU limit via
+        its workload or the environment LimitRange, so the percentage is the
+        observed cores divided by that concrete limit. Memory remains bytes.
+        """
+        pod = await self._pod_for_uid(namespace, pod_uid)
+        metrics = await self.custom.list_namespaced_custom_object(
+            group="metrics.k8s.io",
+            version="v1beta1",
+            namespace=namespace,
+            plural="pods",
+        )
+        metric_items = metrics.get("items", []) if isinstance(metrics, dict) else []
+        metric = next(
+            (
+                item
+                for item in metric_items
+                if isinstance(item, dict)
+                and isinstance(item.get("metadata"), dict)
+                and item["metadata"].get("uid") == pod_uid
+            ),
+            None,
+        )
+        if metric is None:
+            raise RuntimeError(f"Kubernetes metrics for pod {pod_uid} are not available yet.")
+        metric_containers = metric.get("containers", [])
+        if not isinstance(metric_containers, list):
+            metric_containers = []
+        cpu_cores = Decimal(0)
+        memory_bytes = 0
+        for item in metric_containers:
+            if not isinstance(item, dict) or not isinstance(item.get("usage"), dict):
+                continue
+            usage = item["usage"]
+            cpu_cores += _cpu_cores(usage.get("cpu"))
+            memory_bytes += _memory_bytes(usage.get("memory"))
+        cpu_limit_cores = _pod_cpu_limit_cores(pod)
+        if cpu_limit_cores <= 0:
+            raise RuntimeError(
+                f"Kubernetes CPU limit for pod {pod_uid} is not available; "
+                "cannot calculate CPU percentage."
+            )
+        cpu_percent = float((cpu_cores / cpu_limit_cores) * 100)
+        return KubernetesContainerMetrics(cpu_percent=cpu_percent, memory_bytes=memory_bytes)
+
+    async def _pod_for_uid(self, namespace: str, pod_uid: str) -> object:
+        pods = await self.core.list_namespaced_pod(namespace)
+        for pod in getattr(pods, "items", []) or []:
+            metadata = getattr(pod, "metadata", None)
+            if getattr(metadata, "uid", None) == pod_uid:
+                return pod
+        raise RuntimeError(f"Kubernetes pod {pod_uid} no longer exists in namespace {namespace}.")
 
     async def ensure_guardrails(self, namespace: str, labels: dict[str, str]) -> None:
         owner = {"app.kubernetes.io/managed-by": "rudder", **labels}
@@ -1196,6 +1449,30 @@ class AsyncKubernetesApi:
                     "iam.gke.io/gcp-service-account": self.settings.backup_gcp_service_account
                 },
             )
+        )
+        await self._create_or_replace(
+            self.core.read_namespaced_service_account,
+            self.core.create_namespaced_service_account,
+            self.core.replace_namespaced_service_account,
+            name,
+            body,
+            namespace=namespace,
+        )
+
+    async def ensure_workload_service_account(
+        self, namespace: str, *, name: str, labels: dict[str, str]
+    ) -> None:
+        """Create an environment-only identity with zero Kubernetes grants.
+
+        Kubernetes RBAC denies every API action unless a RoleBinding grants
+        one. Rudder intentionally creates no Role or RoleBinding for customer
+        workloads; the control plane's separate ServiceAccount remains the
+        only identity authorised to reconcile environment resources.
+        """
+
+        body = client.V1ServiceAccount(
+            metadata=client.V1ObjectMeta(name=name, labels=dict(labels)),
+            automount_service_account_token=False,
         )
         await self._create_or_replace(
             self.core.read_namespaced_service_account,
@@ -1611,6 +1888,8 @@ class AsyncKubernetesApi:
             ),
             spec=client.V1PodSpec(
                 containers=[container],
+                service_account_name=spec.service_account_name,
+                automount_service_account_token=False,
                 node_selector=dict(spec.node_selector or {}) or None,
                 tolerations=[client.V1Toleration(**dict(item)) for item in spec.tolerations]
                 or None,
@@ -2072,6 +2351,12 @@ class AsyncKubernetesApi:
         await self.core.delete_collection_namespaced_secret(
             namespace, label_selector=selector, body=delete_options
         )
+        # Stable routes have already been restored before this cleanup when a
+        # promotion partially fails, so only the candidate-labelled immutable
+        # deployment Ingress remains selected here.
+        await self.networking.delete_collection_namespaced_ingress(
+            namespace, label_selector=selector, body=delete_options
+        )
 
     async def close(self) -> None:
         """Release the shared async client session opened from kubeconfig."""
@@ -2156,6 +2441,8 @@ class AsyncKubernetesApi:
             metadata=client.V1ObjectMeta(labels=dict(spec.labels)),
             spec=client.V1PodSpec(
                 restart_policy="Never",
+                service_account_name=spec.service_account_name,
+                automount_service_account_token=False,
                 node_selector=dict(spec.node_selector) or None,
                 tolerations=[client.V1Toleration(**dict(item)) for item in spec.tolerations]
                 or None,

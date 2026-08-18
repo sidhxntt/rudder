@@ -39,6 +39,7 @@ from rudder_cp.routers import domains as domains_router
 from rudder_cp.routers import environments as environments_router
 from rudder_cp.routers import projects as projects_router
 from rudder_cp.routers import services as services_router
+from rudder_cp.routers import variables as variables_router
 from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.security import issue_token
 from rudder_cp.services.naming import NAME_PATTERN
@@ -81,6 +82,7 @@ def client_fixture(
     app.include_router(environments_router.router)
     app.include_router(services_router.router)
     app.include_router(domains_router.router)
+    app.include_router(variables_router.router)
 
     def override_get_session() -> Iterator[Session]:
         with Session(engine) as session:
@@ -165,6 +167,39 @@ def test_project_lifecycle(client: TestClient) -> None:
     deleted = client.delete(f"/projects/{project_id}")
     assert deleted.status_code == 204
     assert client.get(f"/projects/{project_id}").status_code == 404
+
+
+def test_crud_resources_are_hidden_from_another_owner(client: TestClient, engine: Engine) -> None:
+    """Every graph boundary rejects an authenticated non-owner as not found."""
+    project = make_project(client, "private-shop")
+    environment = production_environment(client, project["id"])
+    service = make_service(client, environment["id"], "private-api")
+    domain = client.post(
+        f"/environments/{environment['id']}/domains",
+        json={
+            "hostname": "private.example.test",
+            "target_type": "service",
+            "service_id": service["id"],
+        },
+    )
+    assert domain.status_code == 201, domain.text
+    variable_response = client.put(
+        f"/services/{service['id']}/variables/SECRET", json={"value": "value"}
+    )
+    assert variable_response.status_code == 200
+
+    with Session(engine) as session:
+        other = User(email="other@example.com", password_hash="x")
+        session.add(other)
+        session.commit()
+        token = issue_token(other.id).token
+
+    client.headers["Authorization"] = f"Bearer {token}"
+    assert client.get(f"/projects/{project['id']}").status_code == 404
+    assert client.get(f"/projects/{project['id']}/environments").status_code == 404
+    assert client.get(f"/environments/{environment['id']}").status_code == 404
+    assert client.get(f"/domains/{domain.json()['id']}").status_code == 404
+    assert client.get(f"/services/{service['id']}/variables").status_code == 404
 
 
 def test_project_create_makes_a_production_environment(client: TestClient) -> None:
@@ -531,6 +566,33 @@ def test_service_lifecycle(client: TestClient, env_id: str) -> None:
 
     assert client.delete(f"/services/{service_id}").status_code == 204
     assert client.get(f"/services/{service_id}").status_code == 404
+
+
+def test_service_response_redacts_command_arguments_from_build_config(
+    client: TestClient, env_id: str
+) -> None:
+    response = client.post(
+        f"/environments/{env_id}/services",
+        json={
+            "name": "cache",
+            "kind": "database",
+            "build_config": {
+                "compose_service": "redis",
+                "compose_role": "cache",
+                "managed_image": "redis:7-alpine",
+                "command": ["redis-server", "--requirepass", "secret"],
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    service = response.json()
+    assert service["build_config"] == {
+        "compose_service": "redis",
+        "compose_role": "cache",
+        "managed_image": "redis:7-alpine",
+    }
+    assert "secret" not in response.text
 
 
 def test_duplicate_service_name_is_409(client: TestClient, env_id: str) -> None:

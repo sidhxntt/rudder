@@ -76,3 +76,13 @@ def test_platform_rbac_can_read_workload_status_for_readiness() -> None:
     assert 'resources: ["pods/status"]' in rbac
     assert 'resources: ["deployments/status", "statefulsets/status"]' in rbac
     assert 'resources: ["jobs/status"]' in rbac
+
+
+def test_platform_rbac_can_read_bounded_pod_logs_and_metrics() -> None:
+    """The control plane must observe GKE workloads without node credentials."""
+    rbac = (REPOSITORY_ROOT / "infra/kubernetes/platform/rbac.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'resources: ["pods/log"]' in rbac
+    assert 'apiGroups: ["metrics.k8s.io"]' in rbac

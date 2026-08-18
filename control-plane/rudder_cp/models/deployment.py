@@ -78,6 +78,9 @@ class Instance(SQLModel, table=True):
         ),
     )
     wg_ip: str | None = Field(default=None, max_length=45)
+    # A container must be absent from an observation *after* this generation
+    # before reconciliation can call it unreachable.  See Node's generation.
+    missing_after_heartbeat_generation: int = Field(default=0, nullable=False)
 
     created_at: datetime = created_at_column()
     started_at: datetime | None = optional_timestamp()

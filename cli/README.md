@@ -33,8 +33,10 @@ the CLI waits for the same backend handoff to finish, saves the returned access
 token locally, and opens the launcher. If it cannot open a browser, it prints
 the URL so you can copy it yourself.
 
-Choose **project/environment** from the launcher to persist the target for
-subsequent commands. The menu then runs actions against that selected context.
+Choose a **project** from the launcher to persist the target for subsequent
+commands. Rudder then selects that project's preferred environment; choose a
+different environment only when you explicitly need to switch context. The
+menu then runs actions against that selected context.
 You can still override it on a command with `--project`, `--env`, or
 `--service`.
 

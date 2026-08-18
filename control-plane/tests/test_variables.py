@@ -31,6 +31,7 @@ from rudder_cp.config import get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import Environment, Project, Service, User, Variable
 from rudder_cp.routers import variables as variables_router
+from rudder_cp.routers.auth import get_current_user
 from rudder_cp.services import variables as vars_service
 
 KEY_OLD = Fernet.generate_key().decode()
@@ -70,20 +71,36 @@ def session() -> Iterator[Session]:
 
 
 @pytest.fixture
-def client(session: Session) -> Iterator[TestClient]:
+def owner(session: Session) -> User:
+    """The authenticated owner shared by every API test environment."""
+    owner = User(email="variables-owner@example.com", password_hash="x")
+    session.add(owner)
+    session.commit()
+    session.info["variables_test_owner"] = owner
+    return owner
+
+
+@pytest.fixture
+def client(session: Session, owner: User) -> Iterator[TestClient]:
     """The app under test, built here rather than imported from main.py."""
     app = FastAPI()
     app.include_router(variables_router.router)
     app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_current_user] = lambda: owner
     with TestClient(app) as test_client:
         yield test_client
 
 
-def make_environment(session: Session, name: str = "production") -> Environment:
-    user = User(email=f"{uuid.uuid4()}@example.com", password_hash="x")
-    session.add(user)
-    session.commit()
-    project = Project(name="shop", owner_id=user.id)
+def make_environment(
+    session: Session, name: str = "production", owner: User | None = None
+) -> Environment:
+    owner = owner or session.info.get("variables_test_owner")
+    if owner is None:
+        owner = User(email=f"{uuid.uuid4()}@example.com", password_hash="x")
+    if owner.id is None:
+        session.add(owner)
+        session.commit()
+    project = Project(name="shop", owner_id=owner.id)
     session.add(project)
     session.commit()
     environment = Environment(project_id=project.id, name=name)
