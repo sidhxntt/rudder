@@ -1,0 +1,69 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { runGitHubImportWizard } from "./github-import-wizard.js";
+
+const cancelled = Symbol.for("cancel");
+
+describe("runGitHubImportWizard", () => {
+  it("uses the same reviewed GitHub import flow as the web and returns its context", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ configured: true, message: "ready" })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 7, account_login: "acme", repository_selection: "all" }])
+      .mockResolvedValueOnce([{ full_name: "acme/api", default_branch: "main", private: true }])
+      .mockResolvedValueOnce(["main"])
+      .mockResolvedValueOnce({ compose_source: "generated", addons: ["postgres"], services: [{ name: "app", role: "web", is_public: true }] })
+      .mockResolvedValueOnce({ import_id: "import", project_id: "project", environment_id: "environment", app_service_id: "app" })
+      .mockResolvedValueOnce({ steps: [{ service_name: "app", status: "queued", error_message: null }] });
+    const prompts = {
+      select: vi.fn()
+        .mockResolvedValueOnce("repository")
+        .mockResolvedValueOnce(7)
+        .mockResolvedValueOnce("acme/api")
+        .mockResolvedValueOnce("main"),
+      multiselect: vi.fn().mockResolvedValueOnce(["postgres"]).mockResolvedValueOnce(["app"]),
+      confirm: vi.fn().mockResolvedValue(true),
+      isCancel: vi.fn((value: unknown) => value === cancelled),
+      note: vi.fn(),
+    };
+
+    await expect(runGitHubImportWizard({ api: { request }, prompts: prompts as never })).resolves.toEqual({
+      projectId: "project",
+      environmentId: "environment",
+    });
+
+    expect(request).toHaveBeenNthCalledWith(1, "GET", "/github/import/status");
+    expect(request).toHaveBeenNthCalledWith(6, "POST", "/github/import/preview", {
+      installation_id: 7, repository: "acme/api", branch: "main", template_id: null,
+    });
+    expect(request).toHaveBeenNthCalledWith(7, "POST", "/github/imports", {
+      installation_id: 7,
+      repository: "acme/api",
+      branch: "main",
+      template_id: null,
+      addons: ["postgres"],
+      public_services: ["app"],
+    });
+    expect(prompts.note).toHaveBeenCalledWith("app · queued", "Import started");
+  });
+
+  it("cancels before confirmation without creating a project", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ configured: true, message: "ready" })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 7, account_login: "acme", repository_selection: "all" }])
+      .mockResolvedValueOnce([{ full_name: "acme/api", default_branch: "main", private: true }])
+      .mockResolvedValueOnce(["main"])
+      .mockResolvedValueOnce({ compose_source: "repository", addons: [], services: [{ name: "app", role: "web", is_public: true }] });
+    const prompts = {
+      select: vi.fn().mockResolvedValueOnce("repository").mockResolvedValueOnce(7).mockResolvedValueOnce("acme/api").mockResolvedValueOnce("main"),
+      multiselect: vi.fn().mockResolvedValueOnce(["app"]),
+      confirm: vi.fn().mockResolvedValue(false),
+      isCancel: vi.fn((value: unknown) => value === cancelled),
+      note: vi.fn(),
+    };
+
+    await expect(runGitHubImportWizard({ api: { request }, prompts: prompts as never })).resolves.toBeUndefined();
+    expect(request).not.toHaveBeenCalledWith("POST", "/github/imports", expect.anything());
+  });
+});
