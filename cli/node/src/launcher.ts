@@ -3,7 +3,6 @@ import * as p from "@clack/prompts";
 export type LauncherActions = {
   signIn: () => Promise<void>;
   chooseProject?: () => Promise<string | void>;
-  chooseTarget: () => Promise<string | void>;
   deploy: () => Promise<void>;
   status: () => Promise<void>;
   logs: () => Promise<void>;
@@ -13,7 +12,7 @@ export type LauncherActions = {
   signOut: () => Promise<void>;
 };
 
-type LauncherAction = Exclude<keyof LauncherActions, "signIn" | "chooseProject" | "chooseTarget" | "signOut"> | "choose-target" | "sign-out" | "exit";
+type LauncherAction = Exclude<keyof LauncherActions, "signIn" | "chooseProject" | "signOut"> | "back" | "sign-out" | "exit";
 
 export function canLaunchLauncher({
   hasArgs,
@@ -87,13 +86,13 @@ export async function runLauncher({
     const selected = await p.select<LauncherAction>({
       message: "What would you like to do?",
       options: [
-        { value: "choose-target", label: "Choose project/environment" },
         { value: "deploy", label: "Deploy" },
         { value: "status", label: "Status" },
         { value: "logs", label: "Logs" },
         { value: "services", label: "Services" },
         { value: "variables", label: "Variables" },
         { value: "advisor", label: "Advisor" },
+        { value: "back", label: "Back to project selection" },
         { value: "sign-out", label: "Sign out" },
         { value: "exit", label: "Exit" },
       ],
@@ -108,17 +107,10 @@ export async function runLauncher({
     }
 
     const { action, label } = actionFor(selected, actions);
-    if (selected === "choose-target") {
-      try {
-        const context = await action();
-        if (context) {
-          const spinner = p.spinner();
-          spinner.start("Updating context");
-          spinner.stop(context);
-        }
-      } catch (error) {
-        throw error;
-      }
+    if (selected === "back") {
+      if (!actions.chooseProject) throw new Error("Project selection is unavailable.");
+      const context = await actions.chooseProject();
+      if (context) p.note(context, "Project selected");
       continue;
     }
     const spinner = p.spinner();
@@ -138,7 +130,7 @@ export async function runLauncher({
 }
 
 function actionFor(selected: Exclude<LauncherAction, "exit">, actions: LauncherActions): { action: () => Promise<string | void>; label: string } {
-  if (selected === "choose-target") return { action: actions.chooseTarget, label: "Choose project/environment" };
+  if (selected === "back") return { action: async () => undefined, label: "Back to project selection" };
   if (selected === "sign-out") return { action: actions.signOut, label: "Sign out" };
   return { action: actions[selected], label: selected[0]!.toUpperCase() + selected.slice(1) };
 }

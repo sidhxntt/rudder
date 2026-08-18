@@ -88,18 +88,17 @@ describe("runLauncher", () => {
     expect(prompts.select).toHaveBeenNthCalledWith(1, expect.objectContaining({ message: "What would you like to do?" }));
   });
 
-  it("does not spin while the project/environment picker is awaiting input", async () => {
-    const spinner = { start: vi.fn(), stop: vi.fn() };
-    prompts.spinner.mockReturnValue(spinner);
-    prompts.select.mockResolvedValueOnce("choose-target").mockResolvedValueOnce("exit");
-    const actions = { signIn: vi.fn(), chooseTarget: vi.fn().mockResolvedValue("Using api / production"), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+  it("offers Back to project selection instead of a project/environment action", async () => {
+    prompts.select.mockResolvedValueOnce("back").mockResolvedValueOnce("exit");
+    const actions = { signIn: vi.fn(), chooseProject: vi.fn().mockResolvedValue("Using current / development"), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
 
     await runLauncher({ actions, authenticated: true, clear: vi.fn() });
 
-    expect(actions.chooseTarget).toHaveBeenCalledOnce();
-    expect(spinner.start).toHaveBeenCalledWith("Updating context");
-    expect(spinner.start).not.toHaveBeenCalledWith("Choose project/environment");
-    expect(spinner.stop).toHaveBeenCalledWith("Using api / production");
+    const options = prompts.select.mock.calls[0]![0].options as Array<{ value: string; label: string }>;
+    expect(options.map(option => option.value)).not.toContain("choose-target");
+    expect(options).toContainEqual(expect.objectContaining({ value: "back", label: "Back to project selection" }));
+    expect(options.findIndex(option => option.value === "back")).toBeLessThan(options.findIndex(option => option.value === "exit"));
+    expect(actions.chooseProject).toHaveBeenCalledOnce();
   });
 
   it("cancels without invoking an action", async () => {

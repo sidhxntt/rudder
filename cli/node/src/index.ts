@@ -218,7 +218,6 @@ export async function main(): Promise<void> {
       actions: {
         signIn: () => requireAuthentication(state, false),
         chooseProject: () => chooseInitialProject(state),
-        chooseTarget: () => chooseProjectEnvironment(state),
         deploy: () => command(state, ["deploy"]),
         status: () => command(state, ["status"]),
         logs: () => command(state, ["logs"]),
