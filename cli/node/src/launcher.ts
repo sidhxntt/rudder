@@ -119,8 +119,8 @@ export async function runLauncher({
       if (context) p.note(context, "Project selected");
       continue;
     }
-    if (selected === "status") {
-      await actions.status();
+    if (selected === "status" || selected === "logs") {
+      await actions[selected]();
       continue;
     }
     const spinner = p.spinner();

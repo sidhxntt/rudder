@@ -149,6 +149,18 @@ export async function chooseProjectEnvironment(state: State): Promise<string | v
   const environmentLabel = environments.find(option => option.value === environment)?.label ?? environment;
   return `Using ${projectLabel} / ${environmentLabel}`;
 }
+/** Select a service on demand so Logs is usable immediately after project onboarding. */
+export async function chooseServiceForLogs(state: State): Promise<string | void> {
+  if (state.context.service) return resolve(state, "service");
+  const environment = await resolve(state, "environment");
+  const services = selectOptions(await state.api.request("GET", `/environments/${environment}/services`), "service");
+  if (!services.length) throw new Error("No services found. Deploy a repository first.");
+  const service = await p.select({ message: "Choose a service for logs", options: services });
+  if (p.isCancel(service)) return;
+  state.context.service = service;
+  await saveConfig(state.context, state.credentials);
+  return service;
+}
 /** Establish the first project/environment context before operational commands are available. */
 export async function chooseInitialProject(state: State): Promise<string | void> {
   const projects = selectOptions(recentProjects(await state.api.request("GET", "/projects")), "project");
@@ -257,7 +269,19 @@ export async function main(): Promise<void> {
             summary: async () => explainStatus(state, rows),
           });
         },
-        logs: () => command(state, ["logs"]),
+        logs: async () => {
+          const service = await chooseServiceForLogs(state);
+          if (!service) return;
+          const spinner = p.spinner();
+          spinner.start("Loading build logs");
+          try {
+            await command(state, ["logs", service]);
+            spinner.stop("Build logs loaded");
+          } catch (error) {
+            spinner.stop("Build logs unavailable");
+            throw error;
+          }
+        },
         services: () => command(state, ["service", "list"]),
         variables: () => command(state, ["var", "list"]),
         advisor: () => command(state, ["advisor", "diagnose"]),

@@ -5,12 +5,12 @@ import { formatCompactStatus, toStatusAdvisorInput, type StatusRow } from "./sta
 const rows: StatusRow[] = [
   {
     service: { id: "app-1", name: "app", kind: "app" },
-    deployments: [{ status: "live", commit_sha: "106b06e83c903352050942790f1b8569d9de62f7", error_message: null }],
-    instances: [{ status: "healthy" }, { status: "healthy" }, { status: "healthy" }],
+    deployments: [{ id: "release-1", status: "live", commit_sha: "106b06e83c903352050942790f1b8569d9de62f7", error_message: null }],
+    instances: [{ deployment_id: "release-1", status: "healthy" }, { deployment_id: "old-release", status: "stopped" }],
   },
   {
-    service: { id: "db-1", name: "postgres", kind: "database" },
-    deployments: [{ status: "failed", commit_sha: null, error_message: "Could not start the Compose project. compose_error: registry unavailable" }],
+    service: { id: "db-1", name: "postgres", kind: "database", build_config: { managed_by_service_id: "app-1" } },
+    deployments: [{ id: "release-1", status: "failed", commit_sha: null, error_message: "Could not start the Compose project. compose_error: registry unavailable" }],
     instances: [],
   },
 ];
@@ -22,7 +22,7 @@ describe("formatCompactStatus", () => {
     expect(output).toContain("Rudder status · 2 services");
     expect(output).toContain("app");
     expect(output).toContain("live");
-    expect(output).toContain("3/3 healthy");
+    expect(output).toContain("1/1 release containers healthy");
     expect(output).toContain("106b06e");
   });
 
@@ -32,13 +32,15 @@ describe("formatCompactStatus", () => {
     expect(output).toContain("postgres");
     expect(output).toContain("failed");
     expect(output).toContain("registry unavailable");
+    expect(output).toContain("managed by app");
   });
 });
 
 it("builds a bounded status snapshot for the read-only AI explanation", () => {
   const input = toStatusAdvisorInput(rows);
 
-  expect(input.logs).toEqual(expect.arrayContaining([expect.stringContaining("app: live, 3/3 healthy, commit 106b06e")]));
+  expect(input.logs).toEqual(expect.arrayContaining([expect.stringContaining("app: live, 1/1 release containers healthy, commit 106b06e")]));
+  expect(input.logs).toEqual(expect.arrayContaining([expect.stringContaining("postgres: failed, managed by app")]));
   expect(input.logs.join("\n")).not.toContain("service_id");
   expect(input.service_config).toEqual({ source: "rudder-cli-status" });
 });

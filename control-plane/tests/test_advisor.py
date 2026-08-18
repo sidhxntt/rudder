@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from rudder_cp.services.advisor import diagnose_failure, scan_repository
+from rudder_cp.services.advisor import diagnose_failure, response_text, scan_repository
 
 
 def test_scan_repository_proposes_django_celery_postgres_redis_and_safe_health(tmp_path: Path):
@@ -48,3 +48,16 @@ async def test_diagnosis_is_disabled_without_openai_key_and_uses_mocked_model():
     )
     assert diagnosis == "The dependency is missing."
     assert called is True
+
+
+def test_response_parser_reads_structured_responses_api_output():
+    payload = {
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "All services are live."}],
+            }
+        ]
+    }
+
+    assert response_text(payload) == "All services are live."

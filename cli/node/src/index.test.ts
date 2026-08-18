@@ -20,7 +20,7 @@ vi.mock("./context.js", async importOriginal => ({ ...await importOriginal<typeo
 vi.mock("@clack/prompts", () => prompts);
 vi.mock("./github-import-wizard.js", () => importWizard);
 
-import { chooseInitialProject, chooseProjectEnvironment, discardSession, isDirectExecution, main } from "./index.js";
+import { chooseInitialProject, chooseProjectEnvironment, chooseServiceForLogs, discardSession, isDirectExecution, main } from "./index.js";
 import { ApiClient } from "./client.js";
 
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
@@ -175,14 +175,38 @@ describe("main", () => {
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "service-id", name: "app" }]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([{ status: "live", commit_sha: "106b06e83c903352050942790f1b8569d9de62f7" }]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([{ status: "healthy" }]), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "deployment-id", status: "live", commit_sha: "106b06e83c903352050942790f1b8569d9de62f7" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ deployment_id: "deployment-id", status: "healthy" }]), { status: 200 }));
     vi.stubGlobal("fetch", fetcher);
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     await main();
 
     expect(log).toHaveBeenCalledWith(expect.stringContaining("Rudder status · 1 service"));
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("1/1 healthy"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("1/1 release containers healthy"));
+  });
+
+  it("asks for a service before opening logs when none is selected", async () => {
+    prompts.select.mockResolvedValueOnce("service-id");
+    const api = {
+      baseUrl: "http://localhost:8000",
+      request: vi.fn().mockResolvedValueOnce([
+        { id: "service-id", name: "app" },
+        { id: "database-id", name: "postgres" },
+      ]),
+    };
+    const state = {
+      api,
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002" },
+      credentials: {},
+      flags: {},
+      out: { json: false },
+    };
+
+    await expect(chooseServiceForLogs(state as never)).resolves.toBe("service-id");
+
+    expect(prompts.select).toHaveBeenCalledWith(expect.objectContaining({ message: "Choose a service for logs" }));
+    expect((state.context as { service?: string }).service).toBe("service-id");
+    expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);
   });
 });
