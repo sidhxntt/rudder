@@ -197,11 +197,12 @@ export async function main(): Promise<void> {
   const url = stringFlag(parsed.flags, "url") ?? process.env.RUDDER_URL ?? saved.credentials.url ?? "http://localhost:8000";
   const state: State = { api: new ApiClient(url, process.env.RUDDER_TOKEN ?? saved.credentials.token), context, credentials: { ...saved.credentials, url }, flags: parsed.flags, out: { json: Boolean(parsed.flags.json) } };
   const noun = parsed.args[0];
+  const authenticated = Boolean(state.credentials.token || process.env.RUDDER_TOKEN);
   const launch = canLaunchLauncher({ hasArgs: Boolean(noun), json: Boolean(parsed.flags.json), noInteractive: Boolean(parsed.flags["no-interactive"]), stdinTTY: Boolean(process.stdin.isTTY), stdoutTTY: Boolean(process.stdout.isTTY) });
   if (launch) {
     await runLauncher({
-      authenticated: Boolean(state.credentials.token || process.env.RUDDER_TOKEN),
-      projectSelected: Boolean(state.context.project && state.context.environment),
+      authenticated,
+      projectSelected: authenticated && Boolean(state.context.project && state.context.environment),
       actions: {
         signIn: () => requireAuthentication(state, false),
         chooseProject: () => chooseInitialProject(state),

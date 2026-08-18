@@ -34,6 +34,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   prompts.select.mockReset();
   prompts.isCancel.mockReset().mockReturnValue(false);
+  launcher.runLauncher.mockReset();
   context.saveConfig.mockReset();
   importWizard.runGitHubImportWizard.mockReset();
 });
@@ -120,5 +121,23 @@ describe("main", () => {
     expect(importWizard.runGitHubImportWizard).toHaveBeenCalledWith({ api });
     expect(state.context).toEqual({ project: "project-id", environment: "environment-id" });
     expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);
+  });
+
+  it("requires project onboarding after a new GitHub sign-in even when old context remains", async () => {
+    context.loadConfig.mockResolvedValue({
+      context: { project: "old-project", environment: "old-environment" },
+      credentials: {},
+    });
+    context.mergeContext.mockReturnValue({ project: "old-project", environment: "old-environment" });
+    process.argv = ["node", "rudder"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+
+    await main();
+
+    expect(launcher.runLauncher).toHaveBeenCalledWith(expect.objectContaining({
+      authenticated: false,
+      projectSelected: false,
+    }));
   });
 });
