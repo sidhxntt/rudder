@@ -1,0 +1,54 @@
+name: Verify GKE Platform
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: GCP project ID that owns the Rudder GKE platform
+        required: true
+        type: string
+      region:
+        description: Regional GKE location
+        required: true
+        default: asia-south1
+        type: string
+      cluster:
+        description: GKE cluster name
+        required: true
+        default: rudder-gke
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: gke-platform-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # The cluster has a private control-plane endpoint. Configure this label on
+    # a self-hosted runner inside the approved GCP network; do not expose GKE
+    # administration to GitHub-hosted runners.
+    runs-on: [self-hosted, linux, gke-operations]
+    environment: gke-production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud with workload identity federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_GITHUB_OPERATIONS_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Verify the private GKE platform
+        env:
+          RUDDER_GCP_PROJECT: ${{ inputs.project_id }}
+          RUDDER_GCP_REGION: ${{ inputs.region }}
+          RUDDER_GKE_CLUSTER: ${{ inputs.cluster }}
+          RUDDER_KUBERNETES_WORKLOAD_POOL: platform
+        run: |
+          make gke-preflight
+          make gke-verify

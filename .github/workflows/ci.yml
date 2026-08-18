@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  control-plane:
+    name: Control plane
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: control-plane/uv.lock
+      - run: uv sync --locked --all-extras
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+
+  node-agent:
+    name: Node agent
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: agent/uv.lock
+      - run: uv sync --locked --all-extras
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+
+  web:
+    name: Web console
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+
+  cli:
+    name: CLI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli/node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cli/node/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm pack --dry-run
+
+  infrastructure:
+    name: Infrastructure and documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive infra/gcp/terraform
+      - name: Validate Terraform without a remote backend
+        run: |
+          terraform -chdir=infra/gcp/terraform init -backend=false -reconfigure
+          terraform -chdir=infra/gcp/terraform validate
+      - name: Check shell scripts
+        run: |
+          find scripts infra -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+      - name: Render GitHub Wiki documentation
+        run: |
+          node scripts/render-github-wiki.mjs "$RUNNER_TEMP/rudder-wiki"
+          test -f "$RUNNER_TEMP/rudder-wiki/Home.md"
+          test -f "$RUNNER_TEMP/rudder-wiki/_Sidebar.md"
+      - name: Validate Compose configurations
+        run: |
+          docker compose -f docker-compose.dev.yml config --quiet
+          docker compose -f docker-compose.dev.yml -f docker-compose.kind.yml config --quiet

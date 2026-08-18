@@ -324,7 +324,11 @@ def test_clone_copies_declarative_graph_but_no_runtime_history(
             )
         )
         session.add(
-            Volume(service_id=UUID(database["id"]), mount_path="/var/lib/postgresql/data", size_mb=2048)
+            Volume(
+                service_id=UUID(database["id"]),
+                mount_path="/var/lib/postgresql/data",
+                size_mb=2048,
+            )
         )
         session.add(Deployment(service_id=UUID(api["id"])))
         session.commit()
@@ -339,34 +343,61 @@ def test_clone_copies_declarative_graph_but_no_runtime_history(
     assert staging["is_production"] is False
 
     services = client.get(f"/environments/{staging['id']}/services").json()
-    assert [(service["name"], service["canvas_x"], service["canvas_y"]) for service in services] == [
+    service_positions = [
+        (service["name"], service["canvas_x"], service["canvas_y"])
+        for service in services
+    ]
+    assert service_positions == [
         ("api", 144.0, 288.0),
         ("postgres", 0.0, 0.0),
     ]
     assert services[0]["source_branch"] == "main"
-    assert {domain["hostname"] for domain in client.get(f"/environments/{staging['id']}/domains").json()} == {
+    domains = client.get(f"/environments/{staging['id']}/domains").json()
+    assert {domain["hostname"] for domain in domains} == {
         "api.staging.localhost",
         "postgres.staging.localhost",
     }
     with Session(engine) as session:
-        cloned_api = session.exec(select(Service).where(Service.environment_id == UUID(staging["id"]), Service.name == "api")).one()
-        cloned_postgres = session.exec(select(Service).where(Service.environment_id == UUID(staging["id"]), Service.name == "postgres")).one()
-        assert session.exec(select(Variable).where(Variable.service_id == cloned_api.id)).one().value_encrypted.startswith(b"ciphertext")
-        volume = session.exec(select(Volume).where(Volume.service_id == cloned_postgres.id)).one()
+        cloned_api = session.exec(
+            select(Service).where(
+                Service.environment_id == UUID(staging["id"]), Service.name == "api"
+            )
+        ).one()
+        cloned_postgres = session.exec(
+            select(Service).where(
+                Service.environment_id == UUID(staging["id"]), Service.name == "postgres"
+            )
+        ).one()
+        variable = session.exec(
+            select(Variable).where(Variable.service_id == cloned_api.id)
+        ).one()
+        assert variable.value_encrypted.startswith(b"ciphertext")
+        volume = session.exec(
+            select(Volume).where(Volume.service_id == cloned_postgres.id)
+        ).one()
         assert volume.size_mb == 2048
         assert volume.node_id is None
-        assert session.exec(select(Deployment).where(Deployment.service_id == cloned_api.id)).all() == []
+        deployments = session.exec(
+            select(Deployment).where(Deployment.service_id == cloned_api.id)
+        ).all()
+        assert deployments == []
 
 
 def test_clone_is_atomic_when_target_name_is_taken(client: TestClient, engine: Engine) -> None:
     project = make_project(client)
     production = production_environment(client, project["id"])
     make_service(client, production["id"], "api")
-    assert client.post(f"/projects/{project['id']}/environments", json={"name": "staging"}).status_code == 201
+    created = client.post(
+        f"/projects/{project['id']}/environments", json={"name": "staging"}
+    )
+    assert created.status_code == 201
     response = client.post(f"/environments/{production['id']}/clone", json={"name": "staging"})
     assert response.status_code == 409
     with Session(engine) as session:
-        assert session.exec(select(Service).where(Service.environment_id != UUID(production["id"]))).all() == []
+        cloned_services = session.exec(
+            select(Service).where(Service.environment_id != UUID(production["id"]))
+        ).all()
+        assert cloned_services == []
 
 
 def test_environment_creation_does_not_expose_or_allocate_a_legacy_mesh_subnet(

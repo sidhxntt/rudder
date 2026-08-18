@@ -32,6 +32,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify release tag matches package version
+        if: github.event_name == 'push'
+        run: test "cli-v$(node -p \"require('./package.json').version\")" = "$GITHUB_REF_NAME"
+
       - name: Test the CLI
         run: npm test
 
