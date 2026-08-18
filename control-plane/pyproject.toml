@@ -12,7 +12,7 @@ dependencies = [
     "pydantic-settings>=2.6",
     "cryptography>=43",
     "pyjwt>=2.9",
-    "passlib[bcrypt]>=1.7",
+    "passlib[bcrypt]>=1.7.4",
     # passlib 1.7.4 (final release, 2020) probes its bcrypt backend by hashing a
     # >72-byte secret. bcrypt 5.0 hard-rejects that, so every hash_password call
     # raises. Pin below 5 until passlib is replaced.
