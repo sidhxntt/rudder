@@ -11,7 +11,7 @@ const prompts = vi.hoisted(() => ({
 
 vi.mock("@clack/prompts", () => prompts);
 
-import { canLaunchLauncher, runLauncher } from "./launcher.js";
+import { canLaunchLauncher, renderSplash, runLauncher } from "./launcher.js";
 import { discardSession } from "./index.js";
 import { ApiClient } from "./client.js";
 
@@ -26,6 +26,16 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("runLauncher", () => {
+  it("renders a distinct Rudder control-plane splash before prompting", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    renderSplash();
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("RUDDER"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("DEPLOYMENT CONTROL PLANE"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("GitHub-authenticated workspace"));
+  });
+
   it("does not launch when stdout is redirected", () => {
     expect(canLaunchLauncher({ hasArgs: false, json: false, noInteractive: false, stdinTTY: true, stdoutTTY: false })).toBe(false);
   });

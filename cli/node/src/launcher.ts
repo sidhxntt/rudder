@@ -130,7 +130,16 @@ function actionFor(selected: Exclude<LauncherAction, "exit">, actions: LauncherA
   return { action: actions[selected], label: selected[0]!.toUpperCase() + selected.slice(1) };
 }
 
-function renderSplash(): void {
-  console.log("\x1b[48;5;235m\x1b[38;5;84m  RUDDER  \x1b[38;5;250mcontrol plane  \x1b[0m");
-  console.log("\x1b[38;5;84m  ─────────────────────────────  \x1b[0m");
+export function renderSplash(): void {
+  const emerald = "\x1b[38;5;84m";
+  const ink = "\x1b[38;5;255m";
+  const muted = "\x1b[38;5;245m";
+  const reset = "\x1b[0m";
+  console.log(`${emerald}
+  ┌──────────────────────────────────────────┐
+  │                   RUDDER                  │
+  └──────────────────────────────────────────┘${reset}
+  ${ink}DEPLOYMENT CONTROL PLANE${reset}
+  ${muted}GitHub-authenticated workspace · visible releases · local control${reset}
+  ${emerald}────────────────────────────────────────────────${reset}`);
 }

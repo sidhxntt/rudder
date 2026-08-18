@@ -243,6 +243,10 @@ def test_authorization_handoff_consumes_once_after_github_callback(
     assert callback.headers["content-type"].startswith("text/html")
     assert "set-cookie" not in callback.headers
     assert "access_token" not in callback.text
+    assert "Rudder" in callback.text
+    assert "GitHub connected" in callback.text
+    assert "Return to your terminal" in callback.text
+    assert "--rd-accent" in callback.text
     consumed = client.post(f"/auth/authorizations/{started.json()['id']}/consume")
     assert consumed.status_code == 200
     assert consumed.json()["access_token"]
