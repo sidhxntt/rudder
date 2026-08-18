@@ -45,5 +45,9 @@ class Node(SQLModel, table=True):
         sa_column=sa.Column(pg_enum(NodeStatus, "node_status"), nullable=False),
     )
     last_heartbeat_at: datetime | None = optional_timestamp()
+    # Monotonically advances for each accepted agent observation.  Deploy
+    # promotion uses it to fence a heartbeat that was captured before the
+    # candidate container existed but arrived immediately afterwards.
+    heartbeat_generation: int = Field(default=0, nullable=False)
     created_at: datetime = created_at_column()
     reported_state: dict | None = Field(default=None, sa_column=sa.Column(sa.JSON))

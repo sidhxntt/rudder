@@ -50,6 +50,7 @@ async def build_log_events(
     *,
     poll_interval: float = DEFAULT_POLL_INTERVAL,
     keepalive_interval: float = DEFAULT_KEEPALIVE_INTERVAL,
+    follow: bool = True,
 ) -> AsyncIterator[str]:
     """Tail a build log as SSE frames.
 
@@ -57,6 +58,12 @@ async def build_log_events(
     inside ``BuildLogStore.tail`` closes the file handle and nothing leaks. The
     build is untouched -- this path never signals the writer.
     """
+    if not follow:
+        text, status = await store.snapshot(deployment_id)
+        if text:
+            yield frame(LogEvent("chunk", text))
+        yield frame(LogEvent("end", status or "snapshot"))
+        return
     events = store.tail(
         deployment_id,
         poll_interval=poll_interval,

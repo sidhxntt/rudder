@@ -4,9 +4,11 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from rudder_cp.models import Deployment, Instance, Node, Volume
+from rudder_cp.config import Settings
+from rudder_cp.models import Deployment, Instance, Node, Service, Volume
 from rudder_cp.models.base import DeploymentStatus, InstanceStatus, NodeStatus
 from rudder_cp.services.reconciler import AgentClient, reconcile_state
 
@@ -14,6 +16,16 @@ from rudder_cp.services.reconciler import AgentClient, reconcile_state
 sqlite_file_name = "test.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
 engine = create_engine(sqlite_url, echo=True)
+
+
+def test_reconciler_uses_the_phase_two_ten_second_default_interval() -> None:
+    assert Settings().reconciler_interval_seconds == 10
+
+
+@pytest.mark.parametrize("invalid_interval", (0, -1, float("inf"), float("nan")))
+def test_reconciler_interval_must_be_finite_and_positive(invalid_interval: float) -> None:
+    with pytest.raises(ValidationError):
+        Settings(reconciler_interval_seconds=invalid_interval)
 
 
 def create_db_and_tables():
@@ -114,6 +126,56 @@ async def test_reconcile_marks_missing_instance_as_unreachable(
     await reconcile_state(session, mock_agent_client)
 
     # Assert
+    session.refresh(instance)
+    assert instance.status == InstanceStatus.UNREACHABLE
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ignores_the_first_post_promotion_stale_heartbeat(
+    session: Session, mock_agent_client: MagicMock
+):
+    """A report captured before promotion cannot immediately evict its instance.
+
+    Deployment promotion records a durable heartbeat-generation fence.  The
+    next report can have been captured before the candidate became live while
+    its HTTP request was in flight, so only a later observation may declare
+    the newly promoted container missing.
+    """
+    node = Node(
+        hostname="test-node",
+        ip_address="1.1.1.1",
+        last_heartbeat_at=datetime.now(UTC),
+        heartbeat_generation=42,
+        reported_state={"containers": []},
+    )
+    session.add(node)
+    session.commit()
+    instance = Instance(
+        deployment_id=uuid.uuid4(),
+        node_id=node.id,
+        container_id="newly-promoted-container",
+        status=InstanceStatus.HEALTHY,
+        missing_after_heartbeat_generation=43,
+    )
+    session.add(instance)
+    session.commit()
+
+    # The report at generation 43 may have been captured before the deploy
+    # completed, so it cannot be used as missing-container evidence.
+    node.heartbeat_generation = 43
+    session.add(node)
+    session.commit()
+    await reconcile_state(session, mock_agent_client)
+
+    session.refresh(instance)
+    assert instance.status == InstanceStatus.HEALTHY
+
+    # The next generation is a new observation and may safely drive recovery.
+    node.heartbeat_generation = 44
+    session.add(node)
+    session.commit()
+    await reconcile_state(session, mock_agent_client)
+
     session.refresh(instance)
     assert instance.status == InstanceStatus.UNREACHABLE
 
@@ -244,6 +306,59 @@ async def test_reconcile_queues_one_replacement_when_a_live_service_loses_its_no
     queued = session.exec(
         select(Deployment).where(
             Deployment.service_id == deployment.service_id,
+            Deployment.status == DeploymentStatus.QUEUED,
+        )
+    ).all()
+    assert len(queued) == 1
+    assert queued[0].commit_sha == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_queues_replacement_when_a_live_replica_is_lost(
+    session: Session, mock_agent_client: MagicMock
+):
+    """One healthy replica is not sufficient when the service desires two."""
+    node = Node(
+        hostname="replica-node",
+        ip_address="1.1.1.1",
+        last_heartbeat_at=datetime.now(UTC),
+        reported_state={"containers": [{"id": "healthy-replica", "labels": {}}]},
+    )
+    session.add(node)
+    session.commit()
+    service = Service(environment_id=uuid.uuid4(), name="api", replica_count=2)
+    session.add(service)
+    session.commit()
+    deployment = Deployment(
+        service_id=service.id,
+        status=DeploymentStatus.LIVE,
+        commit_sha="abc123",
+    )
+    session.add(deployment)
+    session.commit()
+    session.add_all(
+        [
+            Instance(
+                deployment_id=deployment.id,
+                node_id=node.id,
+                container_id="healthy-replica",
+                status=InstanceStatus.HEALTHY,
+            ),
+            Instance(
+                deployment_id=deployment.id,
+                node_id=node.id,
+                container_id="lost-replica",
+                status=InstanceStatus.HEALTHY,
+            ),
+        ]
+    )
+    session.commit()
+
+    await reconcile_state(session, mock_agent_client)
+
+    queued = session.exec(
+        select(Deployment).where(
+            Deployment.service_id == service.id,
             Deployment.status == DeploymentStatus.QUEUED,
         )
     ).all()

@@ -38,7 +38,7 @@ export function ProjectSettings() {
     if (!projectId || !project || confirmation !== project.name) return;
     if (!window.confirm(`Delete project “${project.name}” and all of its environments, services, deployments, and volumes?`)) return;
     await deleteProject.mutateAsync(projectId);
-    router.replace("/");
+    router.replace("/dashboard");
   }
 
   if (!project) {

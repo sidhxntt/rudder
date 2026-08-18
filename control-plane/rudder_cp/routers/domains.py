@@ -17,9 +17,11 @@ from fastapi import APIRouter, Depends, Response, status
 from sqlmodel import Session
 
 from rudder_cp.db import get_session
+from rudder_cp.routers.auth import CurrentUser
 from rudder_cp.schemas.common import error_responses, translate_errors
 from rudder_cp.schemas.domain import DomainCreate, DomainRead, DomainReplace, DomainUpdate
 from rudder_cp.services import domains as domain_ops
+from rudder_cp.services.ownership import require_owned_domain, require_owned_environment
 
 router = APIRouter(tags=["domains"])
 
@@ -41,9 +43,10 @@ SessionDep = Annotated[Session, Depends(get_session)]
     ),
 )
 async def create_domain(
-    environment_id: UUID, payload: DomainCreate, session: SessionDep
+    environment_id: UUID, payload: DomainCreate, session: SessionDep, user: CurrentUser
 ) -> DomainRead:
     with translate_errors():
+        require_owned_environment(session, environment_id, user.id)
         domain = await domain_ops.create_domain(session, environment_id, payload)
     return DomainRead.model_validate(domain)
 
@@ -55,8 +58,11 @@ async def create_domain(
     operation_id="list_domains",
     summary="List an environment's domains",
 )
-async def list_domains(environment_id: UUID, session: SessionDep) -> list[DomainRead]:
+async def list_domains(
+    environment_id: UUID, session: SessionDep, user: CurrentUser
+) -> list[DomainRead]:
     with translate_errors():
+        require_owned_environment(session, environment_id, user.id)
         rows = await domain_ops.list_domains(session, environment_id)
     return [DomainRead.model_validate(row) for row in rows]
 
@@ -68,9 +74,9 @@ async def list_domains(environment_id: UUID, session: SessionDep) -> list[Domain
     operation_id="get_domain",
     summary="Get a domain",
 )
-async def get_domain(domain_id: UUID, session: SessionDep) -> DomainRead:
+async def get_domain(domain_id: UUID, session: SessionDep, user: CurrentUser) -> DomainRead:
     with translate_errors():
-        domain = await domain_ops.get_domain(session, domain_id)
+        domain = require_owned_domain(session, domain_id, user.id)
     return DomainRead.model_validate(domain)
 
 
@@ -87,9 +93,10 @@ async def get_domain(domain_id: UUID, session: SessionDep) -> DomainRead:
     ),
 )
 async def update_domain(
-    domain_id: UUID, payload: DomainUpdate, session: SessionDep
+    domain_id: UUID, payload: DomainUpdate, session: SessionDep, user: CurrentUser
 ) -> DomainRead:
     with translate_errors():
+        require_owned_domain(session, domain_id, user.id)
         domain = await domain_ops.update_domain(session, domain_id, payload)
     return DomainRead.model_validate(domain)
 
@@ -103,9 +110,10 @@ async def update_domain(
     description="Sets every writable field. Idempotent. Refused with 403 on a system domain.",
 )
 async def replace_domain(
-    domain_id: UUID, payload: DomainReplace, session: SessionDep
+    domain_id: UUID, payload: DomainReplace, session: SessionDep, user: CurrentUser
 ) -> DomainRead:
     with translate_errors():
+        require_owned_domain(session, domain_id, user.id)
         domain = await domain_ops.replace_domain(session, domain_id, payload)
     return DomainRead.model_validate(domain)
 
@@ -122,6 +130,7 @@ async def replace_domain(
         "which takes its system domain with it."
     ),
 )
-async def delete_domain(domain_id: UUID, session: SessionDep) -> None:
+async def delete_domain(domain_id: UUID, session: SessionDep, user: CurrentUser) -> None:
     with translate_errors():
+        require_owned_domain(session, domain_id, user.id)
         await domain_ops.delete_domain(session, domain_id)

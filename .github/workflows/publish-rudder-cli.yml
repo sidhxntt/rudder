@@ -1,0 +1,58 @@
+name: Publish Rudder CLI
+
+on:
+  push:
+    tags:
+      - "cli-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli/node
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cli/node/package-lock.json
+          registry-url: https://npm.pkg.github.com
+          scope: "@sidhxntt"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release tag matches package version
+        if: github.event_name == 'push'
+        run: test "cli-v$(node -p \"require('./package.json').version\")" = "$GITHUB_REF_NAME"
+
+      - name: Test the CLI
+        run: npm test
+
+      - name: Type-check the CLI
+        run: npm run typecheck
+
+      - name: Verify the publish artifact
+        run: npm pack --dry-run
+
+      - name: Publish to GitHub Packages
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub release
+        if: github.event_name == 'push'
+        working-directory: .
+        run: gh release create "$GITHUB_REF_NAME" --title "Rudder CLI $GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

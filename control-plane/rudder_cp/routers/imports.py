@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from rudder_cp.db import get_session
 from rudder_cp.models import Environment, GitHubImport
 from rudder_cp.routers.auth import CurrentUser
+from rudder_cp.schemas.common import NotFoundError
 from rudder_cp.services.compose import (
     ComposeValidationError,
     GeneratedProcess,
@@ -23,6 +24,7 @@ from rudder_cp.services.imports import (
     import_progress,
     provision_import,
 )
+from rudder_cp.services.ownership import require_owned_project
 from rudder_cp.services.processes import detect_processes
 
 router = APIRouter(tags=["github-import"])
@@ -300,11 +302,15 @@ async def confirm_github_import(
 
 @router.get("/github/imports/{import_id}", response_model=GitHubImportRead)
 async def get_github_import(
-    import_id: uuid.UUID, session: SessionDep
+    import_id: uuid.UUID, session: SessionDep, user: CurrentUser
 ) -> GitHubImportRead:
     record = session.get(GitHubImport, import_id)
     if record is None:
         raise HTTPException(status_code=404, detail="GitHub import not found.")
+    try:
+        require_owned_project(session, record.project_id, user.id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="GitHub import not found.") from exc
     return GitHubImportRead(
         import_id=record.id,
         project_id=record.project_id,

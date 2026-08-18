@@ -54,6 +54,12 @@ class FakeKubernetesApi:
     async def ensure_guardrails(self, namespace: str, labels: dict[str, str]) -> None:
         self.calls.append(("guardrails", namespace))
 
+    async def ensure_workload_service_account(
+        self, namespace: str, *, name: str, labels: dict[str, str]
+    ) -> None:
+        self.calls.append(("workload-service-account", (name, namespace, labels)))
+
+
     async def ensure_cnpg_backup_service_account(
         self, namespace: str, *, name: str, labels: dict[str, str]
     ) -> None:
@@ -282,6 +288,91 @@ async def test_workload_template_renders_the_platform_toleration() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workload_template_uses_the_dedicated_environment_service_account() -> None:
+    """Customer Pods must not inherit the default ServiceAccount token."""
+
+    class Apps:
+        read_namespaced_deployment = object()
+        create_namespaced_deployment = object()
+        replace_namespaced_deployment = object()
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.apps = Apps()
+    api.core = SimpleNamespace()
+    rendered: list[object] = []
+
+    async def create_or_replace(*args, **_kwargs) -> None:
+        rendered.append(args[4])
+
+    api._create_or_replace = create_or_replace
+    spec = WorkloadSpec(
+        name="web",
+        service_name="web",
+        image="registry/web@sha256:1",
+        port=3000,
+        command=None,
+        environment={},
+        labels={},
+        stateful=False,
+        volume_mount_path=None,
+        service_account_name="rudder-workload",
+    )
+
+    await api.apply_workload("rudder-shop", spec)
+
+    pod_spec = rendered[0].spec.template.spec
+    assert pod_spec.service_account_name == "rudder-workload"
+    assert pod_spec.automount_service_account_token is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_creates_one_environment_workload_identity_before_workloads() -> None:
+    """Every regular environment gets a tokenless, namespace-local identity."""
+
+    api = FakeKubernetesApi()
+    runtime = KubernetesRuntime(api, RuntimeSettings())
+    release = KubernetesRelease(
+        namespace="rudder-shop-production",
+        release_id="aabbccdd-1234-5678-9abc-def012345678",
+        services=(
+            ComposeService(name="web", image="registry/web@sha256:1", port=3000),
+        ),
+    )
+
+    await runtime.apply(release, project_id="project", environment_id="environment")
+
+    identity_index = next(
+        index for index, call in enumerate(api.calls) if call[0] == "workload-service-account"
+    )
+    workload_index = next(index for index, call in enumerate(api.calls) if call[0] == "workload")
+    assert identity_index < workload_index
+    identity = api.calls[identity_index][1]
+    assert identity[0] == "rudder-workload"
+    workload = api.calls[workload_index][1]
+    assert workload.service_account_name == "rudder-workload"
+
+
+def test_job_templates_use_the_dedicated_environment_service_account() -> None:
+    """Scheduled and one-off tenant code must not fall back to ``default``."""
+
+    api = object.__new__(AsyncKubernetesApi)
+    spec = JobSpec(
+        name="web-job",
+        image="registry/web@sha256:1",
+        command=("python", "manage.py", "migrate"),
+        environment={},
+        labels={},
+        timeout_seconds=60,
+        retries=0,
+        service_account_name="rudder-workload",
+    )
+
+    pod_spec = api._job_template(spec).spec
+    assert pod_spec.service_account_name == "rudder-workload"
+    assert pod_spec.automount_service_account_token is False
+
+
+@pytest.mark.asyncio
 async def test_guardrails_default_deny_egress_except_dns_and_same_environment() -> None:
     """An environment may only talk to its own services plus cluster DNS.
 
@@ -397,10 +488,12 @@ async def test_failed_candidate_cleanup_never_deletes_persistent_volume_claims()
         # implementation reintroducing PVC deletion.
         delete_collection_namespaced_persistent_volume_claim=AsyncMock(),
     )
+    api.networking = SimpleNamespace(delete_collection_namespaced_ingress=AsyncMock())
 
     await api.delete_release("rudder-shop-production", "candidate-release")
 
     api.core.delete_collection_namespaced_persistent_volume_claim.assert_not_awaited()
+    api.networking.delete_collection_namespaced_ingress.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -414,6 +507,18 @@ async def test_environment_namespace_cleanup_is_idempotent() -> None:
     api.core.delete_namespace.assert_awaited_once()
     body = api.core.delete_namespace.await_args.kwargs["body"]
     assert body.propagation_policy == "Foreground"
+
+
+@pytest.mark.asyncio
+async def test_namespace_existence_treats_kubernetes_404_as_deleted() -> None:
+    api = object.__new__(AsyncKubernetesApi)
+
+    async def missing_namespace(_namespace: str) -> None:
+        raise ApiException(status=404)
+
+    api.core = SimpleNamespace(read_namespace=missing_namespace)
+
+    assert await api.namespace_exists("rudder-abcdef012345") is False
 
 
 @pytest.mark.asyncio
@@ -1463,3 +1568,113 @@ async def test_runtime_marks_unsupported_progressive_rollouts_degraded() -> None
         "status": "degraded",
         "reason": "canary rollout requires a traffic manager and is not enabled for this cluster",
     }
+
+
+@pytest.mark.asyncio
+async def test_runtime_observability_reads_pod_log_and_resource_metrics() -> None:
+    """Kubernetes releases expose the same bounded logs/metrics contract as Docker."""
+
+    class Core:
+        async def list_namespaced_pod(self, namespace: str):
+            assert namespace == "rudder-shop"
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        metadata=SimpleNamespace(name="web-abc", uid="pod-uid"),
+                        spec=SimpleNamespace(
+                            containers=[
+                                SimpleNamespace(
+                                    name="web",
+                                    resources=SimpleNamespace(
+                                        limits={"cpu": "500m"}, requests={}
+                                    ),
+                                )
+                            ]
+                        ),
+                    )
+                ]
+            )
+
+        async def read_namespaced_pod_log(self, name: str, namespace: str, **kwargs: object):
+            assert (name, namespace) == ("web-abc", "rudder-shop")
+            assert kwargs["container"] == "web"
+            assert kwargs["limit_bytes"] == 1024
+            return "ready\\n"
+
+    class Custom:
+        async def list_namespaced_custom_object(self, **kwargs: object):
+            assert kwargs == {
+                "group": "metrics.k8s.io",
+                "version": "v1beta1",
+                "namespace": "rudder-shop",
+                "plural": "pods",
+            }
+            return {
+                "items": [
+                    {
+                        "metadata": {"uid": "pod-uid", "name": "web-abc"},
+                        "containers": [
+                            {"name": "web", "usage": {"cpu": "125m", "memory": "32Mi"}}
+                        ],
+                    }
+                ]
+            }
+
+    api = object.__new__(AsyncKubernetesApi)
+    api.core = Core()
+    api.custom = Custom()
+
+    logs = await api.runtime_logs("rudder-shop", "pod-uid", max_bytes=1024)
+    metrics = await api.runtime_metrics("rudder-shop", "pod-uid")
+
+    assert logs.text == "ready\\n"
+    assert logs.dropped_bytes == 0
+    assert metrics.cpu_percent == 25
+    assert metrics.memory_bytes == 32 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_runtime_observability_ignores_a_pod_that_has_already_gone_away() -> None:
+    api = object.__new__(AsyncKubernetesApi)
+    api.core = SimpleNamespace(
+        list_namespaced_pod=AsyncMock(return_value=SimpleNamespace(items=[]))
+    )
+    api.custom = SimpleNamespace()
+
+    with pytest.raises(RuntimeError, match="pod-uid"):
+        await api.runtime_logs("rudder-shop", "pod-uid")
+
+
+@pytest.mark.asyncio
+async def test_runtime_metrics_rejects_a_pod_without_a_positive_cpu_limit() -> None:
+    """A zero limit cannot honestly be represented as zero-percent usage."""
+
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(uid="pod-uid"),
+        spec=SimpleNamespace(
+            containers=[
+                SimpleNamespace(
+                    resources=SimpleNamespace(limits={"cpu": "0"}, requests={})
+                )
+            ]
+        ),
+    )
+    api = object.__new__(AsyncKubernetesApi)
+    api.core = SimpleNamespace(
+        list_namespaced_pod=AsyncMock(return_value=SimpleNamespace(items=[pod]))
+    )
+    api.custom = SimpleNamespace(
+        list_namespaced_custom_object=AsyncMock(
+            return_value={
+                "items": [
+                    {
+                        "metadata": {"uid": "pod-uid"},
+                        "containers": [{"usage": {"cpu": "1m", "memory": "1Mi"}}],
+                    }
+                ]
+            }
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="CPU limit"):
+        await api.runtime_metrics("rudder-shop", "pod-uid")

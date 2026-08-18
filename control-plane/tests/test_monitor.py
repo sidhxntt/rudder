@@ -5,9 +5,10 @@ container and the database keeps claiming `healthy` while Traefik routes to a
 corpse.
 """
 
+from uuid import uuid4
+
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
-from uuid import uuid4
 
 from rudder_cp.config import Settings
 from rudder_cp.models import (

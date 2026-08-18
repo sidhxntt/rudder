@@ -26,6 +26,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
 from sqlmodel import Session
 
 from rudder_cp.db import get_session
+from rudder_cp.routers.auth import CurrentUser
+from rudder_cp.schemas.common import NotFoundError
 from rudder_cp.schemas.variables import (
     VARIABLE_KEY_PATTERN,
     ErrorBody,
@@ -33,6 +35,7 @@ from rudder_cp.schemas.variables import (
     VariableUpsert,
 )
 from rudder_cp.services import variables as variables_service
+from rudder_cp.services.ownership import require_owned_service
 
 router = APIRouter(prefix="/services/{service_id}/variables", tags=["variables"])
 
@@ -46,6 +49,7 @@ KeyPath = Annotated[
 ]
 
 _NOT_FOUND = {404: {"model": ErrorBody, "description": "No such service or variable"}}
+_VALIDATION = {422: {"model": ErrorBody, "description": "Malformed request"}}
 
 
 def _error(status_code: int, code: str, message: str, **details: str) -> HTTPException:
@@ -58,12 +62,22 @@ def _error(status_code: int, code: str, message: str, **details: str) -> HTTPExc
     "",
     summary="List a service's variables",
     response_model=list[VariableRead],
-    responses=_NOT_FOUND,
+    responses=_NOT_FOUND | _VALIDATION,
 )
-async def list_variables(service_id: UUID, session: SessionDep) -> list[VariableRead]:
+async def list_variables(
+    service_id: UUID, session: SessionDep, user: CurrentUser
+) -> list[VariableRead]:
     """Keys, reference flags and timestamps. Values are never returned."""
     try:
+        require_owned_service(session, service_id, user.id)
         rows = await variables_service.list_variables(session, service_id)
+    except NotFoundError as exc:
+        raise _error(
+            status.HTTP_404_NOT_FOUND,
+            "service_not_found",
+            str(exc),
+            service_id=str(service_id),
+        ) from exc
     except variables_service.ServiceNotFoundError as exc:
         raise _error(
             status.HTTP_404_NOT_FOUND,
@@ -78,17 +92,26 @@ async def list_variables(service_id: UUID, session: SessionDep) -> list[Variable
     "/{key}",
     summary="Set a variable (idempotent)",
     response_model=VariableRead,
-    responses=_NOT_FOUND | {422: {"model": ErrorBody, "description": "Malformed value"}},
+    responses=_NOT_FOUND | _VALIDATION,
 )
 async def set_variable(
     service_id: UUID,
     key: KeyPath,
     body: VariableUpsert,
     session: SessionDep,
+    user: CurrentUser,
 ) -> VariableRead:
     """Create or replace one variable. The response omits the value by design."""
     try:
+        require_owned_service(session, service_id, user.id)
         variable = await variables_service.set_variable(session, service_id, key, body.value)
+    except NotFoundError as exc:
+        raise _error(
+            status.HTTP_404_NOT_FOUND,
+            "service_not_found",
+            str(exc),
+            service_id=str(service_id),
+        ) from exc
     except variables_service.ServiceNotFoundError as exc:
         raise _error(
             status.HTTP_404_NOT_FOUND,
@@ -110,12 +133,22 @@ async def set_variable(
     "/{key}",
     summary="Delete a variable",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses=_NOT_FOUND,
+    responses=_NOT_FOUND | _VALIDATION,
 )
-async def delete_variable(service_id: UUID, key: KeyPath, session: SessionDep) -> Response:
+async def delete_variable(
+    service_id: UUID, key: KeyPath, session: SessionDep, user: CurrentUser
+) -> Response:
     """204 when it is gone, 404 when it was never there."""
     try:
+        require_owned_service(session, service_id, user.id)
         deleted = await variables_service.delete_variable(session, service_id, key)
+    except NotFoundError as exc:
+        raise _error(
+            status.HTTP_404_NOT_FOUND,
+            "service_not_found",
+            str(exc),
+            service_id=str(service_id),
+        ) from exc
     except variables_service.ServiceNotFoundError as exc:
         raise _error(
             status.HTTP_404_NOT_FOUND,

@@ -32,6 +32,11 @@ class ComposeService:
     # The reviewed Rudder domain is canonical.  When present, the runtime must
     # expose this hostname instead of inventing a release-local alternative.
     public_host: str | None = None
+    # A deployment domain is separate from the service's stable public host.
+    # It must resolve to this immutable candidate even after a later release
+    # moves the stable route, so Kubernetes renders a second, release-scoped
+    # Ingress when this value is present.
+    permanent_public_host: str | None = None
     stateful: bool = False
     volume_mount_path: str | None = None
     # Set only by Rudder's trusted managed-service catalog.  A repository

@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a reproducible defect in Rudder.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please remove secrets, access tokens, private URLs, and customer data before submitting.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Rudder version or commit
+      placeholder: v0.9.0 or a commit SHA
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options: [Docker, Kind, GKE, CLI, Web console, Control plane]

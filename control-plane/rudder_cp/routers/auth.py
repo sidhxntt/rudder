@@ -1,10 +1,11 @@
+# ruff: noqa: E501
 """Auth endpoints and the ``get_current_user`` dependency every other router uses.
 
 Phase 1 step 3 asks for a decision on where the token lives. **Both, with the
 ``Authorization: Bearer`` header authoritative.**
 
-- The header is the contract. It is the only thing the CLI, the Python SDK, and
-  the TS SDK send, and Phase 1's acceptance test is the full create-deploy-logs
+- The header is the contract. It is the only thing the Node CLI and other API
+  clients send, and Phase 1's acceptance test is the full create-deploy-logs
   cycle with no browser open. Anything the header cannot do is a bug.
 - The cookie is an additive convenience for ``web/``. ``POST /auth/token``
   *also* sets an httpOnly ``rudder_token`` cookie so the Next.js app never has
@@ -32,16 +33,30 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session
 
 from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import User
-from rudder_cp.schemas.auth import ErrorBody, LoginRequest, TokenResponse, UserRead
+from rudder_cp.schemas.auth import (
+    AuthorizationStartResponse,
+    ErrorBody,
+    LoginRequest,
+    TokenResponse,
+    UserRead,
+)
 from rudder_cp.services import auth as auth_service
-from rudder_cp.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
+from rudder_cp.services.authorization_handoff import (
+    AuthorizationHandoffError,
+    AuthorizationHandoffs,
+)
+from rudder_cp.services.github_oauth import (
+    GitHubOAuthClient,
+    GitHubOAuthConfigurationError,
+    GitHubOAuthError,
+)
 
 SESSION_COOKIE = "rudder_token"
 
@@ -184,6 +199,55 @@ async def create_token(
     return TokenResponse(access_token=issued.token, expires_in=expires_in)
 
 
+@router.post(
+    "/authorizations",
+    response_model=AuthorizationStartResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={503: {"model": ErrorBody, "description": "GitHub OAuth unavailable"}},
+)
+async def create_authorization(
+    session: SessionDep, settings: SettingsDep
+) -> AuthorizationStartResponse:
+    """Create a short-lived browser authorization handoff."""
+    oauth = GitHubOAuthClient(settings)
+    try:
+        oauth.ensure_configured()
+    except GitHubOAuthConfigurationError as exc:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "github_oauth_unavailable", str(exc)
+        ) from exc
+    authorization_id = AuthorizationHandoffs(session).create()
+    authorization = oauth.authorization(authorization_id=authorization_id)
+    return AuthorizationStartResponse(
+        id=authorization_id,
+        authorization_url=authorization.authorization_url,
+        state=authorization.state,
+    )
+
+
+@router.post(
+    "/authorizations/{authorization_id}/consume",
+    response_model=TokenResponse,
+    responses={
+        202: {"description": "Authorization is pending"},
+        401: {"model": ErrorBody, "description": "Authorization is invalid or consumed"},
+    },
+)
+async def consume_authorization(
+    authorization_id: str, session: SessionDep, settings: SettingsDep
+) -> TokenResponse | Response:
+    """Consume an authorized handoff exactly once, or report that it is pending."""
+    try:
+        token = AuthorizationHandoffs(session).consume(authorization_id)
+    except AuthorizationHandoffError as exc:
+        raise _not_authenticated(
+            "Authorization request is invalid, expired, or already consumed."
+        ) from exc
+    if token is None:
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+    return TokenResponse(access_token=token, expires_in=settings.jwt_ttl_seconds)
+
+
 @router.get("/github/start", include_in_schema=False)
 async def github_start(request: Request) -> RedirectResponse:
     try:
@@ -197,9 +261,15 @@ async def github_start(request: Request) -> RedirectResponse:
 @router.get("/github/callback", include_in_schema=False)
 async def github_callback(
     request: Request, code: str, state: str, session: SessionDep
-) -> RedirectResponse:
+) -> Response:
+    oauth = GitHubOAuthClient(request.app.state.settings)
     try:
-        identity = await GitHubOAuthClient(request.app.state.settings).exchange(code, state)
+        authorization_id = oauth.authorization_id_for_state(state)
+        identity = await oauth.exchange(code, state)
+    except GitHubOAuthConfigurationError as exc:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "github_oauth_unavailable", str(exc)
+        ) from exc
     except GitHubOAuthError as exc:
         raise ApiError(status.HTTP_401_UNAUTHORIZED, "github_oauth_failed", str(exc)) from exc
     user = await auth_service.find_or_create_github_user(
@@ -210,12 +280,88 @@ async def github_callback(
         avatar_url=identity.avatar_url,
     )
     issued = auth_service.issue_token(user.id)
+    if authorization_id is not None:
+        try:
+            AuthorizationHandoffs(session).complete(authorization_id, issued.token)
+        except AuthorizationHandoffError as exc:
+            raise _not_authenticated(
+                "Authorization request is invalid, expired, or already consumed."
+            ) from exc
+        return HTMLResponse(_authorization_complete_page())
     response = RedirectResponse(
         f"{request.app.state.settings.web_url.rstrip('/')}/dashboard?import=github",
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
     _set_session_cookie(response, issued.token, issued.expires_in, request.app.state.settings)
     return response
+
+
+def _authorization_complete_page() -> str:
+    """Render the safe, token-free completion surface for a terminal handoff."""
+    return """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Authorization complete · Rudder</title>
+    <style>
+      :root { --rd-accent:#3ecf8e; --rd-accent-deep:#24b47e; --rd-surface:#1c1c1c; --rd-surface-raised:#242424; --rd-surface-inset:#171717; --rd-hairline:#2e2e2e; --rd-text:#ededed; --rd-text-secondary:#b2b2b2; --rd-text-mute:#9a9a9a; }
+      * { box-sizing:border-box; }
+      html { background:var(--rd-surface); color:var(--rd-text); font-family:Inter,"Helvetica Neue",Helvetica,Arial,sans-serif; }
+      body { min-height:100vh; margin:0; background:var(--rd-surface); }
+      .shell { width:min(100% - 40px, 1240px); margin:0 auto; }
+      nav { display:flex; align-items:center; justify-content:space-between; min-height:92px; border-bottom:1px solid var(--rd-hairline); }
+      .brand { display:inline-flex; align-items:center; gap:10px; font-size:16px; font-weight:600; letter-spacing:-.03em; }
+      .mark { display:grid; width:32px; height:32px; place-items:center; border:1px solid color-mix(in srgb,var(--rd-accent) 62%,transparent); border-radius:8px; background:color-mix(in srgb,var(--rd-accent) 10%,transparent); }
+      .mark i { width:8px; height:8px; border-radius:50%; background:var(--rd-accent); box-shadow:0 0 16px rgba(62,207,142,.8); }
+      .tag { border:1px solid #3a3a3a; border-radius:4px; padding:5px 9px; color:var(--rd-text-mute); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+      main { display:grid; grid-template-columns:minmax(0,.9fr) minmax(420px,1.1fr); gap:80px; align-items:center; min-height:calc(100vh - 93px); padding:88px 42px; }
+      h1 { max-width:650px; margin:0; font-size:clamp(3.5rem,7vw,6.25rem); font-weight:500; line-height:.91; letter-spacing:-.055em; }
+      p { max-width:530px; margin:32px 0 0; color:var(--rd-text-secondary); font-size:18px; line-height:1.55; }
+      button { min-height:44px; margin-top:32px; padding:0 18px; border:0; border-radius:6px; background:var(--rd-accent); color:#171717; cursor:pointer; font:600 14px Inter,"Helvetica Neue",Helvetica,Arial,sans-serif; transition:background-color 140ms ease,transform 140ms ease; }
+      button:hover { background:var(--rd-accent-deep); transform:translateY(-1px); }
+      button:focus-visible { outline:2px solid var(--rd-accent); outline-offset:3px; }
+      .hint { margin-top:14px; color:var(--rd-text-mute); font-size:13px; }
+      .panel { overflow:hidden; border:1px solid var(--rd-hairline); background:#141916; box-shadow:0 28px 90px rgba(0,0,0,.42); }
+      .panel-head { display:flex; justify-content:space-between; border-bottom:1px solid var(--rd-hairline); padding:18px 22px; color:var(--rd-text-mute); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.12em; text-transform:uppercase; }
+      .live { color:var(--rd-accent); }
+      .content { padding:38px 40px; }
+      .state { display:flex; align-items:center; gap:12px; font-size:22px; font-weight:500; letter-spacing:-.025em; }
+      .state-dot { width:9px; height:9px; border-radius:50%; background:var(--rd-accent); box-shadow:0 0 16px rgba(62,207,142,.75); }
+      .line { height:1px; margin:32px 0; background:var(--rd-hairline); }
+      .terminal { padding:18px; background:var(--rd-surface-inset); border:1px solid var(--rd-hairline); color:var(--rd-text-secondary); font:13px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace; }
+      .terminal strong { color:var(--rd-accent); font-weight:500; }
+      .footer { display:flex; justify-content:space-between; gap:16px; color:var(--rd-text-mute); font-size:13px; }
+      @media (max-width:850px) { .shell { width:min(100% - 32px, 650px); } nav { min-height:72px; } .tag { display:none; } main { display:block; min-height:auto; padding:72px 0; } h1 { font-size:clamp(3.25rem,15vw,5.2rem); } .panel { margin-top:64px; } .content { padding:28px 22px; } }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <nav aria-label="Rudder authorization">
+        <div class="brand"><span class="mark" aria-hidden="true"><i></i></span><span>rudder</span></div>
+        <span class="tag">CLI sign-in</span>
+      </nav>
+      <main>
+        <section aria-labelledby="complete-title">
+          <h1 id="complete-title">Your terminal is connected.</h1>
+          <p>GitHub authorization is complete. Rudder has securely returned your session to the CLI—nothing is stored in this browser page.</p>
+          <button type="button" onclick="window.close()">Return to your terminal</button>
+          <div class="hint">You can close this tab if your browser does not close it automatically.</div>
+        </section>
+        <section class="panel" aria-label="CLI authorization status">
+          <div class="panel-head"><span>authorization handoff</span><span class="live">● live</span></div>
+          <div class="content">
+            <div class="state"><span class="state-dot" aria-hidden="true"></span><span>GitHub connected</span></div>
+            <div class="line"></div>
+            <div class="terminal"><strong>✓</strong> identity verified<br><strong>✓</strong> terminal session delivered<br><span style="color:#9a9a9a">next</span> return to <strong>rudder</strong> in your terminal</div>
+            <div class="line"></div>
+            <div class="footer"><span>single-use handoff</span><span>session ready</span></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>"""
 
 
 @router.delete(

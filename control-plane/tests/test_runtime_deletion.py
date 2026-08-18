@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from rudder_cp.config import Settings, get_settings
@@ -32,8 +33,9 @@ from rudder_cp.models import (
     Volume,
 )
 from rudder_cp.models.operations import OperationKind
+from rudder_cp.routers import environments as environments_router
 from rudder_cp.routers import services as services_router
-from rudder_cp.schemas.common import install_error_handlers
+from rudder_cp.schemas.common import RudderError, install_error_handlers
 from rudder_cp.security import issue_token
 from rudder_cp.services import environments, projects, services, traefik
 from rudder_cp.services.agent_client import AgentError
@@ -62,6 +64,42 @@ class FailOnSecondRemovalAgent:
         if self.removed:
             raise AgentError(f"cannot remove {container_id}")
         self.removed.append(container_id)
+
+
+class RecordingKubernetesApi:
+    def __init__(self, *, namespace_exists: list[bool] | None = None) -> None:
+        self.deleted_namespaces: list[str] = []
+        self.checked_namespaces: list[str] = []
+        self.namespace_exists_results = iter(namespace_exists or [False])
+        self.closed = False
+
+    async def delete_namespace(self, namespace: str) -> None:
+        self.deleted_namespaces.append(namespace)
+
+    async def namespace_exists(self, namespace: str) -> bool:
+        self.checked_namespaces.append(namespace)
+        return next(self.namespace_exists_results, False)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class HangingKubernetesApi(RecordingKubernetesApi):
+    async def delete_namespace(self, namespace: str) -> None:
+        self.deleted_namespaces.append(namespace)
+        await asyncio.Event().wait()
+
+
+class FailingKubernetesApi(RecordingKubernetesApi):
+    async def delete_namespace(self, namespace: str) -> None:
+        self.deleted_namespaces.append(namespace)
+        raise RuntimeError("Kubernetes API unavailable")
+
+
+class HangingCloseKubernetesApi(RecordingKubernetesApi):
+    async def close(self) -> None:
+        self.closed = True
+        await asyncio.Event().wait()
 
 
 def _route_files(settings: Settings) -> list[Path]:
@@ -305,6 +343,243 @@ async def test_deleting_a_live_environment_removes_its_containers_and_routes(eng
         assert session.get(ServiceOperationsState, operation_state.id) is None
         assert session.get(Service, staging_api.id) is not None
         assert len(await asyncio.to_thread(_route_files, settings)) == 1
+
+
+async def test_deleting_kubernetes_environment_waits_for_namespace_before_purging_database(
+    engine, settings, monkeypatch
+):
+    kubernetes_settings = settings.model_copy(update={"runtime": "kubernetes"})
+    api = RecordingKubernetesApi(namespace_exists=[True, False])
+
+    async def load_kubernetes_client(_settings: Settings) -> RecordingKubernetesApi:
+        return api
+
+    monkeypatch.setattr(environments, "load_kubernetes_client", load_kubernetes_client)
+
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        session.add_all([user, project, environment])
+        session.commit()
+
+        await environments.delete_environment(
+            session, environment.id, agent=RecordingAgent(), settings=kubernetes_settings
+        )
+
+        namespace = f"{kubernetes_settings.kubernetes_namespace_prefix}-{environment.id.hex[:12]}"
+        assert api.deleted_namespaces == [namespace]
+        assert api.checked_namespaces == [namespace, namespace]
+        assert api.closed is True
+        assert session.get(Environment, environment.id) is None
+
+
+async def test_deleting_kubernetes_project_removes_every_namespace_without_docker_cleanup(
+    engine, settings, monkeypatch
+):
+    kubernetes_settings = settings.model_copy(update={"runtime": "kubernetes"})
+    api = RecordingKubernetesApi()
+
+    async def load_kubernetes_client(_settings: Settings) -> RecordingKubernetesApi:
+        return api
+
+    monkeypatch.setattr(environments, "load_kubernetes_client", load_kubernetes_client)
+
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        production = Environment(project_id=project.id, name="production", is_production=True)
+        staging = Environment(project_id=project.id, name="staging")
+        node = Node(hostname="localhost", ip_address="127.0.0.1")
+        session.add_all([user, project, production, staging, node])
+        session.commit()
+        _live_service(session, production, node, "api")
+        _live_service(session, staging, node, "staging-api")
+
+        agent = RecordingAgent()
+        await projects.delete_project(
+            session, project.id, agent=agent, settings=kubernetes_settings
+        )
+
+        expected_namespaces = {
+            f"{kubernetes_settings.kubernetes_namespace_prefix}-{production.id.hex[:12]}",
+            f"{kubernetes_settings.kubernetes_namespace_prefix}-{staging.id.hex[:12]}",
+        }
+        assert set(api.deleted_namespaces) == expected_namespaces
+        assert agent.removed == []
+        assert session.get(Project, project.id) is None
+
+
+async def test_kubernetes_namespace_teardown_failure_keeps_environment_for_retry(
+    engine, settings, monkeypatch
+):
+    kubernetes_settings = settings.model_copy(
+        update={
+            "runtime": "kubernetes",
+            "kubernetes_namespace_deletion_timeout_seconds": 0,
+        }
+    )
+    api = RecordingKubernetesApi(namespace_exists=[True])
+
+    async def load_kubernetes_client(_settings: Settings) -> RecordingKubernetesApi:
+        return api
+
+    monkeypatch.setattr(environments, "load_kubernetes_client", load_kubernetes_client)
+
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        session.add_all([user, project, environment])
+        session.commit()
+
+        with pytest.raises(RudderError) as raised:
+            await environments.delete_environment(
+                session, environment.id, agent=RecordingAgent(), settings=kubernetes_settings
+            )
+
+        assert raised.value.code == "kubernetes_namespace_teardown_failed"
+        assert session.get(Environment, environment.id) is not None
+        assert api.closed is True
+
+
+async def test_hanging_kubernetes_namespace_delete_returns_retryable_error_and_keeps_database(
+    engine, settings, monkeypatch
+):
+    kubernetes_settings = settings.model_copy(
+        update={
+            "runtime": "kubernetes",
+            "kubernetes_namespace_deletion_timeout_seconds": 0.01,
+        }
+    )
+    api = HangingKubernetesApi()
+
+    async def load_kubernetes_client(_settings: Settings) -> HangingKubernetesApi:
+        return api
+
+    monkeypatch.setattr(environments, "load_kubernetes_client", load_kubernetes_client)
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        session.add_all([user, project, environment])
+        session.commit()
+
+        with pytest.raises(RudderError) as raised:
+            await asyncio.wait_for(
+                environments.delete_environment(
+                    session, environment.id, agent=RecordingAgent(), settings=kubernetes_settings
+                ),
+                timeout=0.1,
+            )
+
+        assert raised.value.status_code == 503
+        assert raised.value.code == "kubernetes_namespace_teardown_failed"
+        assert session.get(Environment, environment.id) is not None
+        assert api.closed is True
+
+
+async def test_kubernetes_namespace_api_error_is_retryable_and_keeps_database(
+    engine, settings, monkeypatch
+):
+    kubernetes_settings = settings.model_copy(update={"runtime": "kubernetes"})
+    api = FailingKubernetesApi()
+
+    async def load_kubernetes_client(_settings: Settings) -> FailingKubernetesApi:
+        return api
+
+    monkeypatch.setattr(environments, "load_kubernetes_client", load_kubernetes_client)
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        session.add_all([user, project, environment])
+        session.commit()
+
+        with pytest.raises(RudderError) as raised:
+            await environments.delete_environment(
+                session, environment.id, agent=RecordingAgent(), settings=kubernetes_settings
+            )
+
+        assert raised.value.status_code == 503
+        assert raised.value.code == "kubernetes_namespace_teardown_failed"
+        assert raised.value.details["retryable"] is True
+        assert session.get(Environment, environment.id) is not None
+        assert api.closed is True
+
+
+async def test_kubernetes_client_initialization_error_is_retryable_and_keeps_database(
+    engine, settings, monkeypatch
+):
+    kubernetes_settings = settings.model_copy(update={"runtime": "kubernetes"})
+
+    async def load_kubernetes_client(_settings: Settings) -> RecordingKubernetesApi:
+        raise RuntimeError("Kubernetes credentials unavailable")
+
+    monkeypatch.setattr(environments, "load_kubernetes_client", load_kubernetes_client)
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        session.add_all([user, project, environment])
+        session.commit()
+
+        with pytest.raises(RudderError) as raised:
+            await environments.delete_environment(
+                session, environment.id, agent=RecordingAgent(), settings=kubernetes_settings
+            )
+
+        assert raised.value.status_code == 503
+        assert raised.value.code == "kubernetes_namespace_teardown_failed"
+        assert session.get(Environment, environment.id) is not None
+
+
+async def test_hanging_kubernetes_client_close_is_retryable_and_keeps_database(
+    engine, settings, monkeypatch
+):
+    kubernetes_settings = settings.model_copy(
+        update={
+            "runtime": "kubernetes",
+            "kubernetes_namespace_deletion_timeout_seconds": 0.01,
+        }
+    )
+    api = HangingCloseKubernetesApi()
+
+    async def load_kubernetes_client(_settings: Settings) -> HangingCloseKubernetesApi:
+        return api
+
+    monkeypatch.setattr(environments, "load_kubernetes_client", load_kubernetes_client)
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        session.add_all([user, project, environment])
+        session.commit()
+
+        with pytest.raises(RudderError) as raised:
+            await asyncio.wait_for(
+                environments.delete_environment(
+                    session, environment.id, agent=RecordingAgent(), settings=kubernetes_settings
+                ),
+                timeout=0.1,
+            )
+
+        assert raised.value.status_code == 503
+        assert raised.value.code == "kubernetes_namespace_teardown_failed"
+        assert session.get(Environment, environment.id) is not None
+        assert api.closed is True
+
+
+def test_kubernetes_namespace_deletion_poll_interval_must_be_finite_and_positive() -> None:
+    for invalid_interval in (0, -1, float("inf"), float("nan")):
+        with pytest.raises(ValidationError):
+            Settings(kubernetes_namespace_deletion_poll_seconds=invalid_interval)
+
+
+def test_kubernetes_namespace_deletion_timeout_must_be_finite_and_positive() -> None:
+    for invalid_interval in (0, -1, float("inf"), float("nan")):
+        with pytest.raises(ValidationError):
+            Settings(kubernetes_namespace_deletion_timeout_seconds=invalid_interval)
 
 
 async def test_failed_service_runtime_cleanup_keeps_database_and_route(engine, settings):
@@ -555,4 +830,52 @@ def test_service_delete_returns_runtime_cleanup_error(engine, settings, monkeypa
     assert response.json()["code"] == "runtime_cleanup_failed"
     with Session(engine) as session:
         assert session.get(Service, api.id) is not None
+    get_settings.cache_clear()
+
+
+def test_environment_delete_returns_retryable_namespace_teardown_error(
+    engine, settings, monkeypatch
+):
+    monkeypatch.setenv("RUDDER_JWT_SECRET", "runtime-deletion-api-test-secret-32")
+    get_settings.cache_clear()
+    kubernetes_settings = settings.model_copy(
+        update={
+            "runtime": "kubernetes",
+            "kubernetes_namespace_deletion_timeout_seconds": 0.01,
+        }
+    )
+    api = HangingKubernetesApi()
+
+    async def load_kubernetes_client(_settings: Settings) -> HangingKubernetesApi:
+        return api
+
+    monkeypatch.setattr(environments, "load_kubernetes_client", load_kubernetes_client)
+    with Session(engine) as session:
+        user = User(email="owner@example.com", password_hash="x")
+        project = Project(name="shop", owner_id=user.id)
+        environment = Environment(project_id=project.id, name="production", is_production=True)
+        session.add_all([user, project, environment])
+        session.commit()
+        environment_id = environment.id
+        token = issue_token(user.id).token
+
+    app = FastAPI()
+    app.state.settings = kubernetes_settings
+    app.state.agent = RecordingAgent()
+    install_error_handlers(app)
+    app.include_router(environments_router.router)
+
+    def override_get_session():
+        with Session(engine) as request_session:
+            yield request_session
+
+    app.dependency_overrides[get_session] = override_get_session
+    with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
+        response = client.delete(f"/environments/{environment_id}")
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "kubernetes_namespace_teardown_failed"
+    with Session(engine) as session:
+        assert session.get(Environment, environment_id) is not None
+    assert api.closed is True
     get_settings.cache_clear()

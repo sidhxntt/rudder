@@ -1,3 +1,0 @@
-# Config for openapi-python-client. Consumed by ./regenerate.sh.
-project_name_override: rudder-sdk
-package_name_override: rudder_sdk

@@ -106,7 +106,9 @@ export function useGitHubImport(importId: string | null) {
 const LIVE_POLL_MS = 2_000;
 
 export function useProjects() {
-  return useQuery({ queryKey: keys.projects, queryFn: api.listProjects });
+  // CLI and web mutations share the same control plane. Polling keeps the
+  // project inventory current when an operator works in a terminal elsewhere.
+  return useQuery({ queryKey: keys.projects, queryFn: api.listProjects, refetchInterval: LIVE_POLL_MS });
 }
 
 export function useUpdateProject() {
@@ -130,6 +132,7 @@ export function useEnvironments(projectId: string | undefined) {
     queryKey: keys.environments(projectId ?? ""),
     queryFn: () => api.listEnvironments(projectId ?? ""),
     enabled: Boolean(projectId),
+    refetchInterval: LIVE_POLL_MS,
   });
 }
 
@@ -159,6 +162,7 @@ export function useServices(environmentId: string | undefined) {
     queryKey: keys.services(environmentId ?? ""),
     queryFn: () => api.listServices(environmentId ?? ""),
     enabled: Boolean(environmentId),
+    refetchInterval: LIVE_POLL_MS,
   });
 }
 
@@ -167,6 +171,7 @@ export function useDomains(environmentId: string | undefined) {
     queryKey: keys.domains(environmentId ?? ""),
     queryFn: () => api.listDomains(environmentId ?? ""),
     enabled: Boolean(environmentId),
+    refetchInterval: LIVE_POLL_MS,
   });
 }
 
@@ -202,6 +207,7 @@ export function useVariables(serviceId: string | undefined) {
     queryKey: keys.variables(serviceId ?? ""),
     queryFn: () => api.listVariables(serviceId ?? ""),
     enabled: Boolean(serviceId),
+    refetchInterval: LIVE_POLL_MS,
   });
 }
 

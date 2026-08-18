@@ -28,8 +28,8 @@ from . import errors
 from .schemas import (
     ComposeResult,
     ComposeServiceState,
-    ContainerSpec,
     ContainerMetrics,
+    ContainerSpec,
     ContainerState,
     DeleteResult,
     HealthProbeRequest,

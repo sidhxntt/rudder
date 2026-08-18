@@ -1,0 +1,46 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /control-plane
+    schedule:
+      interval: weekly
+    groups:
+      control-plane-python:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /agent
+    schedule:
+      interval: weekly
+    groups:
+      agent-python:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      web-npm:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /cli/node
+    schedule:
+      interval: weekly
+    groups:
+      cli-npm:
+        patterns: ["*"]
+
+  - package-ecosystem: terraform
+    directory: /infra/gcp/terraform
+    schedule:
+      interval: weekly

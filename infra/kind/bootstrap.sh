@@ -59,6 +59,19 @@ done
 }
 
 kubectl config use-context "kind-$cluster_name" >/dev/null
+# A plain Kind cluster uses kindnetd, which does not enforce NetworkPolicy.
+# Install Calico before any Rudder workloads so ``make verify-kind`` can prove
+# cross-namespace traffic is actually denied instead of only checking policy
+# objects. Clusters created before this configuration must be recreated; do
+# not layer a second CNI over kindnetd.
+if kubectl -n kube-system get daemonset kindnet >/dev/null 2>&1; then
+  echo "rudder-kind was created without the Calico CNI; run 'make kind-down' then 'make kind-up'" >&2
+  exit 1
+fi
+if ! kubectl -n kube-system get daemonset calico-node >/dev/null 2>&1; then
+  kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.1/manifests/calico.yaml
+fi
+kubectl rollout status --namespace kube-system daemonset/calico-node --timeout=180s
 # The control plane runs inside Docker in local development, so Kind's host
 # loopback address is not reachable from it. Write a disposable
 # Docker-reachable kubeconfig copy for docker-compose.kind.yml. Existing Kind

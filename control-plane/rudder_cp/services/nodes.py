@@ -46,6 +46,7 @@ def process_heartbeat(db: Session, hostname: str, container_states: list[Contain
 
     node.last_heartbeat_at = datetime.now(UTC)
     node.status = NodeStatus.HEALTHY
+    node.heartbeat_generation += 1
     node.reported_state = {
         "containers": [container.model_dump(mode="json") for container in container_states]
     }

@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from cryptography.fernet import Fernet
@@ -138,6 +139,26 @@ def test_confirm_import_creates_a_pollable_app_graph(import_client: TestClient) 
         "Application",
     ]
     assert all(step["status"] == "queued" for step in progress.json()["steps"])
+
+
+def test_github_import_is_hidden_from_another_owner(import_client: TestClient) -> None:
+    created = import_client.post(
+        "/github/imports",
+        json={
+            "installation_id": 42,
+            "repository": "acme/store-api",
+            "branch": "main",
+            "addons": ["postgres", "redis"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    import_client.app.dependency_overrides[get_current_user] = lambda: User(
+        id=uuid4(), email="other@example.com", password_hash="x"
+    )
+
+    response = import_client.get(f"/github/imports/{created.json()['import_id']}")
+
+    assert response.status_code == 404
 
 
 def test_confirm_import_rejects_public_services_without_declared_ports(

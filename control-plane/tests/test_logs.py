@@ -14,7 +14,10 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
+from rudder_cp.db import get_session
 from rudder_cp.logs.sse import frame
 from rudder_cp.logs.store import (
     BuildLogNotFound,
@@ -24,7 +27,9 @@ from rudder_cp.logs.store import (
     get_build_log_store,
     terminal_marker,
 )
+from rudder_cp.models import Deployment, Environment, Project, Service, User
 from rudder_cp.routers import logs as logs_router
+from rudder_cp.routers.auth import get_current_user
 
 TIMEOUT = 5.0
 
@@ -55,10 +60,35 @@ async def drain(events: AsyncIterator[LogEvent]) -> tuple[str, str]:
     return await asyncio.wait_for(_run(), TIMEOUT)
 
 
-def make_app(store: BuildLogStore) -> FastAPI:
+def make_app(store: BuildLogStore, deployment_id: UUID | None = None) -> FastAPI:
+    """Build an owned deployment fixture for the protected log route."""
     app = FastAPI()
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    SQLModel.metadata.create_all(engine)
+    session = Session(engine)
+    user = User(email="logs@example.test", password_hash="unused")
+    session.add(user)
+    session.commit()
+    project = Project(name="logs", owner_id=user.id)
+    session.add(project)
+    session.commit()
+    environment = Environment(project_id=project.id, name="production")
+    session.add(environment)
+    session.commit()
+    service = Service(environment_id=environment.id, name="api")
+    session.add(service)
+    session.commit()
+    session.add(Deployment(id=deployment_id or uuid4(), service_id=service.id))
+    session.commit()
+    # Keep resources alive for the TestClient lifetime.
+    app.state._logs_test_session = session
+    app.state._logs_test_engine = engine
     app.include_router(logs_router.router)
     app.dependency_overrides[get_build_log_store] = lambda: store
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_current_user] = lambda: user
     return app
 
 
@@ -115,6 +145,18 @@ async def test_reader_attached_after_completion_gets_everything_and_terminates(
     text, status = await drain(store.tail(deployment_id, poll_interval=0.01))
     assert text.splitlines() == [f"line {i}" for i in range(50)]
     assert status == "failed"
+
+
+async def test_snapshot_returns_current_build_output_without_waiting_for_completion(
+    store: BuildLogStore, deployment_id: UUID
+) -> None:
+    await store.open_log(deployment_id)
+    await store.append(deployment_id, "still building\\n")
+
+    text, status = await store.snapshot(deployment_id)
+
+    assert text == "still building\\n"
+    assert status is None
 
 
 async def test_reader_attached_mid_write_receives_later_appends(
@@ -224,13 +266,30 @@ def test_endpoint_streams_a_finished_build(store: BuildLogStore, deployment_id: 
 
     asyncio.run(write())
 
-    with TestClient(make_app(store)) as client:
+    with TestClient(make_app(store, deployment_id)) as client:
         response = client.get(f"/deployments/{deployment_id}/build-log")
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "data: #1 building" in response.text
     assert response.text.endswith("event: end\ndata: succeeded\n\n")
+
+
+def test_endpoint_snapshots_an_active_build_when_follow_is_false(
+    store: BuildLogStore, deployment_id: UUID
+) -> None:
+    async def write() -> None:
+        await store.open_log(deployment_id)
+        await store.append(deployment_id, "#1 building\n")
+
+    asyncio.run(write())
+
+    with TestClient(make_app(store, deployment_id)) as client:
+        response = client.get(f"/deployments/{deployment_id}/build-log?follow=false")
+
+    assert response.status_code == 200
+    assert "data: #1 building" in response.text
+    assert response.text.endswith("event: end\ndata: snapshot\n\n")
 
 
 def test_endpoint_404s_for_a_deployment_with_no_log(store: BuildLogStore) -> None:

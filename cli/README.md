@@ -1,159 +1,81 @@
-# cli
+# Rudder CLI
 
-`rudder` — a thin wrapper over `sdk-python`. Phase 1 step 9.
+`rudder` is the Node/TypeScript terminal client in [`node/`](node/). It talks
+to the same authenticated Rudder control-plane API as the web console: it is
+not a second backend and it does not perform a special terminal-to-browser
+sync. Resources shown or changed by either client are the resources held by
+that shared API.
 
-Every command is one or more calls into the generated SDK. There is no logic
-here the API does not already have: if the CLI can do it, so can the UI and any
-other client. If something needed a CLI-side workaround, that would be an API
-bug, not a CLI feature.
+In an interactive terminal, running `rudder` without a command opens the
+guided launcher. It uses GitHub authentication, lets you select a project and
+environment, and provides a small menu for common work such as deploys,
+status, logs, services, variables, advisor, and signing out.
 
-## Install
+## Local setup
 
 ```bash
-pip install -e sdk-python -e cli
-rudder --help
+cd cli/node
+npm install
+npm link
+rudder
 ```
 
-Typer, not Click: every command is "some options, one API call, print the
-result", and Typer derives the parser from the type hints this repo writes
-anyway. Click would mean restating each parameter as a decorator for no gain.
-(Typer 0.27 vendors Click, so nothing here imports `click`.)
+`npm link` makes the local package available as the `rudder` command for this
+machine. It is a local test/install step only: it does not publish a package
+or push any Phase 9 changes.
 
-## Commands
+## First interactive run
 
+Start the Rudder control plane, then run `rudder` from a TTY. If there is no
+saved session, Rudder asks the shared backend for a short-lived GitHub
+authorization URL and opens it in your browser. Complete GitHub sign-in there;
+the CLI waits for the same backend handoff to finish, saves the returned access
+token locally, and opens the launcher. If it cannot open a browser, it prints
+the URL so you can copy it yourself.
+
+Choose a **project** from the launcher to persist the target for subsequent
+commands. Rudder then selects that project's preferred environment; choose a
+different environment only when you explicitly need to switch context. The
+menu then runs actions against that selected context.
+You can still override it on a command with `--project`, `--env`, or
+`--service`.
+
+Set `RUDDER_URL` when the control plane is not at the local default:
+
+```bash
+RUDDER_URL=http://localhost:8000 rudder
 ```
-rudder login [--email E] [--password P] [--url URL]   password is prompted for if omitted
+
+## Saved session and logout
+
+By default the CLI stores its Rudder URL, access token, and selected project,
+environment, and service in `~/.config/rudder/config.json`. Set
+`RUDDER_CONFIG` to use another config-file path. Treat that file as sensitive:
+it contains the saved access token.
+
+```bash
+rudder context show
 rudder logout
-rudder whoami
-
-rudder project create NAME
-rudder project list
-rudder project use NAME
-
-rudder env create NAME [--production]
-rudder env list
-rudder env use NAME
-
-rudder service create NAME --repo OWNER/REPO --port N
-       [--branch main] [--start-command CMD] [--dockerfile PATH]
-       [--health-path /] [--health-port N] [--cpu 1.0] [--memory 512]
-rudder service list
-rudder service delete NAME [--yes]
-rudder service use NAME
-
-rudder var set KEY=VALUE [KEY=VALUE ...] [--service NAME]
-rudder var list [--service NAME]
-rudder var unset KEY [--service NAME]
-
-rudder deploy [SERVICE] [--follow] [--commit SHA]
-rudder logs [SERVICE] [-f] [--deployment ID]
-rudder status          # alias: rudder ps
 ```
 
-Global options come **before** the subcommand: `rudder --json status`,
-`rudder --project shop service list`.
+`rudder logout` removes the locally saved access token. It leaves the saved
+Rudder URL and target context in place and does not revoke the GitHub or
+backend session remotely.
 
-| | |
-|---|---|
-| `--url` | control plane URL (`RUDDER_URL`); otherwise the one saved at login |
-| `--project` / `-p` | project name or id, overriding the selected one |
-| `--env` / `-e` | environment name or id, overriding the selected one |
-| `--json` | `json.dumps` of the response, for scripts |
+## Automation and non-interactive use
 
-## How a name becomes an id
+Use a process-local token for scripts; it is not saved to the config file:
 
-The API addresses everything by UUID; `Service.name` is unique only within an
-environment. Resolution order, in `rudder_cli/context.py`:
-
-1. **An explicit flag** — `--project`, `--env`, `--service`. A UUID is accepted
-   anywhere a name is and short-circuits the lookup.
-2. **The saved context** — `~/.config/rudder/context.json`, written by
-   `project use` / `env use` / `service use` and as a side effect of the
-   matching `create`. This is what makes the PRD's acceptance script work:
-   `rudder var set DATABASE_URL=...` names no service because
-   `rudder service create api` already selected one.
-3. **One fallback, for the environment only** — a project with exactly one
-   environment uses it; otherwise the one named `production`, which every
-   project is created with.
-
-There is no fallback for project or service, no prefix matching, and no
-arbitrary pick. `Project.name` has no uniqueness constraint, so two projects can
-share a name; that is an error listing both ids, never a coin flip:
-
-```
-$ rudder --project acceptance service list
-error: 2 projects are named 'acceptance'. Pass the id instead:
-  d92caa31-0301-4ca5-9280-540e9efb4a11  acceptance
-  b6a23b8e-d3e8-4739-8d9d-a80f71f9e522  acceptance
+```bash
+RUDDER_TOKEN=... rudder --no-interactive project list --json
 ```
 
-## Where the token lives
+`--no-interactive` never starts browser login or prompts. A command that needs
+authentication must receive `RUDDER_TOKEN` (or use an already saved CLI
+session when appropriate); otherwise it exits with a sign-in error. Commands
+running without a TTY also never open the launcher or prompt for GitHub login.
+Bare `rudder` in a non-TTY prints usage; invoke an explicit command with
+`RUDDER_TOKEN` for automation. `--json` is intended for machine-readable
+output.
 
-`rudder login` POSTs to `/auth/token` and writes the bearer token to
-`$RUDDER_CONFIG_DIR`, else `$XDG_CONFIG_HOME/rudder`, else
-`~/.config/rudder`:
-
-```
-~/.config/rudder/credentials.json   0600   {"base_url", "access_token", "expires_at"}
-~/.config/rudder/context.json       0600   selected project / environment / service
-```
-
-Directory 0700, files 0600, written via `os.open(..., 0o600)` and an atomic
-rename — never `open()` then `chmod`. The token is never printed, never put in
-an environment variable, and `--password` exists only for automation: without it
-the password is read from a hidden prompt so it stays out of shell history.
-
-## Variables are write-only
-
-`PUT /services/{id}/variables/{key}` takes a value and returns
-`{id, service_id, key, is_reference, created_at}`. No endpoint in this API ever
-returns a variable's value. `rudder var list` therefore shows keys and whether
-each is a `${{service.VAR}}` reference, and says so:
-
-```
-$ rudder var list
-KEY           KIND
-------------  ---------
-DATABASE_URL  reference
-GREETING      literal
-
-Values are write-only and are never returned by the API.
-```
-
-## Following a build
-
-`--follow` streams `GET /deployments/{id}/build-log` (SSE) and then **keeps
-going**. The stream's `event: end` is written by the *builder*, so
-`data: succeeded` means the image was built and pushed — the container start,
-the health check and the Traefik write all happen after the stream closes. So
-`deploy --follow` polls the deployment to a terminal status and exits 0 only for
-`live`:
-
-| outcome | exit |
-|---|---|
-| deployment reaches `live` | 0 |
-| build failed, or deployment `failed` / `superseded` | 1 |
-| control plane unreachable, no such service, bad usage | 1 (2 for usage) |
-
-A queued deploy has no log file yet and the endpoint 404s rather than hanging;
-the CLI waits for it to appear (bounded, 120s) and says what it is waiting for.
-`rudder logs` on a deployment that never produced a log says so and exits 1
-instead of hanging.
-
-## Errors
-
-API errors are the uniform `{code, message, details}`. The CLI prints
-`error: <message>` on stderr and exits non-zero. No tracebacks:
-
-```
-$ rudder --url http://localhost:9 project list
-error: Cannot reach the Rudder control plane at http://localhost:9 — is it running?
-
-$ rudder deploy nosource
-error: This service has no source_repo, so there is nothing to build.
-```
-
-## Style
-
-`ruff check` and `ruff format` clean at line-length 100, `target-version =
-py312`, type hints throughout, no bare `except`.
+The old Python CLI and generated Python SDK were retired in Phase 9.

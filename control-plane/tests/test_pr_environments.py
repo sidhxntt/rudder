@@ -10,7 +10,17 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from rudder_cp.config import Settings
-from rudder_cp.models import Deployment, Environment, GitHubImport, Project, Service, User
+from rudder_cp.models import (
+    Deployment,
+    DeploymentStatus,
+    Domain,
+    Environment,
+    GitHubImport,
+    Project,
+    Service,
+    User,
+)
+from rudder_cp.services import pr_notifications
 from rudder_cp.services.environments import handle_pull_request
 
 
@@ -101,7 +111,8 @@ async def test_pr_open_replay_and_close_are_idempotent(session: Session, tmp_pat
         == "a" * 40
     )
     assert github.comments[0][3] == (
-        f"Rudder PR environment: http://api.pr-42-{preview.project_id.hex[:8]}.localhost"
+        "Rudder PR environment deployment queued: "
+        f"http://api.pr-42-{preview.project_id.hex[:8]}.localhost"
     )
 
     replayed = await handle_pull_request(
@@ -149,3 +160,88 @@ def test_project_can_have_only_one_environment_for_a_pr(session: Session) -> Non
     session.add(Environment(project_id=project_id, name="pr-99-retry", github_pr_number=99))
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+@pytest.mark.asyncio
+async def test_ready_notification_is_persisted_and_retried(
+    session: Session, tmp_path, monkeypatch
+) -> None:
+    """A GitHub outage cannot silently discard the only ready notification."""
+
+    preview = Environment(
+        project_id=session.exec(select(Project.id)).one(),
+        name="pr-77",
+        github_pr_number=77,
+    )
+    session.add(preview)
+    session.commit()
+    service = Service(environment_id=preview.id, name="api", source_repo="acme/shop")
+    session.add(service)
+    session.commit()
+    session.add(
+        GitHubImport(
+            installation_id=7,
+            repository="acme/shop",
+            branch="feature/retry",
+            compose_source="compose.yml",
+            compose_manifest="services: {}",
+            compose_project_name="retry",
+            project_id=preview.project_id,
+            app_service_id=service.id,
+        )
+    )
+    deployment = Deployment(service_id=service.id, status=DeploymentStatus.LIVE)
+    session.add(deployment)
+    session.add(
+        Domain(
+            environment_id=preview.id,
+            service_id=service.id,
+            hostname="api.pr-77.localhost",
+            is_system=True,
+        )
+    )
+    session.commit()
+
+    queued = pr_notifications.enqueue_ready_notification(
+        session,
+        deployment=deployment,
+        service=service,
+        settings=Settings(traefik_dynamic_dir=str(tmp_path)),
+    )
+    assert queued is not None
+
+    class FailingGitHub:
+        async def comment_on_pull_request(self, *_args: object) -> None:
+            raise pr_notifications.GitHubAppError("temporary outage")
+
+    monkeypatch.setattr(pr_notifications, "GitHubAppClient", lambda _settings: FailingGitHub())
+    delivered = await pr_notifications.deliver_due_notifications(
+        session, settings=Settings(traefik_dynamic_dir=str(tmp_path))
+    )
+    assert delivered == 0
+    session.refresh(queued)
+    assert queued.attempt_count == 1
+    assert queued.sent_at is None
+    assert queued.last_error == "temporary outage"
+
+    class RecordingGitHub:
+        comments: list[tuple[object, ...]] = []
+
+        async def comment_on_pull_request(self, *args: object) -> None:
+            self.comments.append(args)
+
+    github = RecordingGitHub()
+    monkeypatch.setattr(pr_notifications, "GitHubAppClient", lambda _settings: github)
+    queued.next_attempt_at = queued.created_at
+    session.add(queued)
+    session.commit()
+    delivered = await pr_notifications.deliver_due_notifications(
+        session, settings=Settings(traefik_dynamic_dir=str(tmp_path))
+    )
+    assert delivered == 1
+    session.refresh(queued)
+    assert queued.sent_at is not None
+    assert len(github.comments) == 1
+    assert await pr_notifications.deliver_due_notifications(
+        session, settings=Settings(traefik_dynamic_dir=str(tmp_path))
+    ) == 0

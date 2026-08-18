@@ -77,6 +77,7 @@ async def _verify_imported_release(temp_dir: Path, suffix: str) -> None:
         kubeconfig_path=settings.kubernetes_kubeconfig,
     )
     try:
+        await _assert_network_policy_enforcer(api)
         store = BuildLogStore(settings.build_log_dir)
         with Session(engine) as session:
             outcome = await run_deployment(
@@ -105,6 +106,10 @@ async def _verify_imported_release(temp_dir: Path, suffix: str) -> None:
                 raise RuntimeError("imported Kubernetes release did not record every workload")
         await _wait_for_ingress(host)
         await _assert_private_services_have_no_ingress(api, namespace)
+        await _assert_namespace_guardrails(api, namespace)
+        await _assert_workload_identity_has_no_rbac_grants(api, namespace)
+        await _assert_quota_rejects_excess_workload(api, namespace, suffix)
+        await _assert_cross_namespace_traffic_is_denied(api, namespace, suffix)
         app_controls_deployment_id = await _assert_app_workload_controls(
             engine, settings, store, api, release
         )
@@ -314,6 +319,250 @@ async def _assert_private_services_have_no_ingress(api: AsyncKubernetesApi, name
         raise RuntimeError(
             f"private services unexpectedly received ingress routes: {sorted(hosts)}"
         )
+
+
+async def _assert_network_policy_enforcer(api: AsyncKubernetesApi) -> None:
+    """Refuse a Kind cluster that can only store, not enforce, policies."""
+
+    daemonset = await api.apps.read_namespaced_daemon_set("calico-node", "calico-system")
+    status = daemonset.status
+    desired = status.desired_number_scheduled or 0
+    ready = status.number_ready or 0
+    if not desired or ready != desired:
+        raise RuntimeError(
+            "Kind NetworkPolicy enforcement is unavailable: Calico calico-node is not ready"
+        )
+
+
+async def _assert_namespace_guardrails(api: AsyncKubernetesApi, namespace: str) -> None:
+    """Prove the deployed environment has the intended resource and network boundary."""
+    namespace_object = await api.core.read_namespace(namespace)
+    labels = namespace_object.metadata.labels or {}
+    environment_label = labels.get("rudder.environment")
+    if not environment_label:
+        raise RuntimeError("Rudder environment namespace is missing its isolation label")
+
+    quota = await api.core.read_namespaced_resource_quota("rudder-quota", namespace)
+    if quota.spec.hard != {"requests.cpu": "4", "requests.memory": "8Gi", "pods": "30"}:
+        raise RuntimeError("Rudder environment ResourceQuota does not enforce the expected limits")
+
+    limit_range = await api.core.read_namespaced_limit_range("rudder-default-limits", namespace)
+    limits = limit_range.spec.limits or []
+    if len(limits) != 1 or limits[0].type != "Container":
+        raise RuntimeError("Rudder environment LimitRange is missing the container default")
+    if limits[0].default != {"cpu": "500m", "memory": "512Mi"} or (
+        limits[0].default_request != {"cpu": "250m", "memory": "256Mi"}
+    ):
+        raise RuntimeError("Rudder environment LimitRange defaults are incorrect")
+
+    policy = await api.networking.read_namespaced_network_policy(
+        "rudder-private-network", namespace
+    )
+    spec = policy.spec
+    if set(spec.policy_types or []) != {"Ingress", "Egress"}:
+        raise RuntimeError("Rudder environment NetworkPolicy does not guard ingress and egress")
+    if (spec.pod_selector.match_labels or {}) != {}:
+        raise RuntimeError("Rudder environment NetworkPolicy does not select every workload")
+
+    def namespace_labels(peers) -> set[tuple[tuple[str, str], ...]]:
+        observed: set[tuple[tuple[str, str], ...]] = set()
+        for peer in peers:
+            if peer.ip_block is not None:
+                raise RuntimeError(
+                    "Rudder environment NetworkPolicy permits unrestricted IP traffic"
+                )
+            selector = peer.namespace_selector
+            if selector is not None:
+                observed.add(tuple(sorted((selector.match_labels or {}).items())))
+        return observed
+
+    ingress_peers = [peer for rule in spec.ingress or [] for peer in rule._from or []]
+    egress_peers = [peer for rule in spec.egress or [] for peer in rule.to or []]
+    own_namespace = (("rudder.environment", environment_label),)
+    ingress_controller = (("kubernetes.io/metadata.name", "ingress-nginx"),)
+    kube_system = (("kubernetes.io/metadata.name", "kube-system"),)
+    if not {own_namespace, ingress_controller} <= namespace_labels(ingress_peers):
+        raise RuntimeError("Rudder environment NetworkPolicy lacks required private ingress peers")
+    if not {own_namespace, kube_system} <= namespace_labels(egress_peers):
+        raise RuntimeError("Rudder environment NetworkPolicy lacks required private egress peers")
+
+    workload_identity = await api.core.read_namespaced_service_account(
+        "rudder-workload", namespace
+    )
+    if workload_identity.automount_service_account_token is not False:
+        raise RuntimeError(
+            "Rudder environment workload ServiceAccount must disable token automount"
+        )
+    pods = await api.core.list_namespaced_pod(namespace)
+    for pod in pods.items or []:
+        labels = pod.metadata.labels or {}
+        if "rudder.workload" not in labels:
+            continue
+        if pod.spec.service_account_name != "rudder-workload":
+            raise RuntimeError(
+                "Rudder workload Pod is not assigned the environment ServiceAccount"
+            )
+        if pod.spec.automount_service_account_token is not False:
+            raise RuntimeError("Rudder workload Pod permits ServiceAccount token automount")
+
+
+async def _assert_workload_identity_has_no_rbac_grants(
+    api: AsyncKubernetesApi, namespace: str
+) -> None:
+    """Ensure the customer identity cannot use the Kubernetes API.
+
+    ``automountServiceAccountToken: false`` is defense in depth, not an RBAC
+    boundary on its own. Check both namespace and cluster bindings so a future
+    platform manifest cannot accidentally grant ``rudder-workload`` access.
+    """
+
+    def has_workload_subject(binding: object) -> bool:
+        for subject in getattr(binding, "subjects", None) or []:
+            if (
+                getattr(subject, "kind", None) == "ServiceAccount"
+                and getattr(subject, "name", None) == "rudder-workload"
+                and getattr(subject, "namespace", None) in {None, "", namespace}
+            ):
+                return True
+        return False
+
+    role_bindings = await api.rbac.list_namespaced_role_binding(namespace)
+    if any(has_workload_subject(binding) for binding in role_bindings.items or []):
+        raise RuntimeError("Rudder workload ServiceAccount has an unexpected RoleBinding")
+    cluster_bindings = await api.rbac.list_cluster_role_binding()
+    if any(has_workload_subject(binding) for binding in cluster_bindings.items or []):
+        raise RuntimeError("Rudder workload ServiceAccount has an unexpected ClusterRoleBinding")
+
+
+async def _assert_quota_rejects_excess_workload(
+    api: AsyncKubernetesApi, namespace: str, suffix: str
+) -> None:
+    """Exercise ResourceQuota admission rather than merely reading its spec.
+
+    The API server must reject this Pod before it can schedule: its explicit
+    five-core request is above the environment's four-core hard quota.  The
+    probe is deleted if a misconfigured admission stack ever accepts it.
+    """
+
+    name = dns_label(f"rudder-quota-probe-{suffix}")
+    probe = client.V1Pod(
+        metadata=client.V1ObjectMeta(name=name, labels={"rudder.verifier": "quota"}),
+        spec=client.V1PodSpec(
+            restart_policy="Never",
+            containers=[
+                client.V1Container(
+                    name="quota-probe",
+                    image="registry.k8s.io/pause:3.10",
+                    resources=client.V1ResourceRequirements(
+                        requests={"cpu": "5", "memory": "256Mi"},
+                        limits={"cpu": "5", "memory": "256Mi"},
+                    ),
+                )
+            ],
+        ),
+    )
+    try:
+        await api.core.create_namespaced_pod(namespace, probe)
+    except ApiException as exc:
+        if exc.status != 403 or "exceeded quota" not in (exc.body or "").lower():
+            raise RuntimeError(f"ResourceQuota rejected probe unexpectedly: {exc}") from exc
+        return
+    try:
+        raise RuntimeError("Rudder environment ResourceQuota accepted an over-limit Pod")
+    finally:
+        await api.core.delete_namespaced_pod(
+            name, namespace, body=client.V1DeleteOptions(propagation_policy="Background")
+        )
+
+
+async def _assert_cross_namespace_traffic_is_denied(
+    api: AsyncKubernetesApi, namespace: str, suffix: str
+) -> None:
+    """Prove a foreign namespace cannot reach the private web Service.
+
+    The source namespace and Pod are verifier-owned and always removed. The
+    command returns success only when ``wget`` fails, which makes a policy
+    regression immediately visible without changing the release namespace.
+    """
+
+    probe_namespace = dns_label(f"rudder-isolation-probe-{suffix}")
+    probe_name = "cross-namespace-probe"
+    try:
+        await api.core.create_namespace(
+            client.V1Namespace(
+                metadata=client.V1ObjectMeta(
+                    name=probe_namespace,
+                    labels={"rudder.verifier": "network-isolation"},
+                )
+            )
+        )
+        web_pods = await api.core.list_namespaced_pod(
+            namespace, label_selector="rudder.workload=web"
+        )
+        web_pod = next(
+            (
+                pod
+                for pod in web_pods.items or []
+                if (pod.status.phase or "") == "Running" and (pod.spec.containers or [])
+            ),
+            None,
+        )
+        if web_pod is None:
+            raise RuntimeError("could not find a Running web Pod for network isolation probe")
+        image = web_pod.spec.containers[0].image
+        target = f"http://web.{namespace}.svc.cluster.local"
+        probe = client.V1Pod(
+            metadata=client.V1ObjectMeta(name=probe_name, labels={"rudder.verifier": "network"}),
+            spec=client.V1PodSpec(
+                restart_policy="Never",
+                active_deadline_seconds=20,
+                containers=[
+                    client.V1Container(
+                        name="probe",
+                        image=image,
+                        image_pull_policy="IfNotPresent",
+                        command=[
+                            "sh",
+                            "-ceu",
+                            # Exit zero only for a blocked/unreachable request.
+                            f"wget -q -T 5 -O /dev/null {target} && exit 42 || exit 0",
+                        ],
+                        resources=client.V1ResourceRequirements(
+                            requests={"cpu": "10m", "memory": "16Mi"},
+                            limits={"cpu": "50m", "memory": "64Mi"},
+                        ),
+                    )
+                ],
+            ),
+        )
+        await api.core.create_namespaced_pod(probe_namespace, probe)
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            pod = await api.core.read_namespaced_pod_status(probe_name, probe_namespace)
+            phase = pod.status.phase or ""
+            if phase in {"Succeeded", "Failed"}:
+                statuses = pod.status.container_statuses or []
+                status = statuses[0] if statuses else None
+                termination = getattr(getattr(status, "state", None), "terminated", None)
+                exit_code = termination.exit_code if termination is not None else None
+                if phase == "Succeeded" and exit_code == 0:
+                    return
+                raise RuntimeError(
+                    "cross-namespace NetworkPolicy probe did not prove denial "
+                    f"(phase={phase}, exit_code={exit_code})"
+                )
+            await asyncio.sleep(1)
+        raise RuntimeError("cross-namespace NetworkPolicy probe did not finish")
+    finally:
+        try:
+            await api.core.delete_namespace(
+                probe_namespace,
+                body=client.V1DeleteOptions(propagation_policy="Background"),
+            )
+            await _wait_for_namespace_deletion(api, probe_namespace)
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
 
 
 async def _assert_app_workload_controls(

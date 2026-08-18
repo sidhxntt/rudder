@@ -12,7 +12,7 @@ Solo developers who want to deploy applications from repositories without giving
 
 ## Product Purpose
 
-Rudder is a self-hosted deployment workspace. It turns a GitHub repository or Compose graph into a running application and its private dependencies, then exposes the delivery and operational state through a canvas, CLI, and SDK.
+Rudder is a self-hosted deployment workspace. It turns a GitHub repository or Compose graph into a running application and its private dependencies, then exposes the delivery and operational state through a canvas and Node/TypeScript CLI.
 
 ## Positioning
 
@@ -37,8 +37,8 @@ Rudder uses a dark, operator-grade visual language with a restrained green statu
 
 ## Evidence on Hand
 
-- Product truth: `README.md`, `docs/PRD.md`, and `docs/phases/`.
-- Verified GKE controlled-beta evidence: `docs/phases/checkpoints/PHASE-4-COMPLETION.md`.
+- Product truth: `README.md`, `docs/index.md`, and `docs/phases/`.
+- Verified GKE controlled-beta evidence: `docs/evidence/phase-4-controlled-beta.md`.
 - Existing console design tokens: `web/styles/tokens.css`.
 - No customer testimonials, external reviews, commercial metrics, or brand assets are available for the landing page.
 

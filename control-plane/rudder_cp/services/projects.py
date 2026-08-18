@@ -101,12 +101,18 @@ async def delete_project(
     project = _require_project(session, project_id)
     environment_rows = await environments.list_environments(session, project.id)
     environment_ids = [environment.id for environment in environment_rows]
-    service_ids = list(
-        session.exec(select(Service.id).where(Service.environment_id.in_(environment_ids))).all()  # type: ignore[attr-defined]
-    )
-    await services.remove_runtime_containers(
-        session, service_ids=service_ids, agent=agent, settings=settings
-    )
+    if settings.runtime == "kubernetes":
+        # Namespace deletion owns every Kubernetes workload, PVC, and route.
+        # Do not contact the Docker agent for Kubernetes-managed services.
+        for environment in environment_rows:
+            await environments.remove_environment_namespace(environment, settings)
+    else:
+        service_ids = list(
+            session.exec(select(Service.id).where(Service.environment_id.in_(environment_ids))).all()  # type: ignore[attr-defined]
+        )
+        await services.remove_runtime_containers(
+            session, service_ids=service_ids, agent=agent, settings=settings
+        )
     # Import metadata points at both the project and the service graph. It is
     # not runtime state, but it must be removed before the graph itself or an
     # imported project leaves stale records (and PostgreSQL rejects the delete

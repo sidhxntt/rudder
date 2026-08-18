@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rudder_cp.models.base import ServiceKind
 from rudder_cp.services.naming import NAME_DESCRIPTION, ResourceName
@@ -20,6 +20,16 @@ _PORT = "D1 — the port the app listens on. Traefik routes here."
 _HEALTH_PATH = "Path polled until it returns 200 after a deploy."
 _HEALTH_PORT = "Port for the health check. Null means use container_port (D1)."
 _CANVAS = "D6 — UI-only canvas coordinate. Writable, and never a deploy trigger."
+_PUBLIC_BUILD_CONFIG_KEYS = frozenset(
+    {
+        "compose_service",
+        "compose_role",
+        "data_role",
+        "managed_by_service_id",
+        "managed_image",
+        "public",
+    }
+)
 
 
 class ServiceCreate(BaseModel):
@@ -106,6 +116,18 @@ class ServiceRead(BaseModel):
     source_branch: str
     dockerfile_path: str | None
     build_config: dict[str, Any]
+
+    @field_validator("build_config", mode="before")
+    @classmethod
+    def redact_private_build_config(cls, value: Any) -> dict[str, str | bool]:
+        """Expose only UI metadata, never commands, environment, or credentials."""
+        if not isinstance(value, dict):
+            return {}
+        return {
+            key: item
+            for key, item in value.items()
+            if key in _PUBLIC_BUILD_CONFIG_KEYS and isinstance(item, str | bool)
+        }
 
     start_command: str | None
 

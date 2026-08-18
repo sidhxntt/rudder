@@ -4,6 +4,7 @@ metadata, which is what Alembic's env.py relies on.
 Tables only. No methods that perform I/O — that logic belongs in services/.
 """
 
+from rudder_cp.models.authorization_handoff import AuthorizationHandoff
 from rudder_cp.models.base import (
     DeploymentStatus,
     DomainTargetType,
@@ -23,11 +24,13 @@ from rudder_cp.models.operations import (
     ServiceOperation,
     ServiceOperationsState,
 )
+from rudder_cp.models.pr_notification import PullRequestNotification
 from rudder_cp.models.project import Environment, Project
 from rudder_cp.models.service import Service, Variable, Volume
 from rudder_cp.models.user import User
 
 __all__ = [
+    "AuthorizationHandoff",
     "Deployment",
     "DeploymentStatus",
     "Domain",
@@ -42,6 +45,7 @@ __all__ = [
     "OperationKind",
     "OperationStatus",
     "Project",
+    "PullRequestNotification",
     "RuntimeMetric",
     "Service",
     "ServiceManagedCapabilities",

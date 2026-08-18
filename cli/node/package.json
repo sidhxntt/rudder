@@ -1,0 +1,33 @@
+{
+  "name": "@sidhxntt/rudder",
+  "version": "0.9.0",
+  "type": "module",
+  "description": "Rudder terminal client for the Rudder deployment control plane.",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sidhxntt/rudder.git",
+    "directory": "cli/node"
+  },
+  "bin": { "rudder": "./dist/index.js" },
+  "files": ["dist", "README.md", "!dist/**/*.test.*"],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": { "node": ">=20" }
+}

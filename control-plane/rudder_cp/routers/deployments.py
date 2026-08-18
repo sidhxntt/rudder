@@ -16,6 +16,8 @@ from sqlmodel import Session, select
 from rudder_cp.config import Settings, get_settings
 from rudder_cp.db import get_session
 from rudder_cp.models import Deployment, DeploymentStatus, Instance, InstanceStatus, Service
+from rudder_cp.routers.auth import CurrentUser
+from rudder_cp.services import services as service_ops
 from rudder_cp.services.rollbacks import restore_immutable_deployment
 
 router = APIRouter(tags=["deployments"])
@@ -60,7 +62,7 @@ class InstanceRead(BaseModel):
 @router.post(
     "/services/{service_id}/deploy",
     response_model=DeploymentRead,
-    status_code=status.HTTP_200_OK,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="create_deployment",
     summary="Queue a deployment",
     description=(
@@ -71,14 +73,10 @@ class InstanceRead(BaseModel):
 async def create_deployment(
     service_id: uuid.UUID,
     session: SessionDep,
+    user: CurrentUser,
     body: DeployRequest | None = None,
 ) -> Deployment:
-    service = session.get(Service, service_id)
-    if service is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "not_found", "message": "No such service", "details": {}},
-        )
+    service = await service_ops.get_service(session, service_id, owner_id=user.id)
     managed_by_service_id = service.build_config.get("managed_by_service_id")
     if isinstance(managed_by_service_id, str):
         raise HTTPException(
@@ -122,9 +120,10 @@ async def create_deployment(
     ),
 )
 async def rollback_deployment(
-    deployment_id: uuid.UUID, session: SessionDep, settings: SettingsDep
+    deployment_id: uuid.UUID, session: SessionDep, settings: SettingsDep, user: CurrentUser
 ) -> Deployment:
     """Restore by moving the existing immutable traffic target only."""
+    await _owned_deployment(session, deployment_id, user.id)
     return await restore_immutable_deployment(
         session, deployment_id=deployment_id, settings=settings
     )
@@ -136,7 +135,10 @@ async def rollback_deployment(
     operation_id="list_deployments",
     summary="Deploy history for a service, newest first",
 )
-async def list_deployments(service_id: uuid.UUID, session: SessionDep) -> list[Deployment]:
+async def list_deployments(
+    service_id: uuid.UUID, session: SessionDep, user: CurrentUser
+) -> list[Deployment]:
+    await service_ops.get_service(session, service_id, owner_id=user.id)
     release_service_id = _release_owner_id(session, service_id)
     return list(
         session.exec(
@@ -158,7 +160,10 @@ async def list_deployments(service_id: uuid.UUID, session: SessionDep) -> list[D
         "distinct from the deployment status."
     ),
 )
-async def list_instances(service_id: uuid.UUID, session: SessionDep) -> list[Instance]:
+async def list_instances(
+    service_id: uuid.UUID, session: SessionDep, user: CurrentUser
+) -> list[Instance]:
+    await service_ops.get_service(session, service_id, owner_id=user.id)
     release_service_id = _release_owner_id(session, service_id)
     return list(
         session.exec(
@@ -196,11 +201,21 @@ def _release_owner_id(session: Session, service_id: uuid.UUID) -> uuid.UUID:
     operation_id="get_deployment",
     summary="One deployment",
 )
-async def get_deployment(deployment_id: uuid.UUID, session: SessionDep) -> Deployment:
+async def get_deployment(
+    deployment_id: uuid.UUID, session: SessionDep, user: CurrentUser
+) -> Deployment:
+    return await _owned_deployment(session, deployment_id, user.id)
+
+
+async def _owned_deployment(
+    session: Session, deployment_id: uuid.UUID, owner_id: uuid.UUID
+) -> Deployment:
+    """Resolve a deployment only after proving its service belongs to the caller."""
     deployment = session.get(Deployment, deployment_id)
     if deployment is None:
         raise HTTPException(
             status_code=404,
             detail={"code": "not_found", "message": "No such deployment", "details": {}},
         )
+    await service_ops.get_service(session, deployment.service_id, owner_id=owner_id)
     return deployment

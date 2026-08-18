@@ -39,6 +39,7 @@ from rudder_cp.routers import domains as domains_router
 from rudder_cp.routers import environments as environments_router
 from rudder_cp.routers import projects as projects_router
 from rudder_cp.routers import services as services_router
+from rudder_cp.routers import variables as variables_router
 from rudder_cp.schemas.common import install_error_handlers
 from rudder_cp.security import issue_token
 from rudder_cp.services.naming import NAME_PATTERN
@@ -81,6 +82,7 @@ def client_fixture(
     app.include_router(environments_router.router)
     app.include_router(services_router.router)
     app.include_router(domains_router.router)
+    app.include_router(variables_router.router)
 
     def override_get_session() -> Iterator[Session]:
         with Session(engine) as session:
@@ -165,6 +167,39 @@ def test_project_lifecycle(client: TestClient) -> None:
     deleted = client.delete(f"/projects/{project_id}")
     assert deleted.status_code == 204
     assert client.get(f"/projects/{project_id}").status_code == 404
+
+
+def test_crud_resources_are_hidden_from_another_owner(client: TestClient, engine: Engine) -> None:
+    """Every graph boundary rejects an authenticated non-owner as not found."""
+    project = make_project(client, "private-shop")
+    environment = production_environment(client, project["id"])
+    service = make_service(client, environment["id"], "private-api")
+    domain = client.post(
+        f"/environments/{environment['id']}/domains",
+        json={
+            "hostname": "private.example.test",
+            "target_type": "service",
+            "service_id": service["id"],
+        },
+    )
+    assert domain.status_code == 201, domain.text
+    variable_response = client.put(
+        f"/services/{service['id']}/variables/SECRET", json={"value": "value"}
+    )
+    assert variable_response.status_code == 200
+
+    with Session(engine) as session:
+        other = User(email="other@example.com", password_hash="x")
+        session.add(other)
+        session.commit()
+        token = issue_token(other.id).token
+
+    client.headers["Authorization"] = f"Bearer {token}"
+    assert client.get(f"/projects/{project['id']}").status_code == 404
+    assert client.get(f"/projects/{project['id']}/environments").status_code == 404
+    assert client.get(f"/environments/{environment['id']}").status_code == 404
+    assert client.get(f"/domains/{domain.json()['id']}").status_code == 404
+    assert client.get(f"/services/{service['id']}/variables").status_code == 404
 
 
 def test_project_create_makes_a_production_environment(client: TestClient) -> None:
@@ -324,7 +359,11 @@ def test_clone_copies_declarative_graph_but_no_runtime_history(
             )
         )
         session.add(
-            Volume(service_id=UUID(database["id"]), mount_path="/var/lib/postgresql/data", size_mb=2048)
+            Volume(
+                service_id=UUID(database["id"]),
+                mount_path="/var/lib/postgresql/data",
+                size_mb=2048,
+            )
         )
         session.add(Deployment(service_id=UUID(api["id"])))
         session.commit()
@@ -339,34 +378,61 @@ def test_clone_copies_declarative_graph_but_no_runtime_history(
     assert staging["is_production"] is False
 
     services = client.get(f"/environments/{staging['id']}/services").json()
-    assert [(service["name"], service["canvas_x"], service["canvas_y"]) for service in services] == [
+    service_positions = [
+        (service["name"], service["canvas_x"], service["canvas_y"])
+        for service in services
+    ]
+    assert service_positions == [
         ("api", 144.0, 288.0),
         ("postgres", 0.0, 0.0),
     ]
     assert services[0]["source_branch"] == "main"
-    assert {domain["hostname"] for domain in client.get(f"/environments/{staging['id']}/domains").json()} == {
+    domains = client.get(f"/environments/{staging['id']}/domains").json()
+    assert {domain["hostname"] for domain in domains} == {
         "api.staging.localhost",
         "postgres.staging.localhost",
     }
     with Session(engine) as session:
-        cloned_api = session.exec(select(Service).where(Service.environment_id == UUID(staging["id"]), Service.name == "api")).one()
-        cloned_postgres = session.exec(select(Service).where(Service.environment_id == UUID(staging["id"]), Service.name == "postgres")).one()
-        assert session.exec(select(Variable).where(Variable.service_id == cloned_api.id)).one().value_encrypted.startswith(b"ciphertext")
-        volume = session.exec(select(Volume).where(Volume.service_id == cloned_postgres.id)).one()
+        cloned_api = session.exec(
+            select(Service).where(
+                Service.environment_id == UUID(staging["id"]), Service.name == "api"
+            )
+        ).one()
+        cloned_postgres = session.exec(
+            select(Service).where(
+                Service.environment_id == UUID(staging["id"]), Service.name == "postgres"
+            )
+        ).one()
+        variable = session.exec(
+            select(Variable).where(Variable.service_id == cloned_api.id)
+        ).one()
+        assert variable.value_encrypted.startswith(b"ciphertext")
+        volume = session.exec(
+            select(Volume).where(Volume.service_id == cloned_postgres.id)
+        ).one()
         assert volume.size_mb == 2048
         assert volume.node_id is None
-        assert session.exec(select(Deployment).where(Deployment.service_id == cloned_api.id)).all() == []
+        deployments = session.exec(
+            select(Deployment).where(Deployment.service_id == cloned_api.id)
+        ).all()
+        assert deployments == []
 
 
 def test_clone_is_atomic_when_target_name_is_taken(client: TestClient, engine: Engine) -> None:
     project = make_project(client)
     production = production_environment(client, project["id"])
     make_service(client, production["id"], "api")
-    assert client.post(f"/projects/{project['id']}/environments", json={"name": "staging"}).status_code == 201
+    created = client.post(
+        f"/projects/{project['id']}/environments", json={"name": "staging"}
+    )
+    assert created.status_code == 201
     response = client.post(f"/environments/{production['id']}/clone", json={"name": "staging"})
     assert response.status_code == 409
     with Session(engine) as session:
-        assert session.exec(select(Service).where(Service.environment_id != UUID(production["id"]))).all() == []
+        cloned_services = session.exec(
+            select(Service).where(Service.environment_id != UUID(production["id"]))
+        ).all()
+        assert cloned_services == []
 
 
 def test_environment_creation_does_not_expose_or_allocate_a_legacy_mesh_subnet(
@@ -500,6 +566,33 @@ def test_service_lifecycle(client: TestClient, env_id: str) -> None:
 
     assert client.delete(f"/services/{service_id}").status_code == 204
     assert client.get(f"/services/{service_id}").status_code == 404
+
+
+def test_service_response_redacts_command_arguments_from_build_config(
+    client: TestClient, env_id: str
+) -> None:
+    response = client.post(
+        f"/environments/{env_id}/services",
+        json={
+            "name": "cache",
+            "kind": "database",
+            "build_config": {
+                "compose_service": "redis",
+                "compose_role": "cache",
+                "managed_image": "redis:7-alpine",
+                "command": ["redis-server", "--requirepass", "secret"],
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    service = response.json()
+    assert service["build_config"] == {
+        "compose_service": "redis",
+        "compose_role": "cache",
+        "managed_image": "redis:7-alpine",
+    }
+    assert "secret" not in response.text
 
 
 def test_duplicate_service_name_is_409(client: TestClient, env_id: str) -> None:
@@ -980,7 +1073,7 @@ def test_deleting_something_twice_is_404(client: TestClient, env_id: str) -> Non
 
 
 # --------------------------------------------------------------------------
-# OpenAPI. The Python SDK and the TS client are generated from this schema.
+# OpenAPI. The Node CLI and web client consume this schema.
 # --------------------------------------------------------------------------
 
 
