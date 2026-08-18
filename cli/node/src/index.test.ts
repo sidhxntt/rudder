@@ -77,12 +77,12 @@ describe("main", () => {
     expect(fetcher).toHaveBeenCalledWith("https://cp.example/protected", expect.objectContaining({ headers: expect.not.objectContaining({ authorization: "Bearer old-token" }) }));
   });
 
-  it("persists a picked project and environment without calling generic commands", async () => {
+  it("uses the web's development label for a local production environment", async () => {
     prompts.select.mockResolvedValueOnce("project-id").mockResolvedValueOnce("environment-id");
-    const api = { request: vi.fn().mockResolvedValueOnce([{ id: "project-id", name: "API" }]).mockResolvedValueOnce([{ id: "environment-id", name: "production" }]) };
-    const state = { api, context: {}, credentials: {}, flags: {}, out: { json: false } };
+    const api = { baseUrl: "http://localhost:8000", request: vi.fn().mockResolvedValueOnce([{ id: "project-id", name: "API" }]).mockResolvedValueOnce([{ id: "environment-id", name: "production", is_production: true }]) };
+    const state = { api, context: {}, credentials: { url: "http://localhost:8000" }, flags: {}, out: { json: false } };
 
-    await expect(chooseProjectEnvironment(state as never)).resolves.toBe("Using API / production");
+    await expect(chooseProjectEnvironment(state as never)).resolves.toBe("Using API / development");
 
     expect(state.context).toEqual({ project: "project-id", environment: "environment-id" });
     expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);

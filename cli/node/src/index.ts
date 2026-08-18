@@ -101,7 +101,11 @@ export async function chooseProjectEnvironment(state: State): Promise<string | v
   const project = await p.select({ message: "Choose project", options: projects });
   if (p.isCancel(project)) return;
 
-  const environments = selectOptions(await state.api.request("GET", `/projects/${project}/environments`), "environment");
+  const environments = selectOptions(
+    await state.api.request("GET", `/projects/${project}/environments`),
+    "environment",
+    environment => localEnvironmentLabel(environment, state.api.baseUrl),
+  );
   if (!environments.length) throw new Error("No environments found. Create one with `rudder env create`.");
   const environment = await p.select({ message: "Choose environment", options: environments });
   if (p.isCancel(environment)) return;
@@ -114,13 +118,29 @@ export async function chooseProjectEnvironment(state: State): Promise<string | v
   const environmentLabel = environments.find(option => option.value === environment)?.label ?? environment;
   return `Using ${projectLabel} / ${environmentLabel}`;
 }
-function selectOptions(value: unknown, kind: string): Array<{ value: string; label: string }> {
+function selectOptions(
+  value: unknown,
+  kind: string,
+  labelFor = (row: Record<string, unknown>) => typeof row.name === "string" ? row.name : undefined,
+): Array<{ value: string; label: string }> {
   if (!Array.isArray(value)) throw new Error(`Could not load ${kind}s.`);
   return value.flatMap(row => {
     if (!row || typeof row !== "object") return [];
-    const { id, name } = row as { id?: unknown; name?: unknown };
-    return typeof id === "string" ? [{ value: id, label: typeof name === "string" ? name : id }] : [];
+    const record = row as Record<string, unknown>;
+    const { id } = record;
+    const label = labelFor(record);
+    return typeof id === "string" ? [{ value: id, label: label ?? id }] : [];
   });
+}
+function localEnvironmentLabel(environment: Record<string, unknown>, baseUrl: string): string | undefined {
+  const name = typeof environment.name === "string" ? environment.name : undefined;
+  try {
+    const hostname = new URL(baseUrl).hostname;
+    if (environment.is_production === true && (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")) return "development";
+  } catch {
+    // Keep the API label when a custom endpoint is not a valid URL.
+  }
+  return name;
 }
 async function project(s: State, action: string | undefined, a: string[]): Promise<void> { if (action === "list") return void await request(s, "GET", "/projects"); if (action === "create") return void await request(s, "POST", "/projects", { name: requireArg(a, 0, "project name") }); const id = await resolve(s, "project", a[0]); if (action === "use") { s.context.project = id; delete s.context.environment; delete s.context.service; await saveConfig(s.context, s.credentials); return void success("Project selected.", s.out); } if (action === "delete") { await confirm(s, `Delete project ${id} and all its data?`); return void await request(s, "DELETE", `/projects/${id}`); } if (action === "get") return void await request(s, "GET", `/projects/${id}`); if (action === "settings") return void await request(s, "PATCH", `/projects/${id}`, jsonBody(s.flags)); throw new Error("project: list, create, get, use, settings, delete"); }
 async function environment(s: State, action: string | undefined, a: string[]): Promise<void> { const projectId = await resolve(s, "project"); if (action === "list") return void await request(s, "GET", `/projects/${projectId}/environments`); if (action === "create") return void await request(s, "POST", `/projects/${projectId}/environments`, { name: requireArg(a, 0, "environment name"), is_production: Boolean(s.flags.production) }); const id = await resolve(s, "environment", a[0]); if (action === "use") { s.context.environment = id; delete s.context.service; await saveConfig(s.context, s.credentials); return void success("Environment selected.", s.out); } if (action === "clone") return void await request(s, "POST", `/environments/${id}/clone`, { name: requireArg(a, 1, "clone name") }); if (action === "delete") { await confirm(s, `Destroy environment ${id}?`); return void await request(s, "DELETE", `/environments/${id}`); } if (action === "get") return void await request(s, "GET", `/environments/${id}`); if (action === "settings") return void await request(s, "PATCH", `/environments/${id}`, jsonBody(s.flags)); throw new Error("env: list, create, get, use, clone, settings, delete"); }
