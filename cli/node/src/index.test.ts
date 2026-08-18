@@ -110,6 +110,30 @@ describe("main", () => {
     expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);
   });
 
+  it("shows the most recently created projects first, matching the web workspace", async () => {
+    prompts.select.mockResolvedValueOnce(Symbol.for("cancel"));
+    prompts.isCancel.mockReturnValue(true);
+    const api = {
+      baseUrl: "http://localhost:8000",
+      request: vi.fn().mockResolvedValueOnce([
+        { id: "older", name: "older project", created_at: "2026-08-01T00:00:00Z" },
+        { id: "newer", name: "newer project", created_at: "2026-08-18T00:00:00Z" },
+      ]),
+    };
+    const state = { api, context: {}, credentials: {}, flags: {}, out: { json: false } };
+
+    await expect(chooseInitialProject(state as never)).resolves.toBeUndefined();
+
+    expect(prompts.select).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.arrayContaining([
+        expect.objectContaining({ value: "newer" }),
+        expect.objectContaining({ value: "older" }),
+      ]),
+    }));
+    const options = prompts.select.mock.calls[0]![0].options as Array<{ value: string }>;
+    expect(options.slice(0, 2).map(option => option.value)).toEqual(["newer", "older"]);
+  });
+
   it("uses the GitHub wizard when the operator creates a project", async () => {
     prompts.select.mockResolvedValueOnce("create-from-github");
     importWizard.runGitHubImportWizard.mockResolvedValue({ projectId: "project-id", environmentId: "environment-id" });
