@@ -22,12 +22,12 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@clack/prompts": "^0.10.0"
+    "@clack/prompts": "^1.7.0"
   },
   "devDependencies": {
-    "@types/node": "^20.17.0",
-    "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "engines": { "node": ">=20" }
 }
