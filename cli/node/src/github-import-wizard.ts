@@ -1,7 +1,7 @@
 import * as clack from "@clack/prompts";
 
-type Api = { request(method: string, path: string, body?: unknown): Promise<unknown> };
-type PromptApi = Pick<typeof clack, "select" | "multiselect" | "confirm" | "isCancel" | "note">;
+type Api = { baseUrl?: string; request(method: string, path: string, body?: unknown): Promise<unknown> };
+type PromptApi = Pick<typeof clack, "select" | "multiselect" | "confirm" | "isCancel" | "note" | "spinner">;
 
 export type ImportContext = { projectId: string; environmentId: string };
 export type GitHubImportWizardDependencies = { api: Api; prompts?: PromptApi };
@@ -19,10 +19,10 @@ type ImportProgress = { steps: Array<{ service_name: string | null; status: stri
 
 /** Create a project through the same reviewed GitHub-import API sequence as the web. */
 export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImportWizardDependencies): Promise<ImportContext | undefined> {
-  const status = asRecord(await api.request("GET", "/github/import/status"));
+  const status = asRecord(await loading(prompts, "Checking GitHub import", "GitHub import ready", () => api.request("GET", "/github/import/status")));
   if (status.configured !== true) throw new Error(typeof status.message === "string" ? status.message : "GitHub import is not enabled here.");
 
-  const templates = asArray<Template>(await api.request("GET", "/github/import/templates"));
+  const templates = asArray<Template>(await loading(prompts, "Loading starter templates", "Starter templates ready", () => api.request("GET", "/github/import/templates")));
   const source = await prompts.select<"repository" | string>({
     message: "Choose a source",
     options: [
@@ -33,7 +33,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
   if (prompts.isCancel(source)) return;
   const templateId = source === "repository" ? null : source;
 
-  const installations = asArray<Installation>(await api.request("GET", "/github/import/installations"));
+  const installations = asArray<Installation>(await loading(prompts, "Loading GitHub connections", "GitHub connections ready", () => api.request("GET", "/github/import/installations")));
   if (!installations.length) throw new Error("No GitHub App installation is connected. Install the Rudder GitHub App, then run `rudder` again.");
   const installationId = await prompts.select<number>({
     message: "Choose GitHub connection",
@@ -45,7 +45,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
   });
   if (prompts.isCancel(installationId)) return;
 
-  const repositories = asArray<Repository>(await api.request("GET", `/github/import/repositories?installation_id=${installationId}`));
+  const repositories = asArray<Repository>(await loading(prompts, "Loading repositories", "Repositories ready", () => api.request("GET", `/github/import/repositories?installation_id=${installationId}`)));
   if (!repositories.length) throw new Error("This GitHub connection has no repositories available to Rudder.");
   const repository = await prompts.select<string>({
     message: "Choose repository",
@@ -54,7 +54,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
   if (prompts.isCancel(repository)) return;
 
   const selectedRepository = repositories.find(item => item.full_name === repository);
-  const branches = asArray<string>(await api.request("GET", `/github/import/branches?installation_id=${installationId}&repository=${encodeURIComponent(repository)}`));
+  const branches = asArray<string>(await loading(prompts, "Loading branches", "Branches ready", () => api.request("GET", `/github/import/branches?installation_id=${installationId}&repository=${encodeURIComponent(repository)}`)));
   if (!branches.length) throw new Error("Rudder could not find a branch for this repository.");
   const branch = await prompts.select<string>({
     message: "Choose branch",
@@ -64,7 +64,7 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
   if (prompts.isCancel(branch)) return;
 
   const selection = { installation_id: installationId, repository, branch, template_id: templateId };
-  const preview = asPreview(await api.request("POST", "/github/import/preview", selection));
+  const preview = asPreview(await loading(prompts, `Inspecting ${repository}@${branch}`, "Release inspected", () => api.request("POST", "/github/import/preview", selection)));
   prompts.note(previewSummary(preview), "Review detected release");
 
   const addons = preview.compose_source === "generated" && preview.addons.length
@@ -90,14 +90,28 @@ export async function runGitHubImportWizard({ api, prompts = clack }: GitHubImpo
   const confirmed = await prompts.confirm({ message: `Create and deploy ${repository}@${branch}?`, initialValue: false });
   if (prompts.isCancel(confirmed) || !confirmed) return;
 
-  const created = asCreatedImport(await api.request("POST", "/github/imports", {
+  const created = asCreatedImport(await loading(prompts, "Creating release", "Release created", () => api.request("POST", "/github/imports", {
     ...selection,
     addons,
     public_services: selectedPublicServices,
-  }));
-  const progress = asProgress(await api.request("GET", `/github/imports/${encodeURIComponent(created.import_id)}`));
-  prompts.note(progress.steps.map(step => `${step.service_name ?? "service"} · ${step.error_message ?? step.status}`).join("\n") || "Release queued", "Import started");
+  })));
+  const progress = asProgress(await loading(prompts, "Reading deployment progress", "Deployment progress ready", () => api.request("GET", `/github/imports/${encodeURIComponent(created.import_id)}`)));
+  const progressText = progress.steps.map(step => `${step.service_name ?? "service"} · ${step.error_message ?? step.status}`).join("\n") || "Release queued";
+  prompts.note(`${progressText}\n\nOpen in web: ${workspaceUrl(api.baseUrl, created.project_id, created.environment_id)}`, "Import started");
   return { projectId: created.project_id, environmentId: created.environment_id };
+}
+
+async function loading<T>(prompts: PromptApi, active: string, complete: string, work: () => Promise<T>): Promise<T> {
+  const spinner = prompts.spinner();
+  spinner.start(active);
+  try {
+    const result = await work();
+    spinner.stop(complete);
+    return result;
+  } catch (error) {
+    spinner.stop(`${active} failed`);
+    throw error;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -126,4 +140,10 @@ function previewSummary(preview: Preview): string {
   const source = preview.compose_source === "repository" ? "Repository Compose detected" : "Generated Compose proposal";
   const services = preview.services.map(service => `${service.name} · ${service.role}${service.is_public ? " · public" : " · private"}`);
   return [source, ...services].join("\n");
+}
+function workspaceUrl(apiBaseUrl: string | undefined, projectId: string, environmentId: string): string {
+  const origin = process.env.RUDDER_WEB_URL ?? apiBaseUrl ?? "http://localhost:3000";
+  const web = new URL(origin);
+  if (!process.env.RUDDER_WEB_URL && web.hostname === "localhost" && web.port === "8000") web.port = "3000";
+  return new URL(`/projects/${encodeURIComponent(projectId)}/environments/${encodeURIComponent(environmentId)}`, web).toString();
 }

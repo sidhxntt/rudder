@@ -15,6 +15,7 @@ describe("runGitHubImportWizard", () => {
       .mockResolvedValueOnce({ compose_source: "generated", addons: ["postgres"], services: [{ name: "app", role: "web", is_public: true }] })
       .mockResolvedValueOnce({ import_id: "import", project_id: "project", environment_id: "environment", app_service_id: "app" })
       .mockResolvedValueOnce({ steps: [{ service_name: "app", status: "queued", error_message: null }] });
+    const spinner = { start: vi.fn(), stop: vi.fn() };
     const prompts = {
       select: vi.fn()
         .mockResolvedValueOnce("repository")
@@ -25,6 +26,7 @@ describe("runGitHubImportWizard", () => {
       confirm: vi.fn().mockResolvedValue(true),
       isCancel: vi.fn((value: unknown) => value === cancelled),
       note: vi.fn(),
+      spinner: vi.fn(() => spinner),
     };
 
     await expect(runGitHubImportWizard({ api: { request }, prompts: prompts as never })).resolves.toEqual({
@@ -44,7 +46,12 @@ describe("runGitHubImportWizard", () => {
       addons: ["postgres"],
       public_services: ["app"],
     });
-    expect(prompts.note).toHaveBeenCalledWith("app · queued", "Import started");
+    expect(spinner.start).toHaveBeenCalledWith("Inspecting acme/api@main");
+    expect(spinner.stop).toHaveBeenCalledWith("Release created");
+    expect(prompts.note).toHaveBeenCalledWith(
+      "app · queued\n\nOpen in web: http://localhost:3000/projects/project/environments/environment",
+      "Import started",
+    );
   });
 
   it("cancels before confirmation without creating a project", async () => {
@@ -61,6 +68,7 @@ describe("runGitHubImportWizard", () => {
       confirm: vi.fn().mockResolvedValue(false),
       isCancel: vi.fn((value: unknown) => value === cancelled),
       note: vi.fn(),
+      spinner: vi.fn(() => ({ start: vi.fn(), stop: vi.fn() })),
     };
 
     await expect(runGitHubImportWizard({ api: { request }, prompts: prompts as never })).resolves.toBeUndefined();
