@@ -164,4 +164,25 @@ describe("main", () => {
       projectSelected: false,
     }));
   });
+
+  it("prints compact status instead of a raw API payload outside the launcher", async () => {
+    context.loadConfig.mockResolvedValue({
+      context: { project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002" },
+      credentials: { token: "token" },
+    });
+    context.mergeContext.mockReturnValue({ project: "00000000-0000-4000-8000-000000000001", environment: "00000000-0000-4000-8000-000000000002" });
+    process.argv = ["node", "rudder", "status", "--no-interactive"];
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "service-id", name: "app" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ status: "live", commit_sha: "106b06e83c903352050942790f1b8569d9de62f7" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ status: "healthy" }]), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await main();
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("Rudder status · 1 service"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("1/1 healthy"));
+  });
 });

@@ -10,8 +10,9 @@ import { loadConfig, mergeContext, saveConfig, type Context } from "./context.js
 import { completeGitHubLogin } from "./github-login.js";
 import { formatServiceGraph, serviceGraph } from "./graph.js";
 import { runGitHubImportWizard } from "./github-import-wizard.js";
-import { canLaunchLauncher, runLauncher } from "./launcher.js";
+import { canLaunchLauncher, runLauncher, runStatusMenu } from "./launcher.js";
 import { fail, print, success, type Output } from "./output.js";
+import { formatCompactStatus, toStatusAdvisorInput, type StatusRow } from "./status.js";
 
 type Flags = Record<string, string | boolean>;
 type State = { api: ApiClient; context: Context; credentials: { url?: string; token?: string }; flags: Flags; out: Output };
@@ -56,7 +57,12 @@ async function command(state: State, args: string[]): Promise<void> {
   if (noun === "rollback") { const id = commandTarget(action, rest); if (!id) throw new Error("Missing deployment id."); await confirm(state, `Roll back to deployment ${id}?`); return void await request(state, "POST", `/deployments/${id}/rollback`); }
   if (noun === "logs") { const id = await resolve(state, "service", commandTarget(action, rest)); if (!state.flags.follow) { const deployments = await state.api.request("GET", `/services/${id}/deployments`) as Array<{ id?: string }>; const deployment = stringFlag(state.flags, "deployment") ?? deployments[0]?.id; if (!deployment) throw new Error("No deployments found. Use `rudder deploy` first."); for await (const line of state.api.stream(`/deployments/${deployment}/build-log`)) print(state.out.json ? { log: line } : line, state.out); return; } for await (const line of state.api.stream(`/services/${id}/runtime-log`)) print(state.out.json ? { log: line } : line, state.out); return; }
   if (noun === "metrics") { const id = await resolve(state, "service", commandTarget(action, rest)); const window = stringFlag(state.flags, "window") ?? "1h"; return void await request(state, "GET", `/services/${id}/metrics?window=${encodeURIComponent(window)}`); }
-  if (noun === "status" || noun === "ps") { const environment = await resolve(state, "environment"); const services = await state.api.request("GET", `/environments/${environment}/services`) as Array<{ id: string; name: string }>; const rows = await Promise.all(services.map(async service => ({ service, deployments: await state.api.request("GET", `/services/${service.id}/deployments`), instances: await state.api.request("GET", `/services/${service.id}/instances`) }))); return void print(rows, state.out); }
+  if (noun === "status" || noun === "ps") {
+    const rows = await loadStatusRows(state);
+    if (state.out.json) return void print(rows, state.out);
+    console.log(formatCompactStatus(rows));
+    return;
+  }
   if (noun === "operation") return operation(state, action, rest);
   if (noun === "import") return githubImport(state, action, rest);
   if (noun === "domain") return domain(state, action, rest);
@@ -71,6 +77,30 @@ async function saveAccessToken(state: State, result: Record<string, unknown>): P
   state.api = new ApiClient(state.api.baseUrl, token);
   await saveConfig(state.context, state.credentials);
 }
+async function loadStatusRows(state: State): Promise<StatusRow[]> {
+  const environment = await resolve(state, "environment");
+  const services = await state.api.request("GET", `/environments/${environment}/services`) as Array<{ id: string; name: string; kind?: string | null }>;
+  return Promise.all(services.map(async service => ({
+    service,
+    deployments: await state.api.request("GET", `/services/${service.id}/deployments`) as StatusRow["deployments"],
+    instances: await state.api.request("GET", `/services/${service.id}/instances`) as StatusRow["instances"],
+  })));
+}
+async function explainStatus(state: State, rows: StatusRow[]): Promise<void> {
+  console.log(formatCompactStatus(rows));
+  try {
+    const result = await advisorRequest(state.api, "diagnose", undefined, toStatusAdvisorInput(rows));
+    if (!isRecord(result) || result.enabled !== true || typeof result.diagnosis !== "string") {
+      console.log("\nAI summary unavailable: configure OPENAI_API_KEY in the control plane.");
+      return;
+    }
+    console.log(`\nAI status summary\n${result.diagnosis}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The control plane did not return a summary.";
+    console.log(`\nAI summary unavailable: ${message}`);
+  }
+}
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null; }
 export function discardSession(session: { api: ApiClient; credentials: { url?: string; token?: string } }): void {
   session.credentials.token = undefined;
   session.api = new ApiClient(session.api.baseUrl);
@@ -219,7 +249,14 @@ export async function main(): Promise<void> {
         signIn: () => requireAuthentication(state, false),
         chooseProject: () => chooseInitialProject(state),
         deploy: () => command(state, ["deploy"]),
-        status: () => command(state, ["status"]),
+        status: async () => {
+          const rows = await loadStatusRows(state);
+          await runStatusMenu({
+            compact: async () => console.log(formatCompactStatus(rows)),
+            detailed: async () => print(rows, state.out),
+            summary: async () => explainStatus(state, rows),
+          });
+        },
         logs: () => command(state, ["logs"]),
         services: () => command(state, ["service", "list"]),
         variables: () => command(state, ["var", "list"]),

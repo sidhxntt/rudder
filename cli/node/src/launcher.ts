@@ -12,6 +12,12 @@ export type LauncherActions = {
   signOut: () => Promise<void>;
 };
 
+export type StatusActions = {
+  compact: () => Promise<void>;
+  detailed: () => Promise<void>;
+  summary: () => Promise<void>;
+};
+
 type LauncherAction = Exclude<keyof LauncherActions, "signIn" | "chooseProject" | "signOut"> | "back" | "sign-out" | "exit";
 
 export function canLaunchLauncher({
@@ -113,6 +119,10 @@ export async function runLauncher({
       if (context) p.note(context, "Project selected");
       continue;
     }
+    if (selected === "status") {
+      await actions.status();
+      continue;
+    }
     const spinner = p.spinner();
     spinner.start(label);
     try {
@@ -125,6 +135,33 @@ export async function runLauncher({
     if (selected === "sign-out") {
       p.outro("Signed out.");
       return;
+    }
+  }
+}
+
+/** Let an operator choose the level of detail without losing their launcher context. */
+export async function runStatusMenu(actions: StatusActions): Promise<void> {
+  while (true) {
+    const selected = await p.select<"compact" | "detailed" | "summary" | "back">({
+      message: "Status view",
+      options: [
+        { value: "compact", label: "Compact status", hint: "Live services and latest release" },
+        { value: "detailed", label: "Detailed status", hint: "Full deployment and instance data" },
+        { value: "summary", label: "AI summary", hint: "Explain current state and next steps" },
+        { value: "back", label: "Back to main menu" },
+      ],
+    });
+    if (p.isCancel(selected) || selected === "back") return;
+    const action = actions[selected];
+    const labels = { compact: "Loading compact status", detailed: "Loading detailed status", summary: "Preparing AI summary" };
+    const spinner = p.spinner();
+    spinner.start(labels[selected]);
+    try {
+      await action();
+      spinner.stop("Status ready");
+    } catch (error) {
+      spinner.stop("Status unavailable");
+      throw error;
     }
   }
 }

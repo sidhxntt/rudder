@@ -12,7 +12,7 @@ const prompts = vi.hoisted(() => ({
 
 vi.mock("@clack/prompts", () => prompts);
 
-import { canLaunchLauncher, renderSplash, runLauncher } from "./launcher.js";
+import { canLaunchLauncher, renderSplash, runLauncher, runStatusMenu } from "./launcher.js";
 import { discardSession } from "./index.js";
 import { ApiClient } from "./client.js";
 
@@ -28,6 +28,28 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("runLauncher", () => {
+  it("offers compact, detailed, AI summary, and Back in the Status submenu", async () => {
+    const spinner = { start: vi.fn(), stop: vi.fn() };
+    prompts.spinner.mockReturnValue(spinner);
+    prompts.select.mockResolvedValueOnce("compact").mockResolvedValueOnce("back");
+    const actions = { compact: vi.fn(), detailed: vi.fn(), summary: vi.fn() };
+
+    await runStatusMenu(actions);
+
+    expect(prompts.select).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Status view",
+      options: expect.arrayContaining([
+        expect.objectContaining({ value: "compact", label: "Compact status" }),
+        expect.objectContaining({ value: "detailed", label: "Detailed status" }),
+        expect.objectContaining({ value: "summary", label: "AI summary" }),
+        expect.objectContaining({ value: "back", label: "Back to main menu" }),
+      ]),
+    }));
+    expect(actions.compact).toHaveBeenCalledOnce();
+    expect(actions.detailed).not.toHaveBeenCalled();
+    expect(actions.summary).not.toHaveBeenCalled();
+  });
+
   it("renders a distinct Rudder control-plane splash before prompting", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
