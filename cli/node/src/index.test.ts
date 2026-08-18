@@ -13,12 +13,14 @@ const prompts = vi.hoisted(() => ({
   isCancel: vi.fn(() => false),
   select: vi.fn(),
 }));
+const importWizard = vi.hoisted(() => ({ runGitHubImportWizard: vi.fn() }));
 
 vi.mock("./launcher.js", async importOriginal => ({ ...await importOriginal<typeof import("./launcher.js")>(), runLauncher: launcher.runLauncher }));
 vi.mock("./context.js", async importOriginal => ({ ...await importOriginal<typeof import("./context.js")>(), ...context }));
 vi.mock("@clack/prompts", () => prompts);
+vi.mock("./github-import-wizard.js", () => importWizard);
 
-import { chooseProjectEnvironment, discardSession, isDirectExecution, main } from "./index.js";
+import { chooseInitialProject, chooseProjectEnvironment, discardSession, isDirectExecution, main } from "./index.js";
 import { ApiClient } from "./client.js";
 
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
@@ -33,6 +35,7 @@ afterEach(() => {
   prompts.select.mockReset();
   prompts.isCancel.mockReset().mockReturnValue(false);
   context.saveConfig.mockReset();
+  importWizard.runGitHubImportWizard.mockReset();
 });
 
 describe("main", () => {
@@ -88,5 +91,34 @@ describe("main", () => {
     expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);
     expect(api.request).toHaveBeenNthCalledWith(1, "GET", "/projects");
     expect(api.request).toHaveBeenNthCalledWith(2, "GET", "/projects/project-id/environments");
+  });
+
+  it("sets the initial context from an existing project before the launcher can open", async () => {
+    prompts.select.mockResolvedValueOnce("project-id");
+    const api = {
+      baseUrl: "http://localhost:8000",
+      request: vi.fn()
+        .mockResolvedValueOnce([{ id: "project-id", name: "API" }])
+        .mockResolvedValueOnce([{ id: "environment-id", name: "production", is_production: true }]),
+    };
+    const state = { api, context: {}, credentials: {}, flags: {}, out: { json: false } };
+
+    await expect(chooseInitialProject(state as never)).resolves.toBe("Using API / development");
+
+    expect(state.context).toEqual({ project: "project-id", environment: "environment-id" });
+    expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);
+  });
+
+  it("uses the GitHub wizard when the operator creates a project", async () => {
+    prompts.select.mockResolvedValueOnce("create-from-github");
+    importWizard.runGitHubImportWizard.mockResolvedValue({ projectId: "project-id", environmentId: "environment-id" });
+    const api = { baseUrl: "http://localhost:8000", request: vi.fn().mockResolvedValueOnce([]) };
+    const state = { api, context: {}, credentials: {}, flags: {}, out: { json: false } };
+
+    await expect(chooseInitialProject(state as never)).resolves.toBe("Project created from GitHub.");
+
+    expect(importWizard.runGitHubImportWizard).toHaveBeenCalledWith({ api });
+    expect(state.context).toEqual({ project: "project-id", environment: "environment-id" });
+    expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);
   });
 });

@@ -9,6 +9,7 @@ import { ApiClient, ApiError } from "./client.js";
 import { loadConfig, mergeContext, saveConfig, type Context } from "./context.js";
 import { completeGitHubLogin } from "./github-login.js";
 import { formatServiceGraph, serviceGraph } from "./graph.js";
+import { runGitHubImportWizard } from "./github-import-wizard.js";
 import { canLaunchLauncher, runLauncher } from "./launcher.js";
 import { fail, print, success, type Output } from "./output.js";
 
@@ -118,6 +119,37 @@ export async function chooseProjectEnvironment(state: State): Promise<string | v
   const environmentLabel = environments.find(option => option.value === environment)?.label ?? environment;
   return `Using ${projectLabel} / ${environmentLabel}`;
 }
+/** Establish the first project/environment context before operational commands are available. */
+export async function chooseInitialProject(state: State): Promise<string | void> {
+  const projects = selectOptions(await state.api.request("GET", "/projects"), "project");
+  const choice = await p.select<string>({
+    message: "Choose a project",
+    options: [
+      ...projects,
+      { value: "create-from-github", label: "Create new from GitHub", hint: "Import a repository and deploy it" },
+      { value: "exit", label: "Exit" },
+    ],
+  });
+  if (p.isCancel(choice) || choice === "exit") return;
+
+  if (choice === "create-from-github") {
+    const created = await runGitHubImportWizard({ api: state.api });
+    if (!created) return;
+    state.context = { project: created.projectId, environment: created.environmentId };
+    await saveConfig(state.context, state.credentials);
+    return "Project created from GitHub.";
+  }
+
+  const rawEnvironments = await state.api.request("GET", `/projects/${choice}/environments`);
+  const environments = selectOptions(rawEnvironments, "environment", environment => localEnvironmentLabel(environment, state.api.baseUrl));
+  if (!environments.length) throw new Error("This project has no environments.");
+  const environment = preferredEnvironment(rawEnvironments, environments);
+  state.context = { project: choice, environment };
+  await saveConfig(state.context, state.credentials);
+  const projectLabel = projects.find(option => option.value === choice)?.label ?? choice;
+  const environmentLabel = environments.find(option => option.value === environment)?.label ?? environment;
+  return `Using ${projectLabel} / ${environmentLabel}`;
+}
 function selectOptions(
   value: unknown,
   kind: string,
@@ -142,6 +174,13 @@ function localEnvironmentLabel(environment: Record<string, unknown>, baseUrl: st
   }
   return name;
 }
+function preferredEnvironment(raw: unknown, options: Array<{ value: string; label: string }>): string {
+  if (Array.isArray(raw)) {
+    const production = raw.find(row => row && typeof row === "object" && (row as Record<string, unknown>).is_production === true) as Record<string, unknown> | undefined;
+    if (typeof production?.id === "string") return production.id;
+  }
+  return options[0]!.value;
+}
 async function project(s: State, action: string | undefined, a: string[]): Promise<void> { if (action === "list") return void await request(s, "GET", "/projects"); if (action === "create") return void await request(s, "POST", "/projects", { name: requireArg(a, 0, "project name") }); const id = await resolve(s, "project", a[0]); if (action === "use") { s.context.project = id; delete s.context.environment; delete s.context.service; await saveConfig(s.context, s.credentials); return void success("Project selected.", s.out); } if (action === "delete") { await confirm(s, `Delete project ${id} and all its data?`); return void await request(s, "DELETE", `/projects/${id}`); } if (action === "get") return void await request(s, "GET", `/projects/${id}`); if (action === "settings") return void await request(s, "PATCH", `/projects/${id}`, jsonBody(s.flags)); throw new Error("project: list, create, get, use, settings, delete"); }
 async function environment(s: State, action: string | undefined, a: string[]): Promise<void> { const projectId = await resolve(s, "project"); if (action === "list") return void await request(s, "GET", `/projects/${projectId}/environments`); if (action === "create") return void await request(s, "POST", `/projects/${projectId}/environments`, { name: requireArg(a, 0, "environment name"), is_production: Boolean(s.flags.production) }); const id = await resolve(s, "environment", a[0]); if (action === "use") { s.context.environment = id; delete s.context.service; await saveConfig(s.context, s.credentials); return void success("Environment selected.", s.out); } if (action === "clone") return void await request(s, "POST", `/environments/${id}/clone`, { name: requireArg(a, 1, "clone name") }); if (action === "delete") { await confirm(s, `Destroy environment ${id}?`); return void await request(s, "DELETE", `/environments/${id}`); } if (action === "get") return void await request(s, "GET", `/environments/${id}`); if (action === "settings") return void await request(s, "PATCH", `/environments/${id}`, jsonBody(s.flags)); throw new Error("env: list, create, get, use, clone, settings, delete"); }
 async function service(s: State, action: string | undefined, a: string[]): Promise<void> { const env = await resolve(s, "environment"); if (action === "list") return void await request(s, "GET", `/environments/${env}/services`); if (action === "graph") { const services = await s.api.request("GET", `/environments/${env}/services`) as Array<{ id: string; name: string; source_repo: string | null; build_config: Record<string, unknown> }> ; const graph = serviceGraph(services); return void (s.out.json ? print(graph, s.out) : console.log(formatServiceGraph(graph))); } if (action === "create") return void await request(s, "POST", `/environments/${env}/services`, jsonBody(s.flags) ?? { name: requireArg(a, 0, "service name"), source_repo: stringFlag(s.flags, "repo"), source_branch: stringFlag(s.flags, "branch") ?? "main", container_port: Number(stringFlag(s.flags, "port") ?? 8080) }); if (action === "template") return void await request(s, "POST", `/environments/${env}/database-templates/${requireArg(a, 0, "template")}`); const id = await resolve(s, "service", a[0]); if (action === "use") { s.context.service = id; await saveConfig(s.context, s.credentials); return void success("Service selected.", s.out); } if (action === "get") return void await request(s, "GET", `/services/${id}`); if (action === "settings") return void await request(s, "PATCH", `/services/${id}`, jsonBody(s.flags)); if (action === "delete") { await confirm(s, `Delete service ${id}?`); return void await request(s, "DELETE", `/services/${id}${s.flags["delete-volume"] ? "?confirm_volume_deletion=true" : ""}`); } throw new Error("service: list, graph, create, template, get, use, settings, delete"); }
@@ -162,8 +201,10 @@ export async function main(): Promise<void> {
   if (launch) {
     await runLauncher({
       authenticated: Boolean(state.credentials.token || process.env.RUDDER_TOKEN),
+      projectSelected: Boolean(state.context.project && state.context.environment),
       actions: {
         signIn: () => requireAuthentication(state, false),
+        chooseProject: () => chooseInitialProject(state),
         chooseTarget: () => chooseProjectEnvironment(state),
         deploy: () => command(state, ["deploy"]),
         status: () => command(state, ["status"]),

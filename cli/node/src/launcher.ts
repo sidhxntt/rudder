@@ -2,6 +2,7 @@ import * as p from "@clack/prompts";
 
 export type LauncherActions = {
   signIn: () => Promise<void>;
+  chooseProject?: () => Promise<string | void>;
   chooseTarget: () => Promise<string | void>;
   deploy: () => Promise<void>;
   status: () => Promise<void>;
@@ -12,7 +13,7 @@ export type LauncherActions = {
   signOut: () => Promise<void>;
 };
 
-type LauncherAction = Exclude<keyof LauncherActions, "signIn" | "chooseTarget" | "signOut"> | "choose-target" | "sign-out" | "exit";
+type LauncherAction = Exclude<keyof LauncherActions, "signIn" | "chooseProject" | "chooseTarget" | "signOut"> | "choose-target" | "sign-out" | "exit";
 
 export function canLaunchLauncher({
   hasArgs,
@@ -33,10 +34,12 @@ export function canLaunchLauncher({
 export async function runLauncher({
   actions,
   authenticated = true,
+  projectSelected = true,
   clear = () => console.clear(),
 }: {
   actions: LauncherActions;
   authenticated?: boolean;
+  projectSelected?: boolean;
   clear?: () => void;
 }): Promise<void> {
   clear();
@@ -68,6 +71,16 @@ export async function runLauncher({
       spinner.stop("GitHub sign-in failed");
       throw error;
     }
+  }
+
+  if (!projectSelected) {
+    if (!actions.chooseProject) throw new Error("Project onboarding is unavailable.");
+    const context = await actions.chooseProject();
+    if (!context) {
+      p.cancel("Project selection cancelled.");
+      return;
+    }
+    p.note(context, "Project selected");
   }
 
   while (true) {

@@ -4,6 +4,7 @@ const prompts = vi.hoisted(() => ({
   cancel: vi.fn(),
   intro: vi.fn(),
   isCancel: vi.fn((value: unknown) => value === Symbol.for("cancel")),
+  note: vi.fn(),
   outro: vi.fn(),
   select: vi.fn(),
   spinner: vi.fn(),
@@ -19,6 +20,7 @@ beforeEach(() => {
   prompts.cancel.mockReset();
   prompts.intro.mockReset();
   prompts.isCancel.mockReset().mockImplementation((value: unknown) => value === Symbol.for("cancel"));
+  prompts.note.mockReset();
   prompts.outro.mockReset();
   prompts.select.mockReset();
   prompts.spinner.mockReset();
@@ -74,6 +76,16 @@ describe("runLauncher", () => {
     }));
     expect(actions.signIn).toHaveBeenCalledOnce();
     expect(prompts.select).toHaveBeenNthCalledWith(2, expect.objectContaining({ message: "What would you like to do?" }));
+  });
+
+  it("requires project onboarding before showing the operational menu", async () => {
+    prompts.select.mockResolvedValueOnce("exit");
+    const actions = { signIn: vi.fn(), chooseProject: vi.fn().mockResolvedValue("Using API / development"), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+
+    await runLauncher({ actions, authenticated: true, projectSelected: false, clear: vi.fn() });
+
+    expect(actions.chooseProject).toHaveBeenCalledOnce();
+    expect(prompts.select).toHaveBeenNthCalledWith(1, expect.objectContaining({ message: "What would you like to do?" }));
   });
 
   it("does not spin while the project/environment picker is awaiting input", async () => {
