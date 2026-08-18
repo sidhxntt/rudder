@@ -1306,7 +1306,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "kubernetes-asyncio", specifier = ">=32.0.0" },
     { name = "passlib", extras = ["bcrypt"], specifier = ">=1.7" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pyjwt", specifier = ">=2.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
