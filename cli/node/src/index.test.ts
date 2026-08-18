@@ -7,12 +7,18 @@ const launcher = vi.hoisted(() => ({ runLauncher: vi.fn() }));
 const context = vi.hoisted(() => ({
   loadConfig: vi.fn().mockResolvedValue({ context: {}, credentials: {} }),
   mergeContext: vi.fn(() => ({})),
+  saveConfig: vi.fn(),
+}));
+const prompts = vi.hoisted(() => ({
+  isCancel: vi.fn(() => false),
+  select: vi.fn(),
 }));
 
 vi.mock("./launcher.js", async importOriginal => ({ ...await importOriginal<typeof import("./launcher.js")>(), runLauncher: launcher.runLauncher }));
 vi.mock("./context.js", async importOriginal => ({ ...await importOriginal<typeof import("./context.js")>(), ...context }));
+vi.mock("@clack/prompts", () => prompts);
 
-import { discardSession, isDirectExecution, main } from "./index.js";
+import { chooseProjectEnvironment, discardSession, isDirectExecution, main } from "./index.js";
 import { ApiClient } from "./client.js";
 
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
@@ -24,6 +30,9 @@ afterEach(() => {
   if (stdinTTY) Object.defineProperty(process.stdin, "isTTY", stdinTTY); else delete (process.stdin as { isTTY?: boolean }).isTTY;
   if (stdoutTTY) Object.defineProperty(process.stdout, "isTTY", stdoutTTY); else delete (process.stdout as { isTTY?: boolean }).isTTY;
   vi.restoreAllMocks();
+  prompts.select.mockReset();
+  prompts.isCancel.mockReset().mockReturnValue(false);
+  context.saveConfig.mockReset();
 });
 
 describe("main", () => {
@@ -66,5 +75,18 @@ describe("main", () => {
 
     expect(session.credentials.token).toBeUndefined();
     expect(fetcher).toHaveBeenCalledWith("https://cp.example/protected", expect.objectContaining({ headers: expect.not.objectContaining({ authorization: "Bearer old-token" }) }));
+  });
+
+  it("persists a picked project and environment without calling generic commands", async () => {
+    prompts.select.mockResolvedValueOnce("project-id").mockResolvedValueOnce("environment-id");
+    const api = { request: vi.fn().mockResolvedValueOnce([{ id: "project-id", name: "API" }]).mockResolvedValueOnce([{ id: "environment-id", name: "production" }]) };
+    const state = { api, context: {}, credentials: {}, flags: {}, out: { json: false } };
+
+    await expect(chooseProjectEnvironment(state as never)).resolves.toBe("Using API / production");
+
+    expect(state.context).toEqual({ project: "project-id", environment: "environment-id" });
+    expect(context.saveConfig).toHaveBeenCalledWith(state.context, state.credentials);
+    expect(api.request).toHaveBeenNthCalledWith(1, "GET", "/projects");
+    expect(api.request).toHaveBeenNthCalledWith(2, "GET", "/projects/project-id/environments");
   });
 });

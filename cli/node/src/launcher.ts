@@ -1,7 +1,8 @@
 import * as p from "@clack/prompts";
 
 export type LauncherActions = {
-  chooseTarget: () => Promise<void>;
+  signIn: () => Promise<void>;
+  chooseTarget: () => Promise<string | void>;
   deploy: () => Promise<void>;
   status: () => Promise<void>;
   logs: () => Promise<void>;
@@ -11,7 +12,7 @@ export type LauncherActions = {
   signOut: () => Promise<void>;
 };
 
-type LauncherAction = Exclude<keyof LauncherActions, "chooseTarget" | "signOut"> | "choose-target" | "sign-out" | "exit";
+type LauncherAction = Exclude<keyof LauncherActions, "signIn" | "chooseTarget" | "signOut"> | "choose-target" | "sign-out" | "exit";
 
 export function canLaunchLauncher({
   hasArgs,
@@ -31,14 +32,43 @@ export function canLaunchLauncher({
 
 export async function runLauncher({
   actions,
+  authenticated = true,
   clear = () => console.clear(),
 }: {
   actions: LauncherActions;
+  authenticated?: boolean;
   clear?: () => void;
 }): Promise<void> {
   clear();
   renderSplash();
   p.intro("Rudder control plane");
+
+  if (!authenticated) {
+    const signIn = await p.select<"sign-in" | "exit">({
+      message: "Welcome to Rudder",
+      options: [
+        { value: "sign-in", label: "Sign in with GitHub", hint: "Connect your Rudder workspace" },
+        { value: "exit", label: "Exit" },
+      ],
+    });
+    if (p.isCancel(signIn)) {
+      p.cancel("Sign-in cancelled.");
+      return;
+    }
+    if (signIn === "exit") {
+      p.outro("Until next time.");
+      return;
+    }
+    const spinner = p.spinner();
+    spinner.start("Opening GitHub sign-in");
+    try {
+      await actions.signIn();
+      spinner.stop("GitHub connected");
+    } catch (error) {
+      spinner.stop("GitHub sign-in failed");
+      throw error;
+    }
+  }
 
   while (true) {
     const selected = await p.select<LauncherAction>({
@@ -65,6 +95,19 @@ export async function runLauncher({
     }
 
     const { action, label } = actionFor(selected, actions);
+    if (selected === "choose-target") {
+      try {
+        const context = await action();
+        if (context) {
+          const spinner = p.spinner();
+          spinner.start("Updating context");
+          spinner.stop(context);
+        }
+      } catch (error) {
+        throw error;
+      }
+      continue;
+    }
     const spinner = p.spinner();
     spinner.start(label);
     try {
@@ -81,7 +124,7 @@ export async function runLauncher({
   }
 }
 
-function actionFor(selected: Exclude<LauncherAction, "exit">, actions: LauncherActions): { action: () => Promise<void>; label: string } {
+function actionFor(selected: Exclude<LauncherAction, "exit">, actions: LauncherActions): { action: () => Promise<string | void>; label: string } {
   if (selected === "choose-target") return { action: actions.chooseTarget, label: "Choose project/environment" };
   if (selected === "sign-out") return { action: actions.signOut, label: "Sign out" };
   return { action: actions[selected], label: selected[0]!.toUpperCase() + selected.slice(1) };

@@ -82,7 +82,7 @@ export function isDirectExecution(entry: string | undefined, moduleFile: string)
     return false;
   }
 }
-async function requireAuthentication(state: State): Promise<void> {
+async function requireAuthentication(state: State, announce = true): Promise<void> {
   const gate = authenticationGate({
     hasToken: Boolean(state.credentials.token || process.env.RUDDER_TOKEN),
     noInteractive: Boolean(state.flags["no-interactive"]),
@@ -93,21 +93,26 @@ async function requireAuthentication(state: State): Promise<void> {
     throw new Error("Sign in first with `rudder login`, or set RUDDER_TOKEN for automation.");
   }
   await saveAccessToken(state, await completeGitHubLogin({ api: state.api }));
-  success(`Logged in to ${state.api.baseUrl}.`, state.out);
+  if (announce) success(`Logged in to ${state.api.baseUrl}.`, state.out);
 }
-async function chooseProjectEnvironment(state: State): Promise<void> {
+export async function chooseProjectEnvironment(state: State): Promise<string | void> {
   const projects = selectOptions(await state.api.request("GET", "/projects"), "project");
   if (!projects.length) throw new Error("No projects found. Create one with `rudder project create`.");
   const project = await p.select({ message: "Choose project", options: projects });
-  if (p.isCancel(project)) { p.cancel("Selection cancelled."); return; }
+  if (p.isCancel(project)) return;
 
   const environments = selectOptions(await state.api.request("GET", `/projects/${project}/environments`), "environment");
   if (!environments.length) throw new Error("No environments found. Create one with `rudder env create`.");
   const environment = await p.select({ message: "Choose environment", options: environments });
-  if (p.isCancel(environment)) { p.cancel("Selection cancelled."); return; }
+  if (p.isCancel(environment)) return;
 
-  await command(state, ["project", "use", project]);
-  await command(state, ["env", "use", environment]);
+  state.context.project = project;
+  state.context.environment = environment;
+  delete state.context.service;
+  await saveConfig(state.context, state.credentials);
+  const projectLabel = projects.find(option => option.value === project)?.label ?? project;
+  const environmentLabel = environments.find(option => option.value === environment)?.label ?? environment;
+  return `Using ${projectLabel} / ${environmentLabel}`;
 }
 function selectOptions(value: unknown, kind: string): Array<{ value: string; label: string }> {
   if (!Array.isArray(value)) throw new Error(`Could not load ${kind}s.`);
@@ -126,20 +131,32 @@ async function githubImport(s: State, action: string | undefined, a: string[]): 
 async function domain(s: State, action: string | undefined, a: string[]): Promise<void> { const env = await resolve(s, "environment"); if (action === "list") return void await request(s, "GET", `/environments/${env}/domains`); if (action === "create") return void await request(s, "POST", `/environments/${env}/domains`, jsonBody(s.flags)); if (action === "delete") { await confirm(s, `Delete domain ${requireArg(a, 0, "domain id")}?`); return void await request(s, "DELETE", `/domains/${a[0]}`); } if (action === "settings") return void await request(s, "PATCH", `/domains/${requireArg(a, 0, "domain id")}`, jsonBody(s.flags)); throw new Error("domain: list, create, settings, delete"); }
 async function advisor(s: State, action: string | undefined): Promise<void> { if (action === "diagnose") { const result = await advisorRequest(s.api, "diagnose", undefined, jsonBody(s.flags)); if (s.out.json) return void print(result, s.out); console.log("Model-generated diagnosis (may be incomplete):"); return void print(result, s.out); } if (action === "scan" || action === "accept") { const environment = await resolve(s, "environment"); const body = action === "scan" ? { repository_path: stringFlag(s.flags, "path") ?? requireArg([], 0, "--path") } : jsonBody(s.flags); if (!body) throw new Error("advisor accept requires exactly one proposal in --data JSON."); return void print(await advisorRequest(s.api, action, environment, body), s.out); } throw new Error("advisor: scan --path PATH, accept --data JSON, diagnose --data JSON"); }
 
-export async function main(): Promise<void> { const parsed = parse(process.argv.slice(2)); const saved = await loadConfig(); const context = mergeContext(saved.context, { project: stringFlag(parsed.flags, "project"), environment: stringFlag(parsed.flags, "env"), service: stringFlag(parsed.flags, "service") }); const url = stringFlag(parsed.flags, "url") ?? process.env.RUDDER_URL ?? saved.credentials.url ?? "http://localhost:8000"; const state: State = { api: new ApiClient(url, process.env.RUDDER_TOKEN ?? saved.credentials.token), context, credentials: { ...saved.credentials, url }, flags: parsed.flags, out: { json: Boolean(parsed.flags.json) } }; const noun = parsed.args[0]; const launch = canLaunchLauncher({ hasArgs: Boolean(noun), json: Boolean(parsed.flags.json), noInteractive: Boolean(parsed.flags["no-interactive"]), stdinTTY: Boolean(process.stdin.isTTY), stdoutTTY: Boolean(process.stdout.isTTY) });
+export async function main(): Promise<void> {
+  const parsed = parse(process.argv.slice(2));
+  const saved = await loadConfig();
+  const context = mergeContext(saved.context, { project: stringFlag(parsed.flags, "project"), environment: stringFlag(parsed.flags, "env"), service: stringFlag(parsed.flags, "service") });
+  const url = stringFlag(parsed.flags, "url") ?? process.env.RUDDER_URL ?? saved.credentials.url ?? "http://localhost:8000";
+  const state: State = { api: new ApiClient(url, process.env.RUDDER_TOKEN ?? saved.credentials.token), context, credentials: { ...saved.credentials, url }, flags: parsed.flags, out: { json: Boolean(parsed.flags.json) } };
+  const noun = parsed.args[0];
+  const launch = canLaunchLauncher({ hasArgs: Boolean(noun), json: Boolean(parsed.flags.json), noInteractive: Boolean(parsed.flags["no-interactive"]), stdinTTY: Boolean(process.stdin.isTTY), stdoutTTY: Boolean(process.stdout.isTTY) });
   if (launch) {
-    await requireAuthentication(state);
-    await runLauncher({ actions: {
-      chooseTarget: () => chooseProjectEnvironment(state),
-      deploy: () => command(state, ["deploy"]),
-      status: () => command(state, ["status"]),
-      logs: () => command(state, ["logs"]),
-      services: () => command(state, ["service", "list"]),
-      variables: () => command(state, ["var", "list"]),
-      advisor: () => command(state, ["advisor", "diagnose"]),
-      signOut: () => command(state, ["logout"]),
-    } });
+    await runLauncher({
+      authenticated: Boolean(state.credentials.token || process.env.RUDDER_TOKEN),
+      actions: {
+        signIn: () => requireAuthentication(state, false),
+        chooseTarget: () => chooseProjectEnvironment(state),
+        deploy: () => command(state, ["deploy"]),
+        status: () => command(state, ["status"]),
+        logs: () => command(state, ["logs"]),
+        services: () => command(state, ["service", "list"]),
+        variables: () => command(state, ["var", "list"]),
+        advisor: () => command(state, ["advisor", "diagnose"]),
+        signOut: () => command(state, ["logout"]),
+      },
+    });
     return;
   }
-  if (![undefined, "help", "--help", "login", "logout"].includes(noun)) await requireAuthentication(state); await command(state, parsed.args); }
+  if (![undefined, "help", "--help", "login", "logout"].includes(noun)) await requireAuthentication(state);
+  await command(state, parsed.args);
+}
 if (isDirectExecution(process.argv[1], fileURLToPath(import.meta.url))) main().catch((error: unknown) => { fail(error instanceof ApiError || error instanceof Error ? error.message : String(error)); process.exitCode = error instanceof ApiError && error.status === 401 ? 1 : 1; });

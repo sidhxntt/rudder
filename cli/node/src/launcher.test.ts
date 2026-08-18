@@ -38,7 +38,7 @@ describe("runLauncher", () => {
     const spinner = { start: vi.fn(), stop: vi.fn() };
     prompts.spinner.mockReturnValue(spinner);
     prompts.select.mockResolvedValueOnce("deploy").mockResolvedValueOnce("exit");
-    const actions = { chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+    const actions = { signIn: vi.fn(), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
     const clear = vi.fn();
 
     await runLauncher({ actions, clear });
@@ -50,9 +50,39 @@ describe("runLauncher", () => {
     expect(prompts.outro).toHaveBeenCalledWith("Until next time.");
   });
 
+  it("shows Sign in with GitHub before the control-plane menu", async () => {
+    const spinner = { start: vi.fn(), stop: vi.fn() };
+    prompts.spinner.mockReturnValue(spinner);
+    prompts.select.mockResolvedValueOnce("sign-in").mockResolvedValueOnce("exit");
+    const actions = { signIn: vi.fn(), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+
+    await runLauncher({ actions, authenticated: false, clear: vi.fn() });
+
+    expect(prompts.select).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      message: "Welcome to Rudder",
+      options: expect.arrayContaining([expect.objectContaining({ value: "sign-in", label: "Sign in with GitHub" })]),
+    }));
+    expect(actions.signIn).toHaveBeenCalledOnce();
+    expect(prompts.select).toHaveBeenNthCalledWith(2, expect.objectContaining({ message: "What would you like to do?" }));
+  });
+
+  it("does not spin while the project/environment picker is awaiting input", async () => {
+    const spinner = { start: vi.fn(), stop: vi.fn() };
+    prompts.spinner.mockReturnValue(spinner);
+    prompts.select.mockResolvedValueOnce("choose-target").mockResolvedValueOnce("exit");
+    const actions = { signIn: vi.fn(), chooseTarget: vi.fn().mockResolvedValue("Using api / production"), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+
+    await runLauncher({ actions, authenticated: true, clear: vi.fn() });
+
+    expect(actions.chooseTarget).toHaveBeenCalledOnce();
+    expect(spinner.start).toHaveBeenCalledWith("Updating context");
+    expect(spinner.start).not.toHaveBeenCalledWith("Choose project/environment");
+    expect(spinner.stop).toHaveBeenCalledWith("Using api / production");
+  });
+
   it("cancels without invoking an action", async () => {
     prompts.select.mockResolvedValue(Symbol.for("cancel"));
-    const actions = { chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+    const actions = { signIn: vi.fn(), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
 
     await runLauncher({ actions, clear: vi.fn() });
 
@@ -64,7 +94,7 @@ describe("runLauncher", () => {
     const spinner = { start: vi.fn(), stop: vi.fn() };
     prompts.spinner.mockReturnValue(spinner);
     prompts.select.mockResolvedValueOnce("sign-out").mockResolvedValueOnce("deploy");
-    const actions = { chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
+    const actions = { signIn: vi.fn(), chooseTarget: vi.fn(), deploy: vi.fn(), status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn() };
 
     await runLauncher({ actions, clear: vi.fn() });
 
@@ -81,7 +111,7 @@ describe("runLauncher", () => {
     prompts.select.mockResolvedValueOnce("sign-out").mockResolvedValueOnce("deploy");
     const session = { api: new ApiClient("https://cp.example", "old-token"), credentials: { token: "old-token" } };
     const deploy = vi.fn(async () => { await session.api.request("POST", "/protected"); });
-    const actions = { chooseTarget: vi.fn(), deploy, status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn(async () => { discardSession(session); }) };
+    const actions = { signIn: vi.fn(), chooseTarget: vi.fn(), deploy, status: vi.fn(), logs: vi.fn(), services: vi.fn(), variables: vi.fn(), advisor: vi.fn(), signOut: vi.fn(async () => { discardSession(session); }) };
 
     await runLauncher({ actions, clear: vi.fn() });
 
