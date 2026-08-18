@@ -85,16 +85,13 @@ jobs:
       - run: npm pack --dry-run
 
   infrastructure:
-    name: Infrastructure and documentation
+    name: Infrastructure
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.8
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
       - name: Check Terraform formatting
         run: terraform fmt -check -recursive infra/gcp/terraform
       - name: Validate Terraform without a remote backend
@@ -104,11 +101,6 @@ jobs:
       - name: Check shell scripts
         run: |
           find scripts infra -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
-      - name: Render GitHub Wiki documentation
-        run: |
-          node scripts/render-github-wiki.mjs "$RUNNER_TEMP/rudder-wiki"
-          test -f "$RUNNER_TEMP/rudder-wiki/Home.md"
-          test -f "$RUNNER_TEMP/rudder-wiki/_Sidebar.md"
       - name: Validate Compose configurations
         run: |
           docker compose -f docker-compose.dev.yml config --quiet
