@@ -27,10 +27,17 @@ with GitHub. If the browser cannot be opened, the CLI prints the URL for manual
 opening. This is shared backend authentication, not a CLI-specific control
 plane or a claim of browser/terminal state synchronization.
 
-After authentication, the launcher offers project/environment selection and a
-menu for deploy, status, logs, services, variables, advisor, sign-out, and
-exit. Selected targets are saved locally and can be overridden with
-`--project`, `--env`, and `--service`.
+After authentication, a first-run launcher does not expose operational actions
+until the operator selects an existing project or chooses **Create new from
+GitHub**. Existing projects receive their production/default environment as
+the initial context (shown as `development` on localhost, matching the web).
+Creating a project uses the same reviewed GitHub import API sequence as the
+web: source/template, GitHub connection, repository, branch, detected release,
+private add-ons, public web services, and an explicit deploy confirmation. The
+created project and environment become the saved local context. Only then does
+the menu offer deploy, status, logs, services, variables, advisor, sign-out,
+and exit. Selected targets can later be changed or overridden with `--project`,
+`--env`, and `--service`.
 
 For local verification:
 
