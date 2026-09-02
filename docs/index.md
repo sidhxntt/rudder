@@ -28,13 +28,15 @@ render and push updates without maintaining a second hand-edited copy.
    to release flow, security boundaries, and GCP topology.
 3. [Features](features.md) — manual/automatic deployment, Railway-style UI,
    Vercel-style release URLs, CLI, Advisor, Ask Rudder, and observability.
-4. [Technology stack](tech-stack.md) — what each component does and why it was
+4. [Engineering challenges](engineering-challenges.md) — the principal problem
+   in every phase, why it was difficult, how it was solved, and what remains.
+5. [Technology stack](tech-stack.md) — what each component does and why it was
    selected.
-5. [Configuration](configuration.md) — local, GitHub, runtime, GKE, backup,
+6. [Configuration](configuration.md) — local, GitHub, runtime, GKE, backup,
    CLI, and optional AI settings.
-6. [GKE operations](gke-operations.md) — preflight, provisioning boundary,
+7. [GKE operations](gke-operations.md) — preflight, provisioning boundary,
    bootstrap, verification, capacity, and recovery.
-7. [Conclusion](conclusion.md) — the overall narrative, evidence boundary, and
+8. [Conclusion](conclusion.md) — the overall narrative, evidence boundary, and
    current product limits.
 
 ## Project framing and setup
@@ -42,6 +44,7 @@ render and push updates without maintaining a second hand-edited copy.
 | Document | Use it for |
 |---|---|
 | Project overview | Canonical goal, data model, interfaces, non-goals, and original acceptance decisions, consolidated in this documentation set. |
+| [Engineering challenges](engineering-challenges.md) | Plain-language Phase 0–9 problems, treatments, evidence, and remaining boundaries. |
 | [Configuration](configuration.md) | Local, GitHub, Advisor/OpenAI, Kind, GKE, backup, and CLI settings. |
 | [GKE operations](gke-operations.md) | GCP landing-zone preflight, Terraform boundary, bootstrap, verification, capacity, and recovery. |
 | [Phase 4 evidence](evidence/phase-4-controlled-beta.md) | Dated controlled-beta acceptance evidence and remaining gates. |
@@ -88,7 +91,8 @@ point-in-time evidence rather than a blanket production guarantee.
 
 | If you want to understand… | Read… |
 |---|---|
-| GitHub import, OAuth, webhooks, and preview environments | [Features](features.md) and [Phase 5](phases/phase-5.md) |
+| GitHub OAuth, App access, signed webhooks, Packages, and preview environments | [Engineering challenges](engineering-challenges.md#github-has-four-separate-jobs-in-rudder), [Features](features.md), and [Phase 5](phases/phase-5.md) |
+| The hardest problem and solution in every phase | [Engineering challenges](engineering-challenges.md) and the linked Phase 0–9 retrospectives |
 | Why the CLI is not a second control plane | [Phase 9](phases/phase-9.md) and [architecture](architecture.md) |
 | AI summary, Advisor, build diagnosis, or Ask Rudder | [Phase 8](phases/phase-8.md) and [features](features.md) |
 | Stable versus deployment-pinned URLs | [Phase 7](phases/phase-7.md) |

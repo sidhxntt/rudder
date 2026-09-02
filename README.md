@@ -86,6 +86,8 @@ from which that Wiki is generated. Together, they cover:
 - [Overview](docs/overview.md) — problem, concepts, and phased strategy
 - [Architecture](docs/architecture.md) — deployment flow and boundaries
 - [Features](docs/features.md) — UI, CLI, GitHub, previews, releases, and AI
+- [Engineering challenges](docs/engineering-challenges.md) — Phase 0–9
+  problems, solutions, evidence, and remaining boundaries
 - [Technology stack](docs/tech-stack.md) — components and rationale
 - [Configuration](docs/configuration.md) — local, GitHub, Kubernetes, GKE,
   backup, CLI, and optional AI settings
@@ -97,6 +99,12 @@ from which that Wiki is generated. Together, they cover:
   point-in-time controlled-beta verification and remaining gates
 - [Phase 0–9 retrospectives](docs/phases/) — design choices, challenges,
   verification, operations, and cost considerations
+
+GitHub has distinct responsibilities in Rudder: OAuth authenticates people,
+the GitHub App grants installation-scoped repository access, signed webhooks
+deliver trusted source events, and GitHub Packages distributes the npm CLI.
+GitHub Packages is not the deployment image registry; the GCP reference uses
+Artifact Registry for application releases.
 
 To update the published Wiki after changing these documents, use the
 [Wiki publishing guide](docs/wiki-publishing.md).

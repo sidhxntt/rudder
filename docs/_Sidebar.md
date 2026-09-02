@@ -6,6 +6,7 @@
 - [[Overview|Overview]]
 - [[Architecture|Architecture]]
 - [[Features|Features]]
+- [[Engineering-Challenges|Engineering challenges]]
 - [[Technology-Stack|Technology stack]]
 - [[Configuration|Configuration]]
 - [[GKE-Operations|GKE operations]]

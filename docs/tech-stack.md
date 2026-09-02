@@ -180,21 +180,27 @@ below 5 because the currently used `passlib` release probes bcrypt in a way
 that bcrypt 5 rejects. This is recorded in `control-plane/pyproject.toml`; it
 is a maintenance item, not a claim that the pin is ideal forever.
 
-### GitHub OAuth, GitHub Apps, and signed webhooks
+### GitHub OAuth, GitHub Apps, signed webhooks, and GitHub Packages
 
-These are separate integrations with separate credentials:
+These are separate integrations with separate credentials and responsibilities:
 
-1. **GitHub OAuth** authenticates a person into Rudder.
-2. **GitHub App** tokens enumerate approved installations/repositories and
-   clone private source with scoped repository access.
-3. **Webhook secret validation** verifies that an inbound push or pull-request
-   event came from GitHub.
+| Capability | Responsibility |
+| --- | --- |
+| **GitHub OAuth** | Authenticates a person into Rudder. The CLI uses the same human login through a short-lived browser handoff. |
+| **GitHub App** | Uses short-lived installation tokens to enumerate approved repositories/branches, read or check out exact source, and post PR environment comments. |
+| **Signed webhooks** | Verify push and pull-request event authenticity with the configured HMAC secret before queuing deployment or preview lifecycle work. |
+| **GitHub Packages** | Distributes the scoped `@sidhxntt/rudder` npm CLI package to operators. It does not store application deployment images. |
 
 Keeping them separate limits blast radius. A user-login OAuth credential
 should not become a broad deployment credential; an App private key should be
 mounted read-only or retrieved from secret management; unsigned webhooks must
 never queue releases. Browser handoff/authorization records are bounded and
 consumed atomically to avoid indefinite polling or token reuse.
+
+GitHub Packages is only the CLI distribution registry. Local application builds
+use the development container registry; the GCP reference sends immutable
+deployment images to Artifact Registry. See the
+[CLI installation guide](../cli/node/README.md#install-from-github-packages).
 
 ### Kubernetes identity and authorization
 

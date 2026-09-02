@@ -45,8 +45,8 @@
 
 - [ ] **Step 4: validate claims and links**
 
-  Run: `bash scripts/validate-docs.sh`
-  Expected: exit 0 with no broken local documentation links.
+  Run: `wiki_dir=$(mktemp -d) && node scripts/render-github-wiki.mjs "$wiki_dir"`
+  Expected: exit 0 and a rendered `Engineering-Challenges.md` page.
 
 ### Task 2: GitHub responsibility documentation
 
@@ -69,7 +69,7 @@
 
 - [ ] **Step 3: Run documentation validation**
 
-  Run: `bash scripts/validate-docs.sh`
+  Run: `wiki_dir=$(mktemp -d) && node scripts/render-github-wiki.mjs "$wiki_dir"`
   Expected: exit 0.
 
 ### Task 3: Documentation navigation and Wiki publication
@@ -103,7 +103,7 @@
 - Modify: `/Users/sidhxntt/Desktop/Code/Portfolio/sidhxntt/input/04-projects.json`
 - Modify: `/Users/sidhxntt/Desktop/Code/Portfolio/sidhxntt/src/data/portfolio.ts`
 - Modify: `/Users/sidhxntt/Desktop/Code/Portfolio/sidhxntt/README.md`
-- Create: `/Users/sidhxntt/Desktop/Code/Portfolio/sidhxntt/public/projects/rudder.png`
+- Create: `/Users/sidhxntt/Desktop/Code/Portfolio/sidhxntt/public/projects/rudder/01.png`
 
 **Interfaces:**
 - Consumes: verified Rudder documentation and a real local Rudder UI
@@ -115,7 +115,7 @@
 
 - [ ] **Step 2: Add matching JSON and TypeScript entries**
 
-  Use repository URL `https://github.com/sidhxntt/rudder`, preview paths `public/projects/rudder.png` and `/projects/rudder.png`, and an honest controlled-beta description.
+  Use repository URL `https://github.com/sidhxntt/rudder`, preview paths `public/projects/rudder/01.png` and `/projects/rudder/01.png`, and an honest controlled-beta description.
 
 - [ ] **Step 3: Add Rudder to the profile README project table**
 
@@ -145,5 +145,5 @@
 
 - [ ] **Step 3: Run final repository checks**
 
-  Run Rudder documentation validation and the complete portfolio CI command sequence.
+  Run the Rudder Wiki renderer, explicit local-link checks, and the complete portfolio CI command sequence.
   Expected: every required check exits 0.
