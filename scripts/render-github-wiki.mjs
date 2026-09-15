@@ -63,9 +63,10 @@ function rewriteLinks(markdown, source) {
       return `[${text}](${repositoryUrl}/blob/main/${repositoryRelativePath}${suffix})`;
     }
 
-    // GitHub Wiki supports MediaWiki page links. Keep anchor links as normal
-    // Markdown, because they address a heading within the rendered page.
-    return anchor ? `[${text}](${target}#${anchor})` : `[[${target}|${text}]]`;
+    // Use ordinary Markdown links for Wiki pages. GitHub's custom sidebar and
+    // table renderers interpret MediaWiki pipe aliases inconsistently; relative
+    // Markdown links work in both normal page content and `_Sidebar.md`.
+    return anchor ? `[${text}](${target}#${anchor})` : `[${text}](${target})`;
   });
 }
 
@@ -74,7 +75,9 @@ for (const [source, destination] of pages) {
   const contents = await readFile(resolve(sourceRoot, source), "utf8");
   const rendered = source === "index.md"
     ? rewriteLinks(contents.replace(/^# Rudder documentation$/m, "# Rudder"), source)
-    : rewriteLinks(contents, source);
+    : source === "_Sidebar.md"
+      ? contents
+      : rewriteLinks(contents, source);
   await writeFile(resolve(outputRoot, destination), rendered);
 }
 
