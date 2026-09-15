@@ -35,6 +35,15 @@ docker compose -f docker-compose.dev.yml restart control-plane
 
 ## GitHub authentication and delivery
 
+Rudder uses separate GitHub capabilities rather than one shared credential:
+
+| Capability | Configuration and role |
+| --- | --- |
+| GitHub OAuth | The OAuth client settings below authenticate web users and complete the CLI's browser-mediated human login. |
+| GitHub App | The App settings below grant installation-scoped access to selected repositories for discovery, source checkout, and PR comments. |
+| Signed webhooks | `RUDDER_GITHUB_WEBHOOK_SECRET` authenticates push and pull-request deliveries before Rudder changes deployment state. |
+| GitHub Packages | Operators authenticate npm separately to install `@sidhxntt/rudder`; this is CLI distribution, not application-image storage. |
+
 GitHub OAuth browser sign-in uses:
 
 - `RUDDER_GITHUB_OAUTH_CLIENT_ID`
@@ -52,6 +61,12 @@ Repository import and signed delivery use the GitHub App settings:
 
 The callback and webhook URLs configured in GitHub must match the reachable
 Rudder endpoints. Do not place a private key directly in shell history.
+
+For CLI installation from GitHub Packages, follow the
+[scoped npm registry instructions](../cli/node/README.md#install-from-github-packages).
+The token used by npm needs package-read access; it is not a Rudder session,
+GitHub OAuth credential, or GitHub App installation token. Deployed application
+images use the local development registry or GCP Artifact Registry instead.
 
 ## Runtime selection
 
