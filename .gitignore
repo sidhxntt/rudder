@@ -42,3 +42,6 @@ keys/
 .codex/
 .worktrees/
 .superpowers/
+
+# Local Netlify folder
+.netlify

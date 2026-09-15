@@ -30,6 +30,11 @@ services:
       RUDDER_REGISTRY: kind-registry:5000
       RUDDER_KUBERNETES_KUBECONFIG: /kube/config
       RUDDER_KUBERNETES_POSTGRES_OPERATOR: cloudnativepg
+      # CNPG bootstrap Pods reconcile through the Kubernetes API. Kind's
+      # service translation reaches the control-plane endpoint, which the
+      # launcher discovers for every cluster invocation.
+      RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR: ${RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR:-}
+      RUDDER_KUBERNETES_API_SERVER_ENDPOINT_PORT: ${RUDDER_KUBERNETES_API_SERVER_ENDPOINT_PORT:-443}
       # Local Kind only: the same private endpoint is attached to the Kind
       # network by bootstrap.sh so both CNPG pods and the control plane reach
       # it by service name. Production supplies its own object-store values.

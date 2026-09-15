@@ -18,6 +18,8 @@ export function DeployHistory({
   deploymentUrls = {},
   selectedId,
   onSelect,
+  onRedeploy,
+  redeployPending = false,
   onRollback,
   rollbackPending = false,
 }: {
@@ -25,15 +27,31 @@ export function DeployHistory({
   deploymentUrls?: Readonly<Record<string, string>>;
   selectedId: string | null;
   onSelect: (deploymentId: string) => void;
+  onRedeploy?: () => void;
+  redeployPending?: boolean;
   onRollback?: (deploymentId: string) => void;
   rollbackPending?: boolean;
 }) {
+  const redeployControl = onRedeploy ? (
+    <div className="flex items-center justify-end border-b border-hairline px-lg py-sm">
+      <Button onClick={onRedeploy} disabled={redeployPending} variant="outline" size="sm">
+        {redeployPending ? "Redeploying…" : "Redeploy"}
+      </Button>
+    </div>
+  ) : null;
+
   if (deployments.length === 0) {
-    return <p className="px-lg py-md text-micro text-ink-faint">no deployments yet</p>;
+    return (
+      <div>
+        {redeployControl}
+        <p className="px-lg py-md text-micro text-ink-faint">no deployments yet</p>
+      </div>
+    );
   }
 
   return (
     <div className="rd-scroll min-h-0 flex-1 overflow-auto">
+      {redeployControl}
       <table className="w-full border-collapse">
         <tbody>
           {deployments.map((deployment) => {

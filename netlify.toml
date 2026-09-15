@@ -1,0 +1,12 @@
+[build]
+  base = "web"
+  command = "npm run build"
+  # `netlify.toml` is at the repository root, so this is intentionally
+  # repository-relative even though the build runs from `base`.
+  publish = "web/.next"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

@@ -1,5 +1,9 @@
 # Features: the Rudder operator experience
 
+For the source-level ownership, execution boundary, safety behavior, and
+verification behind every feature group, read the
+[Engineering implementation guide](implementation-guide.md).
+
 This page describes what a user sees and what component makes it work. It uses
 the labels **implemented**, **verified**, and **planned/mapped** defined in
 [overview.md](overview.md).

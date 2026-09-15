@@ -30,3 +30,7 @@ keeps one immutable image reference. Return to the Docker runtime with:
 ```bash
 docker compose -f docker-compose.dev.yml up -d --force-recreate control-plane
 ```
+
+`make kind-up` also installs metrics-server. Once a healthy workload has run
+for one collection interval, the Analytics tab displays its real Kubernetes
+pod CPU and memory samples.

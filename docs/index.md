@@ -38,6 +38,9 @@ render and push updates without maintaining a second hand-edited copy.
    bootstrap, verification, capacity, and recovery.
 8. [Conclusion](conclusion.md) — the overall narrative, evidence boundary, and
    current product limits.
+9. [Engineering implementation guide](implementation-guide.md) — source-level
+   ownership, runtime flow, security boundary, and verification for every
+   feature group.
 
 ## Project framing and setup
 

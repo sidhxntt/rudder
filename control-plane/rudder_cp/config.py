@@ -139,6 +139,9 @@ class Settings(BaseSettings):
     # GKE's exact private control-plane endpoint CIDR. The platform bootstrap
     # injects this into the runtime for CNPG's required API reconciliation.
     kubernetes_api_server_endpoint_cidr: str = ""
+    # GKE exposes its private API on 443; local Kind translates the Service to
+    # the control-plane container's discovered API port.
+    kubernetes_api_server_endpoint_port: int = Field(default=443, ge=1, le=65535)
     # GKE public routes are HTTPS-only. The issuer is installed and owned by
     # the platform bootstrap, while each release receives its own stable
     # certificate Secret through cert-manager.

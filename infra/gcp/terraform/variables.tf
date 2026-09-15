@@ -21,6 +21,12 @@ variable "network_name" {
   default     = "rudder-gke-vpc"
 }
 
+variable "deletion_protection" {
+  description = "Protect the GKE cluster from accidental Terraform deletion."
+  type        = bool
+  default     = true
+}
+
 variable "subnet_cidr" {
   description = "Primary subnet range for GKE nodes."
   type        = string

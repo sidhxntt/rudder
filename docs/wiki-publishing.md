@@ -35,6 +35,7 @@ node scripts/render-github-wiki.mjs ../rudder.wiki
 cd ../rudder.wiki
 git status
 git add Home.md Overview.md Architecture.md Features.md Engineering-Challenges.md Technology-Stack.md \
+  Engineering-Implementation-Guide.md \
   Configuration.md GKE-Operations.md Phase-4-Evidence.md Multi-Cloud.md \
   Conclusion.md Phase-*.md _Sidebar.md _Footer.md
 git commit -m "docs: publish Rudder Wiki"
@@ -53,6 +54,7 @@ pages deliberately rather than through an unsafe bulk-delete step.
 | `docs/overview.md` | `Overview` |
 | `docs/architecture.md` | `Architecture` |
 | `docs/features.md` | `Features` |
+| `docs/implementation-guide.md` | `Engineering-Implementation-Guide` |
 | `docs/engineering-challenges.md` | `Engineering-Challenges` |
 | `docs/tech-stack.md` | `Technology-Stack` |
 | `docs/configuration.md` | `Configuration` |

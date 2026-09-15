@@ -6,7 +6,7 @@ resource "google_container_cluster" "rudder" {
   subnetwork = google_compute_subnetwork.gke.id
 
   networking_mode     = "VPC_NATIVE"
-  deletion_protection = true
+  deletion_protection = var.deletion_protection
 
   # The cluster is bootstrapped through gcloud, then imported into this state.
   # Its temporary default pool is removed only after the system pool exists,

@@ -26,6 +26,7 @@ const pages = [
   ["overview.md", "Overview.md"],
   ["architecture.md", "Architecture.md"],
   ["features.md", "Features.md"],
+  ["implementation-guide.md", "Engineering-Implementation-Guide.md"],
   ["engineering-challenges.md", "Engineering-Challenges.md"],
   ["tech-stack.md", "Technology-Stack.md"],
   ["configuration.md", "Configuration.md"],
