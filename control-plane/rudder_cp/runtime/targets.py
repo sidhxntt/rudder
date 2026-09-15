@@ -57,11 +57,8 @@ def runtime_settings_from(settings: Settings) -> RuntimeSettings:
             if settings.kubernetes_target == "gke"
             else ()
         ),
-        kubernetes_api_server_endpoint_cidr=(
-            settings.kubernetes_api_server_endpoint_cidr
-            if settings.kubernetes_target == "gke"
-            else ""
-        ),
+        kubernetes_api_server_endpoint_cidr=settings.kubernetes_api_server_endpoint_cidr,
+        kubernetes_api_server_endpoint_port=settings.kubernetes_api_server_endpoint_port,
     )
 
 

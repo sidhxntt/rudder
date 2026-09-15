@@ -17,9 +17,9 @@ kind-up:
 kind-down:
 	kind delete cluster --name rudder-kind
 
-## Restart only the control plane with the local Kubernetes runtime selected.
+## Restart the control plane and its local accounting agent with the Kubernetes runtime selected.
 kind-control-plane:
-	RUDDER_RUNTIME=kubernetes RUDDER_REGISTRY=kind-registry:5000 docker compose -f docker-compose.dev.yml -f docker-compose.kind.yml up -d --build --force-recreate control-plane
+	api_server_endpoint=$$(kubectl -n default get endpoints kubernetes -o jsonpath='{.subsets[0].addresses[0].ip}'); api_server_endpoint_port=$$(kubectl -n default get endpoints kubernetes -o jsonpath='{.subsets[0].ports[0].port}'); test -n "$$api_server_endpoint"; test -n "$$api_server_endpoint_port"; RUDDER_RUNTIME=kubernetes RUDDER_REGISTRY=kind-registry:5000 RUDDER_KUBERNETES_API_SERVER_ENDPOINT_CIDR="$$api_server_endpoint/32" RUDDER_KUBERNETES_API_SERVER_ENDPOINT_PORT="$$api_server_endpoint_port" docker compose -f docker-compose.dev.yml -f docker-compose.kind.yml up -d --build --force-recreate control-plane agent
 
 ## Exercise the real Kubernetes adapter against Kind and verify a public ingress.
 verify-kind:

@@ -46,3 +46,32 @@ it("offers restore only for an earlier successful immutable release", async () =
   await user.click(screen.getByRole("button", { name: "Restore" }));
   expect(onRollback).toHaveBeenCalledWith("previous");
 });
+
+it("offers redeploy from the Deploys tab", async () => {
+  const onRedeploy = vi.fn();
+  const user = userEvent.setup();
+
+  render(
+    <DeployHistory
+      selectedId="live"
+      onSelect={vi.fn()}
+      onRedeploy={onRedeploy}
+      deployments={[
+        {
+          id: "live",
+          service_id: "service",
+          status: "live",
+          image_tag: "registry/app:current",
+          commit_sha: "currentcommit",
+          error_message: null,
+          created_at: "2026-07-27T00:00:00Z",
+          became_live_at: "2026-07-27T00:01:00Z",
+        },
+      ]}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Redeploy" }));
+
+  expect(onRedeploy).toHaveBeenCalledOnce();
+});

@@ -6,6 +6,7 @@
 - [[Overview|Overview]]
 - [[Architecture|Architecture]]
 - [[Features|Features]]
+- [[Engineering-Implementation-Guide|Implementation guide]]
 - [[Engineering-Challenges|Engineering challenges]]
 - [[Technology-Stack|Technology stack]]
 - [[Configuration|Configuration]]

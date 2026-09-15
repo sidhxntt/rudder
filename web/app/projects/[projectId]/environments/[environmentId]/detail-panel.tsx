@@ -84,7 +84,7 @@ export function DetailPanel({
   const isComposeManaged = managedByServiceId !== undefined;
   const deployments = useDeployments(lifecycleServiceId);
   const instances = useInstances(lifecycleServiceId);
-  const deploy = useDeploy(service.id);
+  const deploy = useDeploy(lifecycleServiceId);
   const rollback = useRollbackDeployment(lifecycleServiceId);
   const rename = useRenameService(service.environment_id);
 
@@ -270,6 +270,8 @@ export function DetailPanel({
               setSelectedDeploymentId(deploymentId);
               setTab("logs");
             }}
+            onRedeploy={() => deploy.mutate()}
+            redeployPending={deploy.isPending || status === "building"}
             onRollback={(deploymentId) => rollback.mutate(deploymentId)}
             rollbackPending={rollback.isPending || status === "building"}
           />
@@ -279,7 +281,7 @@ export function DetailPanel({
         {tab === "service-settings" ? <ServiceSettings service={service} /> : null}
       </section>
 
-      {!isComposeManaged && deploy.isError ? (
+      {deploy.isError ? (
         <p className="border-t border-hairline px-lg py-sm text-micro text-status-failed">
           deploy request failed
         </p>

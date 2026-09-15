@@ -154,6 +154,20 @@ def test_gke_maps_its_private_api_endpoint_to_guardrail_egress() -> None:
     )
 
 
+def test_kind_maps_its_discovered_api_endpoint_and_port_to_guardrail_egress() -> None:
+    settings = Settings(
+        runtime="kubernetes",
+        kubernetes_target="kind",
+        kubernetes_api_server_endpoint_cidr="172.20.0.7/32",
+        kubernetes_api_server_endpoint_port=6443,
+    )
+
+    runtime_settings = targets.runtime_settings_from(settings)
+
+    assert runtime_settings.kubernetes_api_server_endpoint_cidr == "172.20.0.7/32"
+    assert runtime_settings.kubernetes_api_server_endpoint_port == 6443
+
+
 def test_gke_uses_the_private_backup_broker_only_when_identity_is_enabled() -> None:
     settings = Settings(
         runtime="kubernetes",

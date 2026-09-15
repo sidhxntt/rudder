@@ -436,7 +436,10 @@ async def test_guardrails_default_deny_egress_except_dns_and_same_environment() 
 @pytest.mark.asyncio
 async def test_guardrails_allow_only_configured_kubernetes_api_service() -> None:
     api = object.__new__(AsyncKubernetesApi)
-    api.settings = RuntimeSettings(kubernetes_api_server_endpoint_cidr="10.80.0.15/32")
+    api.settings = RuntimeSettings(
+        kubernetes_api_server_endpoint_cidr="10.80.0.15/32",
+        kubernetes_api_server_endpoint_port=6443,
+    )
     api.core = SimpleNamespace(
         read_namespaced_resource_quota=object(),
         create_namespaced_resource_quota=object(),
@@ -461,7 +464,7 @@ async def test_guardrails_allow_only_configured_kubernetes_api_service() -> None
 
     api_egress = rendered["rudder-private-network"].spec.egress[2]
     assert api_egress.to[0].ip_block.cidr == "10.80.0.15/32"
-    assert [(port.protocol, port.port) for port in api_egress.ports] == [("TCP", 443)]
+    assert [(port.protocol, port.port) for port in api_egress.ports] == [("TCP", 6443)]
 
 
 @pytest.mark.asyncio
@@ -1612,7 +1615,10 @@ async def test_runtime_observability_reads_pod_log_and_resource_metrics() -> Non
             return {
                 "items": [
                     {
-                        "metadata": {"uid": "pod-uid", "name": "web-abc"},
+                        # metrics-server identifies PodMetric objects by pod
+                        # name; unlike CoreV1 Pod objects, it does not return
+                        # the Pod UID.
+                        "metadata": {"name": "web-abc"},
                         "containers": [
                             {"name": "web", "usage": {"cpu": "125m", "memory": "32Mi"}}
                         ],
@@ -1650,7 +1656,7 @@ async def test_runtime_metrics_rejects_a_pod_without_a_positive_cpu_limit() -> N
     """A zero limit cannot honestly be represented as zero-percent usage."""
 
     pod = SimpleNamespace(
-        metadata=SimpleNamespace(uid="pod-uid"),
+        metadata=SimpleNamespace(uid="pod-uid", name="web-abc"),
         spec=SimpleNamespace(
             containers=[
                 SimpleNamespace(
@@ -1668,7 +1674,7 @@ async def test_runtime_metrics_rejects_a_pod_without_a_positive_cpu_limit() -> N
             return_value={
                 "items": [
                     {
-                        "metadata": {"uid": "pod-uid"},
+                        "metadata": {"name": "web-abc"},
                         "containers": [{"usage": {"cpu": "1m", "memory": "1Mi"}}],
                     }
                 ]

@@ -55,6 +55,7 @@ class RuntimeSettings:
     # Calico evaluates egress after Service translation, so this is the exact
     # private control-plane endpoint rather than general HTTPS egress.
     kubernetes_api_server_endpoint_cidr: str = ""
+    kubernetes_api_server_endpoint_port: int = 443
 
     @property
     def backup_configured(self) -> bool:
@@ -1240,6 +1241,9 @@ class AsyncKubernetesApi:
         observed cores divided by that concrete limit. Memory remains bytes.
         """
         pod = await self._pod_for_uid(namespace, pod_uid)
+        pod_name = getattr(getattr(pod, "metadata", None), "name", None)
+        if not isinstance(pod_name, str) or not pod_name:
+            raise RuntimeError(f"Kubernetes pod {pod_uid} has no readable name.")
         metrics = await self.custom.list_namespaced_custom_object(
             group="metrics.k8s.io",
             version="v1beta1",
@@ -1253,7 +1257,9 @@ class AsyncKubernetesApi:
                 for item in metric_items
                 if isinstance(item, dict)
                 and isinstance(item.get("metadata"), dict)
-                and item["metadata"].get("uid") == pod_uid
+                # PodMetrics is keyed by name. metrics-server does not
+                # include the Pod UID returned by CoreV1.
+                and item["metadata"].get("name") == pod_name
             ),
             None,
         )
@@ -1400,7 +1406,12 @@ class AsyncKubernetesApi:
                                         )
                                     )
                                 ],
-                                ports=[client.V1NetworkPolicyPort(protocol="TCP", port=443)],
+                                ports=[
+                                    client.V1NetworkPolicyPort(
+                                        protocol="TCP",
+                                        port=self.settings.kubernetes_api_server_endpoint_port,
+                                    )
+                                ],
                             )
                         ]
                         if self.settings.kubernetes_api_server_endpoint_cidr

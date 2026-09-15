@@ -14,7 +14,15 @@ fi
 
 # BuildKit runs inside the Compose `rudder` network and therefore resolves the
 # registry as `kind-registry:5000`; make that same registry name resolvable
-# from Kind nodes so immutable images need no retagging or copy.
+# from Kind nodes so immutable images need no retagging or copy. The container
+# always keeps that internal port, but macOS services can occupy host port 5000.
+# In that case a fresh local bootstrap uses 5001 unless the operator selected a
+# port explicitly.
+if [ -z "${RUDDER_REGISTRY_PORT:-}" ] \
+  && lsof -nP -iTCP:5000 -sTCP:LISTEN >/dev/null 2>&1; then
+  export RUDDER_REGISTRY_PORT=5001
+  echo "host port 5000 is occupied; publishing the local registry on 5001"
+fi
 docker compose -f "$root_dir/docker-compose.dev.yml" up -d registry
 registry_id="$(docker compose -f "$root_dir/docker-compose.dev.yml" ps -q registry)"
 if [ -z "$registry_id" ]; then
@@ -26,6 +34,13 @@ if ! docker inspect "$registry_id" \
   | grep -Fxq kind; then
   docker network connect --alias kind-registry kind "$registry_id" || true
 fi
+
+# BuildKit deliberately shares the registry container's network namespace so
+# `registry:1234` reaches its daemon and `kind-registry:5000` reaches the
+# image registry. Recreating the registry without recreating BuildKit leaves
+# the latter attached to the old namespace and causes connection-refused build
+# failures. Refresh BuildKit after the registry and Kind-network attachment.
+docker compose -f "$root_dir/docker-compose.dev.yml" up -d --force-recreate --no-deps buildkitd
 
 # Local Kind uses a private MinIO target for real CloudNativePG backup tests.
 # Start it only in the Kind overlay; normal Docker-runtime development never
@@ -127,6 +142,41 @@ for _ in $(seq 1 45); do
   sleep 2
 done
 [ -n "${endpoints:-}" ] || { echo "ingress admission endpoint did not become ready" >&2; exit 1; }
+
+# Rudder's Analytics collector reads the aggregated metrics.k8s.io API. Kind
+# does not provide it by default, so install a pinned metrics-server release
+# before local workloads can be deployed. Kind kubelets use a development
+# certificate that is not trusted by the aggregated API server; the narrowly
+# scoped insecure-tls option is local-only and must not be copied to GKE.
+if ! kubectl get deployment -n kube-system metrics-server >/dev/null 2>&1; then
+  kubectl apply -f \
+    https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml
+fi
+kubectl -n kube-system patch deployment metrics-server --type='strategic' -p '
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "name": "metrics-server",
+            "args": [
+              "--cert-dir=/tmp",
+              "--secure-port=10250",
+              "--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname",
+              "--kubelet-use-node-status-port",
+              "--metric-resolution=15s",
+              "--kubelet-insecure-tls"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}' >/dev/null
+kubectl wait --namespace kube-system \
+  --for=condition=Available deployment/metrics-server --timeout=180s
+kubectl wait --for=condition=Available apiservice/v1beta1.metrics.k8s.io --timeout=180s
 
 # Rudder uses CloudNativePG only for catalog-managed PostgreSQL.  Installing
 # it here keeps `make kind-up` self-contained: enabling the dashboard's
