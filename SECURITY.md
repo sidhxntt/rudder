@@ -15,7 +15,22 @@ for this repository.
 
 Include a minimal reproduction, affected component and version/commit, impact,
 and any mitigation you have identified. Maintainers will acknowledge the report
-and coordinate remediation through the private advisory.
+and triage it through the private advisory.
+
+## What happens after a report
+
+Maintainers will confirm receipt, assess the report, and work with the reporter
+on a fix or mitigation. Please allow time for investigation before sharing the
+details publicly. When a fix is ready, maintainers will coordinate disclosure
+through the private advisory and credit the reporter when appropriate.
+
+## Scope and safety notes
+
+The supported security boundary is the Rudder source code, documentation, and
+the controlled GKE beta configuration in this repository. Rudder is not a
+hosted multi-tenant service. Do not test against systems you do not own or have
+permission to assess, and do not interrupt live services, access data, or use
+destructive techniques to demonstrate an issue.
 
 ## Security boundaries
 
