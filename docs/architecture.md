@@ -91,12 +91,40 @@ item-by-item.
 
 ### Local Docker and multi-host agent path
 
-**Implemented and historically verified.** The agent uses Docker APIs rather
-than shelling out for container lifecycle. BuildKit builds images and a local
-registry publishes them. Traefik reads dynamically generated routing config.
-Nodes heartbeat capacity and observed containers; the scheduler selects a
-healthy placement with sufficient capacity. Persistent Docker volumes are
-node-local and are deliberately not auto-rescheduled across hosts.
+**Implemented and historically verified.** Each Docker machine runs a Rudder
+agent. The agent talks to Docker through its API to create, check, and remove
+containers; it does not run `docker` commands in a shell. BuildKit builds the
+application image, and a local registry makes that image available to the
+machine that will run it. Traefik receives generated routing rules and sends
+web traffic to the right container.
+
+The agent stays running on its machine; Rudder does not start a new agent for
+every deployment. It regularly tells the control plane how much space it has
+and which containers are running. The scheduler uses that information to pick
+a healthy machine with enough capacity. Persistent Docker volumes stay on the
+machine where they were created, so Rudder does not automatically move a
+stateful app to another machine and risk leaving its data behind.
+
+Rudder could manage Docker directly on one trusted machine. With several
+machines, however, the control plane would need powerful remote access to every
+Docker daemon, which is close to giving it control of each host. It would also
+have to repeatedly ask every machine what is running, and a network outage
+would make the answer unclear. Agents keep that powerful Docker access on each
+machine and report back when they can. The control plane can then compare those
+reports with the saved deployment request and safely decide what to repair.
+
+```mermaid
+flowchart TB
+    Control[Control plane\nDesired state] --> Scheduler[Scheduler\nSelect healthy node]
+    Scheduler --> Agent[Existing node agent]
+    Agent --> Docker[Local Docker API\nCreate and inspect containers]
+    Builder[BuildKit] --> Registry[Local registry]
+    Registry --> Docker
+    Agent -->|Heartbeat: capacity + observed containers| Control
+    Traefik[Traefik\nDynamic routing config] --> Docker
+    Docker --> Volume[(Node-local persistent volume)]
+    Volume -. Not auto-rescheduled .-> Other[Another node]
+```
 
 This path is valuable for development and for explaining the desired/actual
 state model. It is not the production network model for cross-host private
