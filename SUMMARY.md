@@ -1,9 +1,9 @@
 # Rudder: beginner notes
 
-## 1. The core idea
+## 1. The main idea
 
-Rudder is a **control plane**. It saves what an operator wants, asks a runtime
-to make it real, and keeps checking the result.
+Rudder is a **control plane**. It records what an operator wants, asks a
+runtime to make it real, and keeps checking the result.
 
 ```text
 Desired state: “Run one healthy copy of this app.”
@@ -15,38 +15,39 @@ Rudder finds the difference and requests a repair.
 The runtime starts the app and reports again.
 ```
 
-| Part | Job |
+| Part | Simple job |
 |---|---|
 | Control plane and database | Save the desired state: what should exist. |
 | Runtime | Run the app and report what actually exists. |
 | Reconciler | Compare desired and actual state, then request safe repairs. |
 
-The reconciler decides **what** should happen. The runtime does the local work.
+The reconciler decides **what** should happen. The runtime does the local work
+needed to make it happen.
 
-## 2. Local Docker: the Rudder agent
+## 2. Local Docker: how the agent helps
 
 In the local Docker path, every Docker machine has a long-running **Rudder
 agent**. It is Rudder software, not a Docker feature.
 
-Before a machine can run deployments, a platform operator sets it up once:
+Before deployments can use a machine, a platform operator sets it up once:
 
 1. Install and start the Rudder agent.
 2. Give it access to that machine's Docker API.
 3. Configure it to authenticate with the Rudder control plane.
 
-Rudder does **not** create a new agent for every deployment. The control plane
-picks a healthy machine, then its existing agent uses Docker's API to create,
-inspect, and remove containers. The agent also reports capacity, running
+When an operator deploys an app, Rudder does **not** create a new agent. The
+control plane picks a healthy machine, and the existing agent uses Docker's API
+to create, inspect, and remove containers. It also reports capacity, running
 containers, and health.
 
 ```text
 Control plane chooses a Docker machine
         ↓
-Existing agent receives the work
+Existing agent on that machine receives work
         ↓
 Agent uses the local Docker API
         ↓
-App starts and the agent reports its status
+App container starts and agent reports its status
 ```
 
 Why use an agent? Rudder could control Docker directly on one trusted machine.
@@ -54,14 +55,16 @@ Across several machines, that would require powerful remote access to every
 Docker daemon. The agent keeps that access local, even when the network is
 unreliable.
 
-| Local Docker part | Job |
+Other local Docker pieces:
+
+| Component | Job |
 |---|---|
 | BuildKit | Builds the application image. |
-| Local registry | Makes the image available to the chosen machine. |
+| Local registry | Makes the image available to the chosen Docker machine. |
 | Traefik | Sends web traffic to the correct container. |
-| Persistent Docker volume | Stays on its original machine; Rudder does not move it automatically. |
+| Persistent Docker volume | Stays on its original machine; Rudder does not automatically move it elsewhere. |
 
-## 3. Background work
+## 3. Background work: deploy once, then keep checking
 
 ### Deployment worker
 
@@ -85,8 +88,8 @@ The reconciler runs repeatedly after deployment. It can:
 - Process saved actions such as restart, scale, or delete.
 - Retry a GitHub pull-request notification after a temporary failure.
 
-It does not automatically move stateful data that may be tied to one disk.
-Retry **backoff** means waiting longer after each repeated failure.
+It does not automatically move a stateful workload if its data may be tied to
+one disk. Retry **backoff** means waiting longer after each repeated failure.
 
 ```text
 Try now → fail → wait a little → try again → wait longer → try again
@@ -118,10 +121,10 @@ Kubernetes reports status to Rudder
 
 There are two reconciling layers:
 
-- **Kubernetes controllers** make Kubernetes resources match their specs, such
-  as keeping the requested number of Pods running.
-- **Rudder's reconciler** checks whether Kubernetes achieved what the operator
-  requested, and handles Rudder-level operations and history.
+- **Kubernetes controllers** make Kubernetes resources match their Kubernetes
+  specs, such as keeping the requested number of Pods running.
+- **Rudder's reconciler** checks whether Kubernetes achieved what Rudder's
+  operator requested, and handles Rudder-level operations and history.
 
 ### Kind versus GKE
 
@@ -131,20 +134,22 @@ turn its application intent into correct Kubernetes objects.
 **GKE** is Rudder's current production-shaped cloud target. Terraform prepares
 the GCP foundation: the cluster, node pools, IAM and Workload Identity, image
 registry, build service, DNS, storage/backup services, networking, and shared
-tools such as ingress-nginx and cert-manager.
+platform tools such as ingress-nginx and cert-manager.
 
 Rudder uses an **attach model** on GKE: Terraform owns the cluster and cloud
 foundation; Rudder owns the application environments and workloads inside it.
 
-## 5. Multi-cloud
+## 5. Multi-cloud: what stays the same and what changes
 
 Multi-cloud would require more than swapping Terraform files.
 
 | Usually portable | Changes by cloud provider |
 |---|---|
-| Rudder control plane, database, web UI, CLI, API, history, and reconciliation | Terraform for network, cluster, registry, storage, IAM, quotas, and billing |
+| Rudder control plane, database, web UI, CLI, API, deployment history, and reconciliation | Terraform for network, cluster, registry, storage, IAM, quotas, and billing |
 | Kubernetes objects: Deployments, Services, PVCs, Secrets, and health checks | Identity, load balancers, ingress, DNS, certificates, storage, and backups |
 | Immutable releases, promotion, and rollback | Build/registry permissions, pricing, error handling, and cloud-specific tests |
+
+Example GCP-to-AWS mapping:
 
 | GCP | AWS |
 |---|---|
@@ -159,24 +164,7 @@ Multi-cloud would require more than swapping Terraform files.
 The goal is to keep cloud differences at the infrastructure boundary, not
 spread them through the web UI, CLI, or core deployment logic.
 
-## 6. Import templates
-
-Templates are import presets. They help Rudder choose a starting deployment
-plan; they do not replace a repository's own architecture.
-
-1. The user connects a GitHub repository and branch.
-2. Rudder looks for `compose.yml` or `compose.yaml` on that branch.
-3. If it finds one, Rudder uses that repository-owned Compose setup. A template
-   does not overwrite it.
-4. If no Compose file exists, a template can preselect Rudder-managed services.
-   For example, a Node app may get private PostgreSQL and Redis services.
-5. Rudder creates a temporary Compose release plan, builds the app from the
-   repository, and deploys it.
-
-Today, templates do not create a repository, commit a Compose file, or expose
-editable template source files to the user.
-
-## 7. Engineering challenges, in brief
+## 6. Engineering challenges, in brief
 
 | Phase | Challenge | Rudder's answer |
 |---|---|---|
