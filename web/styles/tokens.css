@@ -82,6 +82,21 @@
   --rd-panel-padding: var(--rd-space-lg);
   --rd-card-padding: var(--rd-space-lg);
 
+  /* --- Public site: warm paper. The homepage (app/landing-page.tsx) sits on
+   * the same paper as its hero (components/rudder-hero.tsx); the console
+   * keeps the dark shell above. --- */
+  --rd-paper: #f0ebe4;
+  --rd-paper-raised: #f6f3ee;
+  --rd-paper-sunk: #e8e2da;
+  --rd-paper-ink: #1d1a19;
+  --rd-paper-ink-secondary: #4b4642;
+  --rd-paper-ink-mute: #6b6560; /* 4.6:1 on paper */
+  --rd-paper-ink-faint: #8a8580; /* labels only */
+  --rd-paper-line: #dcd5cb;
+  --rd-paper-line-strong: #c9c1b6;
+  --rd-accent-ink: #157a4e; /* the accent as text on paper: 4.9:1 */
+  --rd-font-display: "Inter Tight", var(--rd-font-sans);
+
   /* --- Elevation, retuned for a dark shell. --- */
   --rd-elev-1: 0 1px 3px rgba(0, 0, 0, 0.4);
   --rd-elev-2: 0 8px 24px rgba(0, 0, 0, 0.5);

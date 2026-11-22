@@ -17,6 +17,18 @@ const config: Config = {
           soft: "var(--rd-accent-soft)",
         },
         "on-accent": "var(--rd-on-accent)",
+        "accent-ink": "var(--rd-accent-ink)",
+        paper: {
+          DEFAULT: "var(--rd-paper)",
+          raised: "var(--rd-paper-raised)",
+          sunk: "var(--rd-paper-sunk)",
+          ink: "var(--rd-paper-ink)",
+          secondary: "var(--rd-paper-ink-secondary)",
+          mute: "var(--rd-paper-ink-mute)",
+          faint: "var(--rd-paper-ink-faint)",
+          line: "var(--rd-paper-line)",
+          "line-strong": "var(--rd-paper-line-strong)",
+        },
         surface: {
           DEFAULT: "var(--rd-surface)",
           soft: "var(--rd-surface-soft)",
@@ -63,6 +75,7 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--rd-font-sans)"],
         mono: ["var(--rd-font-mono)"],
+        display: ["var(--rd-font-display)"],
       },
       fontSize: {
         "display-lg": ["var(--rd-text-display-lg)", { lineHeight: "1.15", letterSpacing: "-0.72px" }],

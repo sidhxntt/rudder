@@ -74,3 +74,9 @@ the container died afterwards. The URL 503s. That renders `failed`, never
 `styles/tokens.css` is the source of truth. `tailwind.config.ts` maps every
 token into the Tailwind theme by `var()` reference — there is not one hex
 literal anywhere in this tree outside `styles/tokens.css`.
+
+The one exception is `components/rudder-hero.tsx`, the homepage's first screen.
+It is a self-contained drop-in (React only, its CSS inside it), so its colours
+live in that file; its tone defaults to `--rd-accent`'s value. The rest of the
+homepage sits on the same warm paper through the `--rd-paper-*` tokens, while
+the console keeps the dark shell.
